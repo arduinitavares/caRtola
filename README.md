@@ -12,6 +12,20 @@ Você encontra os dados raw do *Cartola FC* desde 2014 na pasta [data/01_raw][fo
 
 > Estamos preparando um pipeline para agregar os dados de todos os anos em um único arquivo. Então, fique atento no repositório!
 
+## 🧪 Backtesting
+
+Para executar o backtest offline de 2025 com o ambiente virtual local:
+
+```bash
+.venv/bin/python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100
+```
+
+Se estiver usando Poetry, o comando equivalente é:
+
+```bash
+poetry run python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100
+```
+
 ## 🧑‍🏫 Tutoriais
 
 Estes são alguns tutoriais que escrevemos. Contribuições são sempre bem vindas!
