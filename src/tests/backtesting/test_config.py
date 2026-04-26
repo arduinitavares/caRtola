@@ -1,0 +1,35 @@
+from pathlib import Path
+
+from cartola.backtesting.config import (
+    BacktestConfig,
+    DEFAULT_SCOUT_COLUMNS,
+    POSITION_ID_TO_CODE,
+    STATUS_ID_TO_NAME,
+)
+
+
+def test_default_config_matches_v1_scope():
+    config = BacktestConfig()
+
+    assert config.season == 2025
+    assert config.start_round == 5
+    assert config.budget == 100.0
+    assert config.playable_statuses == ("Provavel",)
+    assert config.formation_name == "4-3-3"
+    assert config.output_path == Path("data/08_reporting/backtests/2025")
+
+
+def test_default_mappings_cover_cartola_values():
+    assert STATUS_ID_TO_NAME[7] == "Provavel"
+    assert STATUS_ID_TO_NAME[2] == "Duvida"
+    assert POSITION_ID_TO_CODE[1] == "gol"
+    assert POSITION_ID_TO_CODE[2] == "lat"
+    assert POSITION_ID_TO_CODE[3] == "zag"
+    assert POSITION_ID_TO_CODE[4] == "mei"
+    assert POSITION_ID_TO_CODE[5] == "ata"
+    assert POSITION_ID_TO_CODE[6] == "tec"
+
+
+def test_default_scout_columns_include_v():
+    assert "V" in DEFAULT_SCOUT_COLUMNS
+    assert {"G", "A", "DS", "SG", "CA", "FC"}.issubset(DEFAULT_SCOUT_COLUMNS)
