@@ -171,6 +171,8 @@ def _convert_numeric_columns(frame: pd.DataFrame) -> None:
     for column in NUMERIC_COLUMNS:
         if column in frame.columns and column not in {"status", "posicao"}:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    for column in DEFAULT_SCOUT_COLUMNS:
+        frame[column] = frame[column].fillna(0)
 
 
 def _slugify(value: Any) -> str:

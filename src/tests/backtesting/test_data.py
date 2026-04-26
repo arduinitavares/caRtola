@@ -69,6 +69,15 @@ def test_normalize_round_frame_accepts_already_normalized_status_and_position_va
     assert normalized.loc[0, "posicao"] == "ata"
 
 
+def test_normalize_round_frame_fills_blank_scout_values_with_zero():
+    raw = _base_raw_round(G=[None], V=[""])
+
+    normalized = normalize_round_frame(raw, source=Path("rodada-1.csv"))
+
+    assert normalized.loc[0, "G"] == 0
+    assert normalized.loc[0, "V"] == 0
+
+
 def test_normalize_round_frame_rejects_unknown_status():
     raw = pd.DataFrame(
         {
