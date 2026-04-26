@@ -19,9 +19,9 @@ RAW_COLUMN_RENAMES: Mapping[str, str] = {
     "atletas.clube_id": "id_clube",
     "atletas.clube.id.full.name": "nome_clube",
     "atletas.preco_num": "preco",
-    "atletas.pontos_num": "pontos",
+    "atletas.pontos_num": "pontuacao",
     "atletas.media_num": "media",
-    "atletas.jogos_num": "jogos",
+    "atletas.jogos_num": "num_jogos",
     "atletas.variacao_num": "variacao",
     "atletas.entrou_em_campo": "entrou_em_campo",
     "atletas.minimo_para_valorizar": "minimo_para_valorizar",
@@ -38,9 +38,9 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "apelido",
     "id_clube",
     "preco",
-    "pontos",
+    "pontuacao",
     "media",
-    "jogos",
+    "num_jogos",
     "variacao",
 )
 
@@ -51,9 +51,9 @@ NUMERIC_COLUMNS: tuple[str, ...] = (
     "id_atleta",
     "id_clube",
     "preco",
-    "pontos",
+    "pontuacao",
     "media",
-    "jogos",
+    "num_jogos",
     "variacao",
     "minimo_para_valorizar",
     *DEFAULT_SCOUT_COLUMNS,
@@ -115,7 +115,7 @@ def normalize_round_frame(frame: pd.DataFrame, source: str | Path) -> pd.DataFra
     if "nome_clube" not in normalized.columns:
         normalized["nome_clube"] = normalized["id_clube"].astype("string")
     if "entrou_em_campo" not in normalized.columns:
-        normalized["entrou_em_campo"] = normalized["pontos"].notna()
+        normalized["entrou_em_campo"] = normalized["pontuacao"].notna()
 
     _convert_numeric_columns(normalized)
     return normalized

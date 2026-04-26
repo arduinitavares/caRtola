@@ -51,6 +51,10 @@ def test_normalize_round_frame_drops_index_maps_columns_and_fills_scouts():
     assert normalized.loc[0, "status"] == "Provavel"
     assert normalized.loc[0, "posicao"] == "ata"
     assert normalized.loc[0, "id_atleta"] == 10
+    assert normalized.loc[0, "pontuacao"] == 4.5
+    assert normalized.loc[0, "num_jogos"] == 1
+    assert "pontos" not in normalized.columns
+    assert "jogos" not in normalized.columns
     assert normalized.loc[0, "V"] == 0
     assert normalized.loc[0, "G"] == 0
     assert bool(normalized.loc[0, "entrou_em_campo"]) is True
@@ -101,6 +105,10 @@ def test_load_round_file_reads_and_normalizes_csv(tmp_path):
 
     assert loaded.loc[0, "rodada"] == 1
     assert loaded.loc[0, "status"] == "Provavel"
+    assert loaded.loc[0, "pontuacao"] == 4.5
+    assert loaded.loc[0, "num_jogos"] == 1
+    assert "pontos" not in loaded.columns
+    assert "jogos" not in loaded.columns
     assert "" not in loaded.columns
 
 
