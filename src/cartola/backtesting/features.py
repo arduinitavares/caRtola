@@ -46,7 +46,9 @@ def build_prediction_frame(season_df: pd.DataFrame, target_round: int) -> pd.Dat
 
 def build_training_frame(season_df: pd.DataFrame, target_round: int) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    historical_rounds = sorted(round_number for round_number in season_df["rodada"].dropna().unique() if round_number < target_round)
+    historical_rounds = sorted(
+        round_number for round_number in season_df["rodada"].dropna().unique() if round_number < target_round
+    )
 
     for round_number in historical_rounds:
         round_frame = build_prediction_frame(season_df, int(round_number))

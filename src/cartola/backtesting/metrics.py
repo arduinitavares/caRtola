@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-
 SUMMARY_COLUMNS: list[str] = [
     "strategy",
     "rounds",

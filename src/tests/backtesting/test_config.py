@@ -1,11 +1,6 @@
 from pathlib import Path
 
-from cartola.backtesting.config import (
-    BacktestConfig,
-    DEFAULT_SCOUT_COLUMNS,
-    POSITION_ID_TO_CODE,
-    STATUS_ID_TO_NAME,
-)
+from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, POSITION_ID_TO_CODE, STATUS_ID_TO_NAME, BacktestConfig
 
 
 def test_default_config_matches_v1_scope():

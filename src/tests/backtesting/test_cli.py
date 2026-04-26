@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.cli import main, parse_args
+from cartola.backtesting.config import BacktestConfig
 
 
 def test_parse_args_accepts_v1_options():

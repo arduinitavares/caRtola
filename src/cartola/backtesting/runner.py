@@ -11,7 +11,6 @@ from cartola.backtesting.metrics import build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
 
-
 ROUND_RESULT_COLUMNS: list[str] = [
     "rodada",
     "strategy",
@@ -47,7 +46,9 @@ class BacktestResult:
 
 
 def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) -> BacktestResult:
-    data = season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
+    data = (
+        season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
+    )
 
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []

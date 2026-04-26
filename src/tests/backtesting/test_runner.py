@@ -1,7 +1,7 @@
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from cartola.backtesting.config import BacktestConfig, DEFAULT_SCOUT_COLUMNS
+from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
 from cartola.backtesting.runner import run_backtest
 
 
@@ -91,8 +91,12 @@ def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path, 
     )
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
 
-    first = run_backtest(BacktestConfig(project_root=tmp_path / "first", start_round=5, budget=100), season_df=season_df)
-    second = run_backtest(BacktestConfig(project_root=tmp_path / "second", start_round=5, budget=100), season_df=season_df)
+    first = run_backtest(
+        BacktestConfig(project_root=tmp_path / "first", start_round=5, budget=100), season_df=season_df
+    )
+    second = run_backtest(
+        BacktestConfig(project_root=tmp_path / "second", start_round=5, budget=100), season_df=season_df
+    )
 
     assert_frame_equal(first.round_results, second.round_results, check_exact=True)
     assert_frame_equal(first.selected_players, second.selected_players, check_exact=True)
