@@ -35,6 +35,11 @@ def build_summary(round_results: pd.DataFrame, benchmark_strategy: str = "price"
         .reset_index(drop=True)
     )
 
-    benchmark_total = summary.loc[summary["strategy"] == benchmark_strategy, "total_actual_points"].sum()
+    benchmark_rows = summary.loc[summary["strategy"] == benchmark_strategy, "total_actual_points"]
+    if benchmark_rows.empty:
+        summary[delta_column] = pd.NA
+        return summary.loc[:, columns]
+
+    benchmark_total = benchmark_rows.iloc[0]
     summary[delta_column] = summary["total_actual_points"] - benchmark_total
     return summary.loc[:, columns]
