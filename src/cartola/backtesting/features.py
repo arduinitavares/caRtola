@@ -23,8 +23,6 @@ MARKET_COLUMNS: list[str] = [
 
 FEATURE_COLUMNS: list[str] = [
     "preco",
-    "media",
-    "num_jogos",
     "id_clube",
     "rodada",
     "posicao",
@@ -34,6 +32,8 @@ FEATURE_COLUMNS: list[str] = [
     "prior_points_roll5",
     "prior_price_mean",
     "prior_variation_mean",
+    "prior_media",
+    "prior_num_jogos",
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
 ]
 
@@ -54,7 +54,7 @@ def build_training_frame(season_df: pd.DataFrame, target_round: int) -> pd.DataF
         frames.append(round_frame)
 
     if not frames:
-        return pd.DataFrame(columns=[*MARKET_COLUMNS, *FEATURE_COLUMNS, "target"])
+        return pd.DataFrame(columns=list(dict.fromkeys([*MARKET_COLUMNS, *FEATURE_COLUMNS, "target"])))
     return pd.concat(frames, ignore_index=True)
 
 
@@ -77,6 +77,8 @@ def _add_prior_features(candidates: pd.DataFrame, history: pd.DataFrame) -> pd.D
     frame["prior_appearances"] = frame["prior_appearances"].fillna(0)
     frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame.get("preco"))
     frame["prior_variation_mean"] = frame["prior_variation_mean"].fillna(0)
+    frame["prior_media"] = frame["prior_media"].fillna(frame["prior_points_mean"])
+    frame["prior_num_jogos"] = frame["prior_num_jogos"].fillna(0)
 
     for scout in DEFAULT_SCOUT_COLUMNS:
         column = f"prior_{scout}_mean"
@@ -101,6 +103,8 @@ def _player_history_features(history: pd.DataFrame) -> pd.DataFrame:
             prior_points_roll5=("pontuacao", lambda values: float(values.tail(5).mean())),
             prior_price_mean=("preco", "mean"),
             prior_variation_mean=("variacao", "mean"),
+            prior_media=("media", "last"),
+            prior_num_jogos=("num_jogos", "last"),
         )
         .reset_index()
     )
@@ -127,6 +131,8 @@ def _player_feature_columns() -> list[str]:
         "prior_points_roll5",
         "prior_price_mean",
         "prior_variation_mean",
+        "prior_media",
+        "prior_num_jogos",
         *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
     ]
 

@@ -1,6 +1,8 @@
 import pandas as pd
 
-from cartola.backtesting.models import BaselinePredictor
+from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
+from cartola.backtesting.features import FEATURE_COLUMNS
+from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 
 
 def test_baseline_predictor_uses_prior_player_mean_with_position_fallback() -> None:
@@ -24,3 +26,37 @@ def test_baseline_predictor_uses_prior_player_mean_with_position_fallback() -> N
     predictions = model.predict(predict)
 
     assert predictions.tolist() == [5.0, 4.0]
+
+
+def test_random_forest_point_predictor_fit_predict_smoke() -> None:
+    train = _model_frame()
+    predict = train.drop(columns=["target"]).copy()
+
+    model = RandomForestPointPredictor(random_seed=7).fit(train)
+    predictions = model.predict(predict)
+
+    assert len(predictions) == len(predict)
+    assert predictions.notna().all()
+
+
+def _model_frame() -> pd.DataFrame:
+    frame = pd.DataFrame(
+        {
+            "preco": [10.0, 12.0, 8.0, 9.0],
+            "id_clube": [10, 10, 20, 20],
+            "rodada": [2, 3, 2, 3],
+            "posicao": ["ata", "ata", "mei", "mei"],
+            "prior_appearances": [1, 2, 1, 2],
+            "prior_points_mean": [2.0, 5.0, 4.0, 5.0],
+            "prior_points_roll3": [2.0, 5.0, 4.0, 5.0],
+            "prior_points_roll5": [2.0, 5.0, 4.0, 5.0],
+            "prior_price_mean": [10.0, 10.5, 8.0, 8.5],
+            "prior_variation_mean": [0.0, 0.5, 0.0, 0.5],
+            "prior_media": [2.0, 5.0, 4.0, 5.0],
+            "prior_num_jogos": [1, 2, 1, 2],
+            "target": [8.0, 10.0, 6.0, 7.0],
+        }
+    )
+    for scout in DEFAULT_SCOUT_COLUMNS:
+        frame[f"prior_{scout}_mean"] = 0.0
+    return frame[[*FEATURE_COLUMNS, "target"]]

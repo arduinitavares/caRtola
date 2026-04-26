@@ -157,3 +157,20 @@ def test_feature_columns_exist_in_prediction_frame() -> None:
 
     for column in FEATURE_COLUMNS:
         assert column in frame.columns
+
+
+def test_feature_columns_exclude_target_round_cumulative_fields() -> None:
+    assert "media" not in FEATURE_COLUMNS
+    assert "num_jogos" not in FEATURE_COLUMNS
+    assert "prior_media" in FEATURE_COLUMNS
+    assert "prior_num_jogos" in FEATURE_COLUMNS
+
+
+def test_prior_cumulative_replacements_use_only_prior_rounds() -> None:
+    frame = build_prediction_frame(_season_df(), target_round=3)
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["media"] == 36.7
+    assert player["num_jogos"] == 3
+    assert player["prior_media"] == 5
+    assert player["prior_num_jogos"] == 2
