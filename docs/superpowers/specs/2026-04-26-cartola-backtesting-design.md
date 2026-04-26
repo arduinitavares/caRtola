@@ -83,9 +83,14 @@ The loader reads all `rodada-*.csv` files for the configured season and normaliz
 - `media`
 - `num_jogos`
 - `variacao`
-- scout columns such as `G`, `A`, `DS`, `SG`, `CA`, `FC`, `FS`, `FF`, `FD`, `FT`, `I`, `GS`, `DE`, `DP`, `CV`, `PP`, `PS`, `PC`, `GC`
+- `entrou_em_campo`
+- scout columns such as `G`, `A`, `DS`, `SG`, `CA`, `FC`, `FS`, `FF`, `FD`, `FT`, `I`, `GS`, `DE`, `DP`, `V`, `CV`, `PP`, `PS`, `PC`, `GC`
 
 Raw 2025 data stores Cartola-style names such as `atletas.status_id`, `atletas.posicao_id`, and `atletas.pontos_num`. The backtester should reuse the existing naming intent from `conf/base/parameters.yml` where practical, but v1 may implement a local explicit mapping to avoid introducing Kedro runtime dependencies.
+
+Round CSVs also contain a leading unnamed pandas index column. The loader should drop columns named like `Unnamed: 0` and should also drop any first column whose header is empty after CSV parsing.
+
+Scout availability is per round, not per season. Early round files can have only player/market columns and no scout columns. The loader must align every round to the full normalized schema and fill missing scout columns with zero for the affected round file.
 
 Status IDs must be mapped to readable statuses:
 
@@ -137,7 +142,7 @@ V1 should prioritize simple, interpretable, leakage-safe features:
 - Position code.
 - Current target-round price.
 - Current target-round season average from Cartola (`media`), treated as an available market field.
-- Number of games played before the target round.
+- Number of games and actual appearances before the target round, using `entrou_em_campo` where available.
 - Prior cumulative mean of points.
 - Prior rolling means over 3 and 5 appearances for points.
 - Prior cumulative and rolling means for key scouts.
@@ -224,7 +229,8 @@ All outputs should be deterministic for a fixed random seed.
 - Unknown status or position IDs: fail with the offending values.
 - Empty candidate pool after availability filtering: record round failure and continue.
 - Infeasible optimizer result: record solver status and continue.
-- Missing optional scout columns: fill with zero if the scout does not exist in that season.
+- Saved pandas index columns: drop unnamed index columns before normalization.
+- Missing scout columns in individual round files: fill with zero for that round.
 
 ## Testing Strategy
 
