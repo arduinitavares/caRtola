@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 DEFAULT_SCOUT_COLUMNS: tuple[str, ...] = (
     "G",
@@ -28,6 +28,9 @@ DEFAULT_SCOUT_COLUMNS: tuple[str, ...] = (
 )
 
 MARKET_OPEN_PRICE_COLUMN = "preco_pre_rodada"
+
+FixtureMode = Literal["none", "exploratory", "strict"]
+StrictAlignmentPolicy = Literal["fail", "exclude_round"]
 
 STATUS_ID_TO_NAME: Mapping[int, str] = {
     2: "Duvida",
@@ -68,6 +71,8 @@ class BacktestConfig:
     random_seed: int = 123
     project_root: Path = Path(".")
     output_root: Path = Path("data/08_reporting/backtests")
+    fixture_mode: FixtureMode = "none"
+    strict_alignment_policy: StrictAlignmentPolicy = "fail"
     scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS
     formations: Mapping[str, Mapping[str, int]] = field(default_factory=lambda: DEFAULT_FORMATIONS)
 

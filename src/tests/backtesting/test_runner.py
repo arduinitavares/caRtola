@@ -74,25 +74,78 @@ def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     assert (tmp_path / "data/08_reporting/backtests/2025/diagnostics.csv").exists()
 
 
-def test_run_backtest_uses_fixture_files_when_available(tmp_path):
+def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    run_backtest(config, season_df=season_df)
+
+    metadata = pd.read_json(tmp_path / "data/08_reporting/backtests/2025/run_metadata.json", typ="series").to_dict()
+    assert metadata["fixture_mode"] == "none"
+    assert metadata["fixture_source_directory"] is None
+    assert metadata["fixture_manifest_paths"] == []
+    assert metadata["fixture_manifest_sha256"] == {}
+    assert metadata["warnings"] == []
+
+
+def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     _write_tiny_fixture_files(tmp_path, range(1, 6))
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.fixture_mode == "none"
+    assert result.metadata.fixture_source_directory is None
+    assert result.metadata.warnings == []
+    assert result.player_predictions["is_home"].eq(0).all()
+
+
+def test_run_backtest_default_none_ignores_explicit_fixtures(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = _tiny_fixtures(range(1, 6))
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    result = run_backtest(config, season_df=season_df, fixtures=fixtures)
+
+    assert result.metadata.fixture_mode == "none"
+    assert result.player_predictions["is_home"].eq(0).all()
+
+
+def test_run_backtest_uses_fixture_files_when_available(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    _write_tiny_fixture_files(tmp_path, range(1, 6))
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
 
     result = run_backtest(config, season_df=season_df)
     round_5 = result.player_predictions[result.player_predictions["rodada"] == 5]
     club_1 = round_5[round_5["id_clube"] == 1].iloc[0]
     club_2 = round_5[round_5["id_clube"] == 2].iloc[0]
 
+    assert result.metadata.fixture_mode == "exploratory"
+    assert result.metadata.fixture_source_directory == str(tmp_path / "data" / "01_raw" / "fixtures" / "2025")
+    assert result.metadata.warnings
     assert club_1["is_home"] == 1
     assert club_2["is_home"] == 0
     assert "opponent_club_points_roll3" in result.player_predictions.columns
 
 
+def test_run_backtest_exploratory_without_files_records_no_source(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.fixture_mode == "exploratory"
+    assert result.metadata.fixture_source_directory is None
+    assert "not found" in " ".join(result.metadata.warnings)
+    assert result.player_predictions["is_home"].eq(0).all()
+
+
 def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     fixtures = _tiny_fixtures(range(1, 6))
-    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
 
     result = run_backtest(config, season_df=season_df, fixtures=fixtures)
     round_5 = result.player_predictions[result.player_predictions["rodada"] == 5]
@@ -111,7 +164,7 @@ def test_run_backtest_rejects_fixture_alignment_gaps(tmp_path):
         ],
         columns=["rodada", "id_clube_home", "id_clube_away", "data"],
     )
-    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
 
     with pytest.raises(ValueError, match="Fixture alignment failed"):
         run_backtest(config, season_df=season_df, fixtures=fixtures)

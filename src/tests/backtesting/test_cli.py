@@ -21,6 +21,24 @@ def test_parse_args_uses_v1_defaults():
     assert args.project_root == Path(".")
 
 
+def test_cli_parses_fixture_mode_and_alignment_policy() -> None:
+    from cartola.backtesting.cli import parse_args
+
+    args = parse_args(
+        [
+            "--season",
+            "2026",
+            "--fixture-mode",
+            "strict",
+            "--strict-alignment-policy",
+            "exclude_round",
+        ]
+    )
+
+    assert args.fixture_mode == "strict"
+    assert args.strict_alignment_policy == "exclude_round"
+
+
 def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path):
     observed_configs: list[BacktestConfig] = []
 

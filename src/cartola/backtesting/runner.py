@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pandas as pd
@@ -38,12 +39,35 @@ FLOAT_NORMALIZATION_EXCLUDED_COLUMNS: set[str] = {
 
 
 @dataclass(frozen=True)
+class BacktestMetadata:
+    season: int
+    start_round: int
+    max_round: int
+    fixture_mode: str
+    strict_alignment_policy: str
+    fixture_source_directory: str | None
+    fixture_manifest_paths: list[str]
+    fixture_manifest_sha256: dict[str, str]
+    generator_versions: list[str]
+    excluded_rounds: list[int]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
 class BacktestResult:
     round_results: pd.DataFrame
     selected_players: pd.DataFrame
     player_predictions: pd.DataFrame
     summary: pd.DataFrame
     diagnostics: pd.DataFrame
+    metadata: BacktestMetadata
+
+
+@dataclass(frozen=True)
+class ResolvedFixtures:
+    fixtures: pd.DataFrame | None
+    source_directory: str | None
+    warnings: list[str]
 
 
 def run_backtest(
@@ -54,7 +78,8 @@ def run_backtest(
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
-    fixture_data = fixtures.copy() if fixtures is not None else _load_optional_fixtures(config)
+    resolved_fixtures = _resolve_fixtures(config, fixtures)
+    fixture_data = resolved_fixtures.fixtures
     _validate_fixture_alignment(fixture_data, data)
 
     round_rows: list[dict[str, object]] = []
@@ -62,6 +87,19 @@ def run_backtest(
     prediction_frames: list[pd.DataFrame] = []
 
     max_round = _max_round(data)
+    metadata = BacktestMetadata(
+        season=config.season,
+        start_round=config.start_round,
+        max_round=max_round,
+        fixture_mode=config.fixture_mode,
+        strict_alignment_policy=config.strict_alignment_policy,
+        fixture_source_directory=resolved_fixtures.source_directory,
+        fixture_manifest_paths=[],
+        fixture_manifest_sha256={},
+        generator_versions=[],
+        excluded_rounds=[],
+        warnings=resolved_fixtures.warnings,
+    )
     for round_number in range(config.start_round, max_round + 1):
         training = build_training_frame(
             data,
@@ -126,13 +164,14 @@ def run_backtest(
     summary = _normalize_float_outputs(summary)
     diagnostics = _normalize_float_outputs(diagnostics)
 
-    _write_outputs(config, round_results, selected_players, player_predictions, summary, diagnostics)
+    _write_outputs(config, round_results, selected_players, player_predictions, summary, diagnostics, metadata)
     return BacktestResult(
         round_results=round_results,
         selected_players=selected_players,
         player_predictions=player_predictions,
         summary=summary,
         diagnostics=diagnostics,
+        metadata=metadata,
     )
 
 
@@ -147,6 +186,35 @@ def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:
         return load_fixtures(config.season, project_root=config.project_root)
     except FileNotFoundError:
         return None
+
+
+def _resolve_fixtures(config: BacktestConfig, fixtures: pd.DataFrame | None) -> ResolvedFixtures:
+    if config.fixture_mode == "none":
+        return ResolvedFixtures(fixtures=None, source_directory=None, warnings=[])
+
+    if config.fixture_mode == "strict":
+        raise NotImplementedError("fixture_mode='strict' is not implemented yet")
+
+    if config.fixture_mode != "exploratory":
+        raise ValueError(f"Unknown fixture_mode: {config.fixture_mode!r}")
+
+    warnings = ["Exploratory fixture mode uses reconstructed fixture data and is not strict no-leakage."]
+    if fixtures is not None:
+        return ResolvedFixtures(fixtures=fixtures.copy(), source_directory=None, warnings=warnings)
+
+    loaded_fixtures = _load_optional_fixtures(config)
+    if loaded_fixtures is None:
+        return ResolvedFixtures(
+            fixtures=None,
+            source_directory=None,
+            warnings=[*warnings, "Exploratory fixture files were not found; running with neutral fixture defaults."],
+        )
+
+    return ResolvedFixtures(
+        fixtures=loaded_fixtures,
+        source_directory=str(config.project_root / "data" / "01_raw" / "fixtures" / str(config.season)),
+        warnings=warnings,
+    )
 
 
 def _validate_fixture_alignment(fixtures: pd.DataFrame | None, season_df: pd.DataFrame) -> None:
@@ -217,6 +285,7 @@ def _write_outputs(
     player_predictions: pd.DataFrame,
     summary: pd.DataFrame,
     diagnostics: pd.DataFrame,
+    metadata: BacktestMetadata,
 ) -> None:
     output_path = config.output_path
     output_path.mkdir(parents=True, exist_ok=True)
@@ -225,3 +294,7 @@ def _write_outputs(
     player_predictions.to_csv(output_path / "player_predictions.csv", index=False, float_format=CSV_FLOAT_FORMAT)
     summary.to_csv(output_path / "summary.csv", index=False, float_format=CSV_FLOAT_FORMAT)
     diagnostics.to_csv(output_path / "diagnostics.csv", index=False, float_format=CSV_FLOAT_FORMAT)
+    (output_path / "run_metadata.json").write_text(
+        json.dumps(metadata.__dict__, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )

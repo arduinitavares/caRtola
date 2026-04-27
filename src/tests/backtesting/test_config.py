@@ -28,3 +28,20 @@ def test_default_mappings_cover_cartola_values():
 def test_default_scout_columns_include_v():
     assert "V" in DEFAULT_SCOUT_COLUMNS
     assert {"G", "A", "DS", "SG", "CA", "FC"}.issubset(DEFAULT_SCOUT_COLUMNS)
+
+
+def test_backtest_config_defaults_to_no_fixture_mode() -> None:
+    from cartola.backtesting.config import BacktestConfig
+
+    config = BacktestConfig()
+
+    assert config.fixture_mode == "none"
+    assert config.strict_alignment_policy == "fail"
+
+
+def test_backtest_config_accepts_fixture_modes() -> None:
+    from cartola.backtesting.config import BacktestConfig
+
+    assert BacktestConfig(fixture_mode="exploratory").fixture_mode == "exploratory"
+    assert BacktestConfig(fixture_mode="strict").fixture_mode == "strict"
+    assert BacktestConfig(strict_alignment_policy="exclude_round").strict_alignment_policy == "exclude_round"
