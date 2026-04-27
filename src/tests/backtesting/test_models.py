@@ -56,6 +56,8 @@ def _model_frame() -> pd.DataFrame:
             "prior_price_mean": [10.0, 10.5, 8.0, 8.5],
             "prior_variation_mean": [0.0, 0.5, 0.0, 0.5],
             "club_points_roll3": [30.0, 32.0, 24.0, 25.0],
+            "is_home": [1, 0, 1, 0],
+            "opponent_club_points_roll3": [24.0, 25.0, 30.0, 32.0],
             "prior_media": [2.0, 5.0, 4.0, 5.0],
             "prior_num_jogos": [1, 2, 1, 2],
             "target": [8.0, 10.0, 6.0, 7.0],
