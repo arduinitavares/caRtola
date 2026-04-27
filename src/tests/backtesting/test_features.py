@@ -377,6 +377,18 @@ def test_fixture_features_match_string_round_values() -> None:
     assert home_player["is_home"] == 1
 
 
+def test_fixture_features_reject_duplicate_club_context_rows() -> None:
+    fixtures = pd.DataFrame(
+        [
+            {"rodada": 3, "id_clube_home": 10, "id_clube_away": 20},
+            {"rodada": 3, "id_clube_home": 10, "id_clube_away": 30},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Duplicate fixture club context"):
+        build_prediction_frame(_season_df(), target_round=3, fixtures=fixtures)
+
+
 def test_opponent_id_is_join_only_not_model_feature() -> None:
     assert "opponent_id" not in FEATURE_COLUMNS
     assert "is_home" in FEATURE_COLUMNS

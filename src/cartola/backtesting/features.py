@@ -171,6 +171,9 @@ def _fixture_context_features(
     )
     away_context["is_home"] = 0
     context = pd.concat([home_context, away_context], ignore_index=True)
+    duplicate_clubs = context.loc[context["id_clube"].duplicated(), "id_clube"].drop_duplicates().to_list()
+    if duplicate_clubs:
+        raise ValueError(f"Duplicate fixture club context for round {target_round}: {duplicate_clubs}")
 
     opponent_roll = _club_history_features(played_history).rename(
         columns={"id_clube": "opponent_id", "club_points_roll3": "opponent_club_points_roll3"}
@@ -208,6 +211,7 @@ def _add_prior_features(
         _fixture_context_features(fixtures, target_round=target_round, played_history=played_history),
         on="id_clube",
         how="left",
+        validate="many_to_one",
     )
 
     for column in NUMERIC_PRIOR_COLUMNS:
