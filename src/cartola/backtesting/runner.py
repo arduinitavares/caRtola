@@ -71,6 +71,7 @@ class FixtureLoadForRun:
     manifest_paths: list[str]
     manifest_sha256: dict[str, str]
     generator_versions: list[str]
+    excluded_rounds: list[int]
     warnings: list[str]
 
 
@@ -84,11 +85,12 @@ def run_backtest(
     )
     resolved_fixtures = _resolve_fixtures(config, data, fixtures)
     fixture_data = resolved_fixtures.fixtures
-    excluded_rounds = _validate_fixture_alignment(
+    alignment_excluded_rounds = _validate_fixture_alignment(
         fixture_data,
         data,
         policy=config.strict_alignment_policy if config.fixture_mode == "strict" else "fail",
     )
+    excluded_rounds = sorted({*resolved_fixtures.excluded_rounds, *alignment_excluded_rounds})
     if excluded_rounds:
         data = data[~pd.to_numeric(data["rodada"], errors="raise").isin(excluded_rounds)].copy()
 
@@ -220,14 +222,19 @@ def _resolve_fixtures(
             manifest_paths=[],
             manifest_sha256={},
             generator_versions=[],
+            excluded_rounds=[],
             warnings=[],
         )
 
     if config.fixture_mode == "strict":
+        required_rounds = _strict_required_rounds(season_df)
+        if config.strict_alignment_policy == "exclude_round":
+            return _load_strict_fixtures_with_exclusions(config, required_rounds)
+
         loaded = load_strict_fixtures(
             season=config.season,
             project_root=config.project_root,
-            required_rounds=_strict_required_rounds(season_df),
+            required_rounds=required_rounds,
         )
         return FixtureLoadForRun(
             fixtures=loaded.fixtures,
@@ -235,6 +242,7 @@ def _resolve_fixtures(
             manifest_paths=loaded.manifest_paths,
             manifest_sha256=loaded.manifest_sha256,
             generator_versions=loaded.generator_versions,
+            excluded_rounds=[],
             warnings=[],
         )
 
@@ -249,6 +257,7 @@ def _resolve_fixtures(
             manifest_paths=[],
             manifest_sha256={},
             generator_versions=[],
+            excluded_rounds=[],
             warnings=warnings,
         )
 
@@ -260,6 +269,7 @@ def _resolve_fixtures(
             manifest_paths=[],
             manifest_sha256={},
             generator_versions=[],
+            excluded_rounds=[],
             warnings=[*warnings, "Exploratory fixture files were not found; running with neutral fixture defaults."],
         )
 
@@ -269,7 +279,47 @@ def _resolve_fixtures(
         manifest_paths=[],
         manifest_sha256={},
         generator_versions=[],
+        excluded_rounds=[],
         warnings=warnings,
+    )
+
+
+def _load_strict_fixtures_with_exclusions(config: BacktestConfig, required_rounds: list[int]) -> FixtureLoadForRun:
+    loaded_frames: list[pd.DataFrame] = []
+    manifest_paths: list[str] = []
+    manifest_sha256: dict[str, str] = {}
+    generator_versions: set[str] = set()
+    excluded_rounds: list[int] = []
+
+    for round_number in required_rounds:
+        try:
+            loaded = load_strict_fixtures(
+                season=config.season,
+                project_root=config.project_root,
+                required_rounds=[round_number],
+            )
+        except FileNotFoundError:
+            excluded_rounds.append(round_number)
+            continue
+
+        round_fixtures = loaded.fixtures[
+            pd.to_numeric(loaded.fixtures["rodada"], errors="raise").astype(int).eq(round_number)
+        ].copy()
+        loaded_frames.append(round_fixtures)
+        for manifest_path in loaded.manifest_paths:
+            if manifest_path not in manifest_paths:
+                manifest_paths.append(manifest_path)
+        manifest_sha256.update(loaded.manifest_sha256)
+        generator_versions.update(loaded.generator_versions)
+
+    return FixtureLoadForRun(
+        fixtures=_concat_or_empty(loaded_frames) if loaded_frames else None,
+        source_directory=f"data/01_raw/fixtures_strict/{config.season}",
+        manifest_paths=manifest_paths,
+        manifest_sha256=manifest_sha256,
+        generator_versions=sorted(generator_versions),
+        excluded_rounds=excluded_rounds,
+        warnings=[],
     )
 
 
