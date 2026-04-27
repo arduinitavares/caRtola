@@ -48,6 +48,47 @@ def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     assert (tmp_path / "data/08_reporting/backtests/2025/diagnostics.csv").exists()
 
 
+def test_run_backtest_uses_fixture_files_when_available(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"rodada": 5, "id_clube_home": 1, "id_clube_away": 2, "data": "2025-04-26"},
+        ],
+        columns=["rodada", "id_clube_home", "id_clube_away", "data"],
+    ).to_csv(fixture_dir / "partidas-5.csv", index=False)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    result = run_backtest(config, season_df=season_df)
+    round_5 = result.player_predictions[result.player_predictions["rodada"] == 5]
+    club_1 = round_5[round_5["id_clube"] == 1].iloc[0]
+    club_2 = round_5[round_5["id_clube"] == 2].iloc[0]
+
+    assert club_1["is_home"] == 1
+    assert club_2["is_home"] == 0
+    assert "opponent_club_points_roll3" in result.player_predictions.columns
+
+
+def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = pd.DataFrame(
+        [
+            {"rodada": 5, "id_clube_home": 1, "id_clube_away": 2, "data": "2025-04-26"},
+        ],
+        columns=["rodada", "id_clube_home", "id_clube_away", "data"],
+    )
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    result = run_backtest(config, season_df=season_df, fixtures=fixtures)
+    round_5 = result.player_predictions[result.player_predictions["rodada"] == 5]
+    club_1 = round_5[round_5["id_clube"] == 1].iloc[0]
+    club_2 = round_5[round_5["id_clube"] == 2].iloc[0]
+
+    assert club_1["is_home"] == 1
+    assert club_2["is_home"] == 0
+
+
 def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)

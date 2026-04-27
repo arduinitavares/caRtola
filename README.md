@@ -26,6 +26,14 @@ Para executar o backtest offline de 2025:
 uv run python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100
 ```
 
+Para importar partidas de 2025 para features de mando/oponente:
+
+```bash
+uv run --frozen python scripts/import_fixture_schedule.py --season 2025
+```
+
+O backtest carrega automaticamente `data/01_raw/fixtures/{season}/partidas-*.csv` quando esses arquivos existem. Sem esses arquivos, ele roda com os mesmos defaults sem contexto de partidas.
+
 Os resultados são gravados em `data/08_reporting/backtests/2025/`:
 
 ```bash

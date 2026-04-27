@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
-from cartola.backtesting.data import load_season_data
+from cartola.backtesting.data import load_fixtures, load_season_data
 from cartola.backtesting.features import build_prediction_frame, build_training_frame
 from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
@@ -46,10 +46,15 @@ class BacktestResult:
     diagnostics: pd.DataFrame
 
 
-def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) -> BacktestResult:
+def run_backtest(
+    config: BacktestConfig,
+    season_df: pd.DataFrame | None = None,
+    fixtures: pd.DataFrame | None = None,
+) -> BacktestResult:
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
+    fixture_data = fixtures.copy() if fixtures is not None else _load_optional_fixtures(config)
 
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
@@ -57,8 +62,13 @@ def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) 
 
     max_round = _max_round(data)
     for round_number in range(config.start_round, max_round + 1):
-        training = build_training_frame(data, round_number, playable_statuses=config.playable_statuses)
-        candidates = build_prediction_frame(data, round_number)
+        training = build_training_frame(
+            data,
+            round_number,
+            playable_statuses=config.playable_statuses,
+            fixtures=fixture_data,
+        )
+        candidates = build_prediction_frame(data, round_number, fixtures=fixture_data)
         candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy()
 
         if training.empty or candidates.empty:
@@ -129,6 +139,13 @@ def _max_round(data: pd.DataFrame) -> int:
     if data.empty:
         return 0
     return int(data["rodada"].max())
+
+
+def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:
+    try:
+        return load_fixtures(config.season, project_root=config.project_root)
+    except FileNotFoundError:
+        return None
 
 
 def _strategies() -> dict[str, str]:
