@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 import pulp
 
-from cartola.backtesting.config import BacktestConfig
+from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,8 @@ def optimize_squad(candidates: pd.DataFrame, score_column: str, config: Backtest
         float(player_rows.loc[index, score_column]) * variable for index, variable in variables.items()
     )
     problem += pulp.lpSum(
-        float(player_rows.loc[index, "preco"]) * variable for index, variable in variables.items()
+        float(player_rows.loc[index, MARKET_OPEN_PRICE_COLUMN]) * variable
+        for index, variable in variables.items()
     ) <= float(config.budget)
 
     for position, required_count in formation.items():
@@ -55,7 +56,7 @@ def optimize_squad(candidates: pd.DataFrame, score_column: str, config: Backtest
     selected_indexes = [index for index, variable in variables.items() if pulp.value(variable) == 1]
     selected = player_rows.loc[selected_indexes].copy()
     selected.index = range(len(selected))
-    budget_used = float(selected["preco"].sum())
+    budget_used = float(selected[MARKET_OPEN_PRICE_COLUMN].sum())
     predicted_points = float(selected[score_column].sum())
     actual_points = float(selected["pontuacao"].sum()) if "pontuacao" in selected.columns else 0.0
 

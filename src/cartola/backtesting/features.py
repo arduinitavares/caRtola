@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
+from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, MARKET_OPEN_PRICE_COLUMN
 
 MARKET_COLUMNS: list[str] = [
     "id_atleta",
@@ -14,6 +14,7 @@ MARKET_COLUMNS: list[str] = [
     "status",
     "rodada",
     "preco",
+    MARKET_OPEN_PRICE_COLUMN,
     "pontuacao",
     "media",
     "num_jogos",
@@ -22,7 +23,7 @@ MARKET_COLUMNS: list[str] = [
 ]
 
 FEATURE_COLUMNS: list[str] = [
-    "preco",
+    MARKET_OPEN_PRICE_COLUMN,
     "id_clube",
     "rodada",
     "posicao",
@@ -57,7 +58,11 @@ def build_prediction_frame(season_df: pd.DataFrame, target_round: int) -> pd.Dat
     return _add_prior_features(candidates, history)
 
 
-def build_training_frame(season_df: pd.DataFrame, target_round: int) -> pd.DataFrame:
+def build_training_frame(
+    season_df: pd.DataFrame,
+    target_round: int,
+    playable_statuses: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     historical_rounds = sorted(
         round_number for round_number in season_df["rodada"].dropna().unique() if round_number < target_round
@@ -65,6 +70,8 @@ def build_training_frame(season_df: pd.DataFrame, target_round: int) -> pd.DataF
 
     for round_number in historical_rounds:
         round_frame = build_prediction_frame(season_df, int(round_number))
+        if playable_statuses is not None:
+            round_frame = round_frame[round_frame["status"].isin(playable_statuses)].copy()
         round_frame["target"] = round_frame["pontuacao"]
         frames.append(round_frame)
 
@@ -98,7 +105,7 @@ def _add_prior_features(candidates: pd.DataFrame, history: pd.DataFrame) -> pd.D
     frame["prior_points_roll3"] = frame["prior_points_roll3"].fillna(frame["prior_points_mean"])
     frame["prior_points_roll5"] = frame["prior_points_roll5"].fillna(frame["prior_points_mean"])
     frame["prior_appearances"] = frame["prior_appearances"].fillna(0)
-    frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame["preco"])
+    frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame[MARKET_OPEN_PRICE_COLUMN])
     frame["prior_variation_mean"] = frame["prior_variation_mean"].fillna(0)
     frame["prior_media"] = frame["prior_media"].fillna(frame["prior_points_mean"])
     frame["prior_num_jogos"] = frame["prior_num_jogos"].fillna(0)
@@ -124,7 +131,7 @@ def _player_history_features(history: pd.DataFrame) -> pd.DataFrame:
             prior_points_mean=("pontuacao", "mean"),
             prior_points_roll3=("pontuacao", lambda values: float(values.tail(3).mean())),
             prior_points_roll5=("pontuacao", lambda values: float(values.tail(5).mean())),
-            prior_price_mean=("preco", "mean"),
+            prior_price_mean=(MARKET_OPEN_PRICE_COLUMN, "mean"),
             prior_variation_mean=("variacao", "mean"),
             prior_media=("media", "last"),
             prior_num_jogos=("num_jogos", "last"),

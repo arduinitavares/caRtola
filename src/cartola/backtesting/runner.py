@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from cartola.backtesting.config import BacktestConfig
+from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import load_season_data
 from cartola.backtesting.features import build_prediction_frame, build_training_frame
 from cartola.backtesting.metrics import build_summary
@@ -56,7 +56,7 @@ def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) 
 
     max_round = _max_round(data)
     for round_number in range(config.start_round, max_round + 1):
-        training = build_training_frame(data, round_number)
+        training = build_training_frame(data, round_number, playable_statuses=config.playable_statuses)
         candidates = build_prediction_frame(data, round_number)
         candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy()
 
@@ -69,7 +69,7 @@ def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) 
         forest_model = RandomForestPointPredictor(random_seed=config.random_seed).fit(training)
         scored_candidates["baseline_score"] = baseline_model.predict(scored_candidates)
         scored_candidates["random_forest_score"] = forest_model.predict(scored_candidates)
-        scored_candidates["price_score"] = scored_candidates["preco"].astype(float)
+        scored_candidates["price_score"] = scored_candidates[MARKET_OPEN_PRICE_COLUMN].astype(float)
         prediction_frames.append(scored_candidates.copy())
 
         for strategy, score_column in _strategies().items():

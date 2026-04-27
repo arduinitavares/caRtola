@@ -15,6 +15,7 @@ def _candidates():
                     "apelido": f"{pos}-{offset}",
                     "posicao": pos,
                     "preco": 5.0 + offset,
+                    "preco_pre_rodada": 5.0 + offset,
                     "predicted_points": 10.0 - offset,
                     "pontuacao": 7.0 - offset,
                 }
@@ -46,6 +47,18 @@ def test_optimizer_reports_infeasible_budget():
     assert result.selected.empty
 
 
+def test_optimizer_uses_pre_round_price_for_budget():
+    candidates = _candidates()
+    candidates["preco"] = 100.0
+    candidates["preco_pre_rodada"] = 5.0
+
+    result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
+
+    assert result.status == "Optimal"
+    assert result.selected_count == 12
+    assert result.budget_used == 60.0
+
+
 def test_optimizer_returns_empty_result_for_empty_candidates():
     result = optimize_squad(pd.DataFrame(), score_column="predicted_points", config=BacktestConfig())
 
@@ -61,6 +74,7 @@ def test_optimizer_returns_empty_result_for_empty_candidates():
 def test_optimizer_deduplicates_candidates_by_player_before_solving():
     duplicate = _candidates().iloc[[0]].copy()
     duplicate["preco"] = 0.1
+    duplicate["preco_pre_rodada"] = 0.1
     duplicate["predicted_points"] = 1000.0
     candidates = pd.concat([_candidates(), duplicate], ignore_index=True)
 
@@ -69,4 +83,7 @@ def test_optimizer_deduplicates_candidates_by_player_before_solving():
     assert result.status == "Optimal"
     assert result.selected_count == 12
     assert result.selected["id_atleta"].is_unique
-    assert result.selected.loc[result.selected["id_atleta"] == duplicate.iloc[0]["id_atleta"], "preco"].iloc[0] == 5.0
+    assert (
+        result.selected.loc[result.selected["id_atleta"] == duplicate.iloc[0]["id_atleta"], "preco_pre_rodada"].iloc[0]
+        == 5.0
+    )

@@ -53,6 +53,7 @@ def test_normalize_round_frame_drops_index_maps_columns_and_fills_scouts():
     assert normalized.loc[0, "id_atleta"] == 10
     assert normalized.loc[0, "pontuacao"] == 4.5
     assert normalized.loc[0, "num_jogos"] == 1
+    assert normalized.loc[0, "preco_pre_rodada"] == 12.1
     assert "pontos" not in normalized.columns
     assert "jogos" not in normalized.columns
     assert normalized.loc[0, "V"] == 0
@@ -76,6 +77,15 @@ def test_normalize_round_frame_fills_blank_scout_values_with_zero():
 
     assert normalized.loc[0, "G"] == 0
     assert normalized.loc[0, "V"] == 0
+
+
+def test_normalize_round_frame_reconstructs_market_open_price_from_price_variation():
+    raw = _base_raw_round(**{"atletas.preco_num": [15.75], "atletas.variacao_num": [1.25]})
+
+    normalized = normalize_round_frame(raw, source=Path("rodada-5.csv"))
+
+    assert normalized.loc[0, "preco"] == 15.75
+    assert normalized.loc[0, "preco_pre_rodada"] == 14.5
 
 
 def test_normalize_round_frame_rejects_unknown_status():

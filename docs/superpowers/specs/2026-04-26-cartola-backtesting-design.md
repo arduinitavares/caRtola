@@ -79,6 +79,7 @@ The loader reads all `rodada-*.csv` files for the configured season and normaliz
 - `status`
 - `rodada`
 - `preco`
+- `preco_pre_rodada`
 - `pontuacao`
 - `media`
 - `num_jogos`
@@ -91,6 +92,8 @@ Raw 2025 data stores Cartola-style names such as `atletas.status_id`, `atletas.p
 Round CSVs also contain a leading unnamed pandas index column. The loader should drop columns named like `Unnamed: 0` and should also drop any first column whose header is empty after CSV parsing.
 
 Scout availability is per round, not per season. Early round files can have only player/market columns and no scout columns. The loader must align every round to the full normalized schema and fill missing scout columns with zero for the affected round file.
+
+Historical `atletas.preco_num` values are post-round prices in the 2025 CSVs. The backtester must reconstruct the market-open price for the simulated round as `preco_pre_rodada = preco - variacao` and use `preco_pre_rodada`, not raw `preco`, for model features, price benchmarks, and optimizer budget constraints.
 
 Status IDs must be mapped to readable statuses:
 
@@ -121,7 +124,7 @@ For each target round from `start_round` through the final available round:
 4. Filter candidates to playable players: `status in playable_statuses`.
 5. Build features for target-round candidates using only historical rows from earlier rounds.
 6. Predict target-round points for each candidate.
-7. Run the optimizer with predicted points, player prices, positions, and budget.
+7. Run the optimizer with predicted points, market-open player prices, positions, and budget.
 8. Join the selected squad back to actual `pontuacao` from the target round.
 9. Record selected players, predicted points, actual points, budget used, and constraint metadata.
 10. Run the benchmark strategy for the same round and budget.
@@ -140,13 +143,13 @@ Tests must cover that no row from `target_round` or later contributes to rolling
 V1 should prioritize simple, interpretable, leakage-safe features:
 
 - Position code.
-- Current target-round price.
-- Current target-round season average from Cartola (`media`), treated as an available market field.
+- Market-open target-round price reconstructed as `preco_pre_rodada`.
+- Prior season average from Cartola (`prior_media`), computed from the latest historical round before the target round.
 - Number of games and actual appearances before the target round, using `entrou_em_campo` where available.
 - Prior cumulative mean of points.
 - Prior rolling means over 3 and 5 appearances for points.
 - Prior cumulative and rolling means for key scouts.
-- Prior price and price variation summaries.
+- Prior market-open price and prior price variation summaries.
 - Club ID as categorical or encoded numeric feature.
 - Round number.
 

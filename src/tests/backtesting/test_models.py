@@ -42,7 +42,7 @@ def test_random_forest_point_predictor_fit_predict_smoke() -> None:
 def _model_frame() -> pd.DataFrame:
     frame = pd.DataFrame(
         {
-            "preco": [10.0, 12.0, 8.0, 9.0],
+            "preco_pre_rodada": [10.0, 11.0, 8.0, 8.5],
             "id_clube": [10, 10, 20, 20],
             "rodada": [2, 3, 2, 3],
             "posicao": ["ata", "ata", "mei", "mei"],

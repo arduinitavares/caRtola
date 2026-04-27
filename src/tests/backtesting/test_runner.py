@@ -19,7 +19,8 @@ def _tiny_round(round_number: int) -> pd.DataFrame:
                 "posicao": pos,
                 "status": "Provavel",
                 "rodada": round_number,
-                "preco": 5.0,
+                "preco": 5.0 + round_number,
+                "preco_pre_rodada": 5.0,
                 "pontuacao": float(10 - offset + round_number),
                 "media": float(5 + offset),
                 "num_jogos": round_number,
@@ -117,3 +118,13 @@ def test_selected_players_predicted_points_match_strategy_score_column(tmp_path)
     }.items():
         selected = result.selected_players[result.selected_players["strategy"] == strategy]
         assert selected["predicted_points"].equals(selected[score_column])
+
+
+def test_price_strategy_scores_market_open_price_not_post_round_price(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.player_predictions["price_score"].eq(result.player_predictions["preco_pre_rodada"]).all()
+    assert not result.player_predictions["price_score"].eq(result.player_predictions["preco"]).all()

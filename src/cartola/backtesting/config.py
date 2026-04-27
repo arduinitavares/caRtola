@@ -27,6 +27,8 @@ DEFAULT_SCOUT_COLUMNS: tuple[str, ...] = (
     "GC",
 )
 
+MARKET_OPEN_PRICE_COLUMN = "preco_pre_rodada"
+
 STATUS_ID_TO_NAME: Mapping[int, str] = {
     2: "Duvida",
     3: "Suspenso",

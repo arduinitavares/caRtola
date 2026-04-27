@@ -16,6 +16,7 @@ def _season_df() -> pd.DataFrame:
             "posicao": "ata",
             "status": "Provavel",
             "preco": 10,
+            "preco_pre_rodada": 10,
             "pontuacao": 2,
             "media": 2,
             "num_jogos": 1,
@@ -36,6 +37,7 @@ def _season_df() -> pd.DataFrame:
             "posicao": "ata",
             "status": "Provavel",
             "preco": 11,
+            "preco_pre_rodada": 10,
             "pontuacao": 8,
             "media": 5,
             "num_jogos": 2,
@@ -56,6 +58,7 @@ def _season_df() -> pd.DataFrame:
             "posicao": "ata",
             "status": "Provavel",
             "preco": 12,
+            "preco_pre_rodada": 11,
             "pontuacao": 100,
             "media": 36.7,
             "num_jogos": 3,
@@ -76,6 +79,7 @@ def _season_df() -> pd.DataFrame:
             "posicao": "mei",
             "status": "Provavel",
             "preco": 8,
+            "preco_pre_rodada": 8,
             "pontuacao": 4,
             "media": 4,
             "num_jogos": 1,
@@ -96,6 +100,7 @@ def _season_df() -> pd.DataFrame:
             "posicao": "mei",
             "status": "Provavel",
             "preco": 9,
+            "preco_pre_rodada": 8,
             "pontuacao": 6,
             "media": 5,
             "num_jogos": 2,
@@ -116,6 +121,7 @@ def _season_df() -> pd.DataFrame:
             "posicao": "mei",
             "status": "Provavel",
             "preco": 10,
+            "preco_pre_rodada": 9,
             "pontuacao": 7,
             "media": 5.7,
             "num_jogos": 3,
@@ -174,10 +180,36 @@ def test_feature_columns_exist_in_prediction_frame() -> None:
 
 
 def test_feature_columns_exclude_target_round_cumulative_fields() -> None:
+    assert "preco" not in FEATURE_COLUMNS
+    assert "preco_pre_rodada" in FEATURE_COLUMNS
+    assert "pontuacao" not in FEATURE_COLUMNS
+    assert "target" not in FEATURE_COLUMNS
     assert "media" not in FEATURE_COLUMNS
     assert "num_jogos" not in FEATURE_COLUMNS
     assert "prior_media" in FEATURE_COLUMNS
     assert "prior_num_jogos" in FEATURE_COLUMNS
+
+
+def test_training_frame_can_filter_to_playable_statuses() -> None:
+    season_df = _season_df()
+    season_df.loc[(season_df["id_atleta"] == 2) & (season_df["rodada"] == 2), "status"] = "Suspenso"
+
+    frame = build_training_frame(season_df, target_round=3, playable_statuses=("Provavel",))
+
+    assert frame[(frame["id_atleta"] == 2) & (frame["rodada"] == 2)].empty
+    assert not frame["status"].eq("Suspenso").any()
+
+
+def test_prior_features_ignore_rows_where_player_did_not_enter_field() -> None:
+    season_df = _season_df()
+    season_df.loc[(season_df["id_atleta"] == 1) & (season_df["rodada"] == 2), "entrou_em_campo"] = False
+    season_df.loc[(season_df["id_atleta"] == 1) & (season_df["rodada"] == 2), "pontuacao"] = 80
+
+    frame = build_prediction_frame(season_df, target_round=3)
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["prior_points_mean"] == 2
+    assert player["prior_points_roll3"] == 2
 
 
 def test_prior_cumulative_replacements_use_only_prior_rounds() -> None:

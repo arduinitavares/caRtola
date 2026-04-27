@@ -7,7 +7,12 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, POSITION_ID_TO_CODE, STATUS_ID_TO_NAME
+from cartola.backtesting.config import (
+    DEFAULT_SCOUT_COLUMNS,
+    MARKET_OPEN_PRICE_COLUMN,
+    POSITION_ID_TO_CODE,
+    STATUS_ID_TO_NAME,
+)
 
 RAW_COLUMN_RENAMES: Mapping[str, str] = {
     "atletas.rodada_id": "rodada",
@@ -56,6 +61,7 @@ NUMERIC_COLUMNS: tuple[str, ...] = (
     "num_jogos",
     "variacao",
     "minimo_para_valorizar",
+    MARKET_OPEN_PRICE_COLUMN,
     *DEFAULT_SCOUT_COLUMNS,
 )
 
@@ -118,6 +124,7 @@ def normalize_round_frame(frame: pd.DataFrame, source: str | Path) -> pd.DataFra
         normalized["entrou_em_campo"] = normalized["pontuacao"].notna()
 
     _convert_numeric_columns(normalized)
+    _add_market_open_price(normalized)
     return normalized
 
 
@@ -173,6 +180,11 @@ def _convert_numeric_columns(frame: pd.DataFrame) -> None:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
     for column in DEFAULT_SCOUT_COLUMNS:
         frame[column] = frame[column].fillna(0)
+
+
+def _add_market_open_price(frame: pd.DataFrame) -> None:
+    # Raw historical preco is post-round; subtract same-round variation to reconstruct market-open price.
+    frame[MARKET_OPEN_PRICE_COLUMN] = (frame["preco"] - frame["variacao"].fillna(0)).round(2)
 
 
 def _slugify(value: Any) -> str:
