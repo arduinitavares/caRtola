@@ -9,6 +9,7 @@ from cartola.backtesting.data import (
     load_round_file,
     load_season_data,
     normalize_round_frame,
+    played_club_set,
 )
 
 
@@ -218,6 +219,22 @@ def test_load_fixtures_drops_extra_columns(tmp_path):
     assert loaded.columns.tolist() == ["rodada", "id_clube_home", "id_clube_away", "data"]
 
 
+def test_load_fixtures_rejects_file_round_mismatch(tmp_path):
+    fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "rodada": [3],
+            "id_clube_home": [10],
+            "id_clube_away": [20],
+            "data": ["2025-04-05"],
+        }
+    ).to_csv(fixture_dir / "partidas-2.csv", index=False)
+
+    with pytest.raises(ValueError, match="does not match fixture filename"):
+        load_fixtures(2025, project_root=tmp_path)
+
+
 def test_load_fixtures_rejects_missing_required_columns(tmp_path):
     fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
     fixture_dir.mkdir(parents=True)
@@ -255,6 +272,38 @@ def test_load_fixtures_rejects_self_matches(tmp_path):
         load_fixtures(2025, project_root=tmp_path)
 
 
+def test_played_club_set_parses_bool_like_entry_flags():
+    season_df = pd.DataFrame(
+        {
+            "rodada": ["2"] * 12,
+            "id_clube": list(range(10, 22)),
+            "entrou_em_campo": [
+                True,
+                "True",
+                1,
+                "1",
+                False,
+                "False",
+                0,
+                "0",
+                None,
+                pd.NA,
+                float("nan"),
+                "",
+            ],
+        }
+    )
+
+    assert played_club_set(season_df, 2) == {10, 11, 12, 13}
+
+
+def test_played_club_set_rejects_ambiguous_entry_flags():
+    season_df = pd.DataFrame([{"rodada": 2, "id_clube": 10, "entrou_em_campo": "maybe"}])
+
+    with pytest.raises(ValueError, match="Invalid entrou_em_campo values"):
+        played_club_set(season_df, 2)
+
+
 def test_build_round_alignment_report_compares_fixture_and_played_clubs():
     fixtures = pd.DataFrame(
         [
@@ -275,6 +324,41 @@ def test_build_round_alignment_report_compares_fixture_and_played_clubs():
             {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
             {"rodada": 3, "id_clube_home": 10, "id_clube_away": 30, "data": "2025-04-12"},
             {"rodada": 3, "id_clube_home": 50, "id_clube_away": 60, "data": "2025-04-12"},
+        ]
+    )
+
+    report = build_round_alignment_report(fixtures, season_df, official_fixtures=official_fixtures)
+    round_2 = report.loc[report["rodada"] == 2].iloc[0]
+    round_3 = report.loc[report["rodada"] == 3].iloc[0]
+
+    assert bool(round_2["is_valid"]) is True
+    assert bool(round_3["is_valid"]) is False
+    assert round_3["missing_from_fixtures"] == "40"
+    assert round_3["extra_in_fixtures"] == "30"
+    assert round_3["discarded_official_match_count"] == 1
+    assert round_3["discarded_official_clubs"] == "50,60"
+
+
+def test_round_alignment_report_handles_string_round_values():
+    fixtures = pd.DataFrame(
+        [
+            {"rodada": "2", "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
+            {"rodada": "3", "id_clube_home": 10, "id_clube_away": 30, "data": "2025-04-12"},
+        ]
+    )
+    season_df = pd.DataFrame(
+        [
+            {"rodada": "2", "id_clube": 10, "entrou_em_campo": "True"},
+            {"rodada": "2", "id_clube": 20, "entrou_em_campo": "True"},
+            {"rodada": "3", "id_clube": 10, "entrou_em_campo": "True"},
+            {"rodada": "3", "id_clube": 40, "entrou_em_campo": "True"},
+        ]
+    )
+    official_fixtures = pd.DataFrame(
+        [
+            {"rodada": "2", "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
+            {"rodada": "3", "id_clube_home": 10, "id_clube_away": 30, "data": "2025-04-12"},
+            {"rodada": "3", "id_clube_home": 50, "id_clube_away": 60, "data": "2025-04-12"},
         ]
     )
 

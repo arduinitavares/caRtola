@@ -100,10 +100,16 @@ def load_fixtures(season: int, project_root: str | Path = ".") -> pd.DataFrame:
     if not fixture_files:
         raise FileNotFoundError(f"No fixture CSV files found in fixture directory: {fixture_dir}")
 
-    fixtures = pd.concat(
-        (normalize_fixture_frame(pd.read_csv(path), source=path) for path in fixture_files),
-        ignore_index=True,
-    )
+    fixture_frames = []
+    for path in fixture_files:
+        fixture_frame = normalize_fixture_frame(pd.read_csv(path), source=path)
+        file_round = _fixture_round_number(path)
+        mismatched_rounds = sorted(set(fixture_frame.loc[fixture_frame["rodada"] != file_round, "rodada"].tolist()))
+        if mismatched_rounds:
+            raise ValueError(f"Fixture row rodada does not match fixture filename {path}: {mismatched_rounds}")
+        fixture_frames.append(fixture_frame)
+
+    fixtures = pd.concat(fixture_frames, ignore_index=True)
     _validate_fixture_club_entries(fixtures)
     return fixtures
 
@@ -131,9 +137,17 @@ def build_round_alignment_report(
     season_df: pd.DataFrame,
     official_fixtures: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    fixtures = fixtures.copy()
+    season_df = season_df.copy()
+    fixtures["rodada"] = pd.to_numeric(fixtures["rodada"], errors="raise").astype(int)
+    season_df["rodada"] = pd.to_numeric(season_df["rodada"], errors="raise").astype(int)
+    if official_fixtures is not None:
+        official_fixtures = official_fixtures.copy()
+        official_fixtures["rodada"] = pd.to_numeric(official_fixtures["rodada"], errors="raise").astype(int)
+
     rows: list[dict[str, object]] = []
-    fixture_rounds = set(pd.to_numeric(fixtures["rodada"], errors="raise").astype(int).tolist())
-    played_rounds = set(pd.to_numeric(season_df["rodada"], errors="raise").astype(int).tolist())
+    fixture_rounds = set(fixtures["rodada"].tolist())
+    played_rounds = set(season_df["rodada"].tolist())
 
     for round_number in sorted(fixture_rounds | played_rounds):
         round_fixtures = fixtures.loc[fixtures["rodada"] == round_number]
@@ -266,10 +280,36 @@ def _discarded_official_summary(official_fixtures: pd.DataFrame, fixture_clubs: 
 
 
 def played_club_set(season_df: pd.DataFrame, round_number: int) -> set[int]:
-    round_players = season_df.loc[season_df["rodada"] == round_number]
+    round_mask = pd.to_numeric(season_df["rodada"], errors="raise").eq(round_number)
+    round_players = season_df.loc[round_mask]
     if "entrou_em_campo" in round_players.columns:
-        round_players = round_players.loc[round_players["entrou_em_campo"].astype(bool)]
+        round_players = round_players.loc[_entry_flag_mask(round_players["entrou_em_campo"])]
     return set(pd.to_numeric(round_players["id_clube"], errors="raise").dropna().astype(int).tolist())
+
+
+def _entry_flag_mask(series: pd.Series) -> pd.Series:
+    true_values = {True, 1, "1", "true"}
+    false_values = {False, 0, "0", "false", ""}
+    parsed: list[bool] = []
+    invalid_values: list[Any] = []
+
+    for value in series.tolist():
+        if pd.isna(value):
+            parsed.append(False)
+            continue
+
+        comparable = value.strip().lower() if isinstance(value, str) else value
+        if comparable in true_values:
+            parsed.append(True)
+        elif comparable in false_values:
+            parsed.append(False)
+        else:
+            invalid_values.append(value)
+            parsed.append(False)
+
+    if invalid_values:
+        raise ValueError(f"Invalid entrou_em_campo values: {sorted(set(invalid_values), key=repr)}")
+    return pd.Series(parsed, index=series.index)
 
 
 def _format_club_set(values: list[int]) -> str:
