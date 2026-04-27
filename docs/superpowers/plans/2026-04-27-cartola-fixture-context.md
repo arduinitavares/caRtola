@@ -618,6 +618,45 @@ def test_import_thesportsdb_fixtures_writes_one_file_per_round(tmp_path, monkeyp
     assert round_2.to_dict("records") == [
         {"rodada": 2, "id_clube_home": 276, "id_clube_away": 292, "data": "2025-04-05"}
     ]
+
+
+def test_import_thesportsdb_fixtures_rejects_missing_played_clubs_before_writing(tmp_path, monkeypatch):
+    mapping_dir = tmp_path / "data" / "01_raw" / "fixtures"
+    mapping_dir.mkdir(parents=True)
+    (mapping_dir / "club_mapping.csv").write_text(
+        "external_name,id_clube\nSão Paulo,276\nSport Club do Recife,292\nPalmeiras,275\n"
+    )
+    season_df = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube": 276, "entrou_em_campo": True},
+            {"rodada": 2, "id_clube": 292, "entrou_em_campo": True},
+        ]
+    )
+
+    def fake_fetch(round_number: int, season: int, api_key: str, league_id: int) -> list[dict[str, object]]:
+        return [
+            {
+                "intRound": str(round_number),
+                "dateEvent": "2025-04-05",
+                "strHomeTeam": "São Paulo",
+                "strAwayTeam": "Palmeiras",
+            }
+        ]
+
+    monkeypatch.setattr("cartola.backtesting.fixture_import.fetch_thesportsdb_round", fake_fetch)
+
+    with pytest.raises(ValueError, match="Missing Cartola played clubs"):
+        import_thesportsdb_fixtures(
+            season=2025,
+            season_df=season_df,
+            project_root=tmp_path,
+            api_key="test-key",
+            league_id=4351,
+            first_round=2,
+            last_round=2,
+        )
+
+    assert not (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv").exists()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -754,12 +793,18 @@ def import_thesportsdb_fixtures(
             round_number=round_number,
             played_clubs=None,
         )
+        played_clubs = played_club_set(season_df, round_number)
         fixtures = events_to_fixture_frame(
             events,
             mapping,
             round_number=round_number,
-            played_clubs=played_club_set(season_df, round_number),
+            played_clubs=played_clubs,
         )
+        fixture_clubs = set(fixtures["id_clube_home"]) | set(fixtures["id_clube_away"])
+        missing = sorted(played_clubs - fixture_clubs)
+        if missing:
+            raise ValueError(f"Missing Cartola played clubs in round {round_number}: {missing}")
+
         fixtures.to_csv(output_dir / f"partidas-{round_number}.csv", index=False)
         official_frames.append(official_fixtures)
         frames.append(fixtures)
