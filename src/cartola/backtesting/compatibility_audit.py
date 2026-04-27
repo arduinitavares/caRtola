@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import csv
+import json
 import re
 import traceback as traceback_module
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Literal
+
+import pandas as pd
+
+from cartola.backtesting.config import BacktestConfig
+from cartola.backtesting.data import load_season_data
+from cartola.backtesting.features import build_prediction_frame, build_training_frame
+from cartola.backtesting.runner import run_backtest
 
 ROUND_FILE_RE = re.compile(r"^rodada-(\d+)\.csv$")
 EXPECTED_STRATEGIES: tuple[str, ...] = ("baseline", "random_forest", "price")
@@ -126,6 +135,29 @@ class AuditRunResult:
     json_path: Path
 
 
+def run_compatibility_audit(
+    config: AuditConfig,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> AuditRunResult:
+    generated_at = (clock() if clock is not None else datetime.now(UTC)).astimezone(UTC)
+    resolved_config = replace(config, current_year=config.resolved_current_year(clock))
+    seasons = [_audit_one_season(discovery, resolved_config) for discovery in discover_seasons(resolved_config)]
+    csv_path, json_path = write_audit_reports(
+        seasons,
+        resolved_config,
+        generated_at_utc=generated_at.isoformat(),
+    )
+    return AuditRunResult(
+        generated_at_utc=generated_at.isoformat(),
+        project_root=resolved_config.project_root,
+        config=resolved_config,
+        seasons=seasons,
+        csv_path=csv_path,
+        json_path=json_path,
+    )
+
+
 def parse_round_number(path: Path) -> int:
     match = ROUND_FILE_RE.match(path.name)
     if not match:
@@ -239,3 +271,119 @@ def _short_error_message(message: str) -> str:
     if len(one_line) <= CSV_ERROR_MESSAGE_LIMIT:
         return one_line
     return one_line[: CSV_ERROR_MESSAGE_LIMIT - 3] + "..."
+
+
+def _audit_one_season(discovery: SeasonDiscovery, config: AuditConfig) -> SeasonAuditRecord:
+    record = _base_record(discovery, config)
+    if discovery.discovery_error is not None:
+        _mark_failure(record, "discovery", discovery.discovery_error)
+        return record
+
+    try:
+        season_df = load_season_data(discovery.season, project_root=config.project_root)
+    except Exception as exc:  # noqa: BLE001 - audit reports exceptions per season
+        _mark_failure(record, "load", _error_detail("load", exc))
+        return record
+
+    record.load_status = STATUS_OK
+    if discovery.max_round is None or discovery.max_round < config.start_round:
+        record.feature_status = STATUS_NOT_APPLICABLE
+        record.backtest_status = STATUS_SKIPPED
+        return record
+
+    if not _check_feature_compatibility(record, season_df, config):
+        return record
+
+    _run_backtest_stage(record, season_df, config)
+    return record
+
+
+def _check_feature_compatibility(
+    record: SeasonAuditRecord,
+    season_df: pd.DataFrame,
+    config: AuditConfig,
+) -> bool:
+    assert record.last_evaluated_round is not None
+    playable_statuses = BacktestConfig().playable_statuses
+    for target_round in range(config.start_round, record.last_evaluated_round + 1):
+        try:
+            build_training_frame(
+                season_df,
+                target_round,
+                playable_statuses=playable_statuses,
+                fixtures=None,
+            )
+            build_prediction_frame(season_df, target_round, fixtures=None)
+        except Exception as exc:  # noqa: BLE001 - audit reports exceptions per season
+            _mark_failure(record, "feature", _error_detail("feature", exc, target_round=target_round))
+            return False
+
+    record.feature_status = STATUS_OK
+    return True
+
+
+def _run_backtest_stage(
+    record: SeasonAuditRecord,
+    season_df: pd.DataFrame,
+    config: AuditConfig,
+) -> None:
+    _ = run_backtest
+    _ = season_df
+    _ = config
+    record.backtest_status = STATUS_SKIPPED
+
+
+def _mark_failure(record: SeasonAuditRecord, stage: str, error_detail: ErrorDetail) -> None:
+    if stage == "load":
+        record.load_status = STATUS_FAILED
+        record.feature_status = STATUS_SKIPPED
+        record.backtest_status = STATUS_SKIPPED
+    elif stage == "feature":
+        record.feature_status = STATUS_FAILED
+        record.backtest_status = STATUS_SKIPPED
+    elif stage == "discovery":
+        record.load_status = STATUS_SKIPPED
+        record.feature_status = STATUS_SKIPPED
+        record.backtest_status = STATUS_SKIPPED
+    _apply_error(record, stage, error_detail)
+
+
+def _apply_error(record: SeasonAuditRecord, stage: str, error_detail: ErrorDetail) -> None:
+    record.error_stage = stage
+    record.error_type = error_detail.exception_type
+    record.error_message = _short_error_message(error_detail.message)
+    record.error_detail = error_detail
+
+
+def write_audit_reports(
+    seasons: list[SeasonAuditRecord],
+    config: AuditConfig,
+    *,
+    generated_at_utc: str,
+) -> tuple[Path, Path]:
+    output_dir = config.project_root / config.output_root
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "compatibility_audit.csv"
+    json_path = output_dir / "compatibility_audit.json"
+
+    rows = [season.to_csv_row() for season in seasons]
+    fieldnames = list(rows[0]) if rows else list(SeasonAuditRecord.__dataclass_fields__)
+    with csv_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    payload = {
+        "generated_at_utc": generated_at_utc,
+        "config": _config_json(config),
+        "seasons": [season.to_json_object() for season in seasons],
+    }
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return csv_path, json_path
+
+
+def _config_json(config: AuditConfig) -> dict[str, object]:
+    payload = asdict(config)
+    payload["project_root"] = str(config.project_root)
+    payload["output_root"] = str(config.output_root)
+    return payload
