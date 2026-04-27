@@ -7,7 +7,7 @@ import pandas as pd
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import load_season_data
 from cartola.backtesting.features import build_prediction_frame, build_training_frame
-from cartola.backtesting.metrics import build_summary
+from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
 
@@ -43,6 +43,7 @@ class BacktestResult:
     selected_players: pd.DataFrame
     player_predictions: pd.DataFrame
     summary: pd.DataFrame
+    diagnostics: pd.DataFrame
 
 
 def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) -> BacktestResult:
@@ -99,18 +100,28 @@ def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) 
     selected_players = _concat_or_empty(selected_frames)
     player_predictions = _concat_or_empty(prediction_frames)
     summary = build_summary(round_results, benchmark_strategy="price")
+    diagnostics = build_diagnostics(
+        round_results,
+        selected_players,
+        player_predictions,
+        benchmark_strategy="price",
+        budget=config.budget,
+        random_seed=config.random_seed,
+    )
 
     round_results = _normalize_float_outputs(round_results)
     selected_players = _normalize_float_outputs(selected_players)
     player_predictions = _normalize_float_outputs(player_predictions)
     summary = _normalize_float_outputs(summary)
+    diagnostics = _normalize_float_outputs(diagnostics)
 
-    _write_outputs(config, round_results, selected_players, player_predictions, summary)
+    _write_outputs(config, round_results, selected_players, player_predictions, summary, diagnostics)
     return BacktestResult(
         round_results=round_results,
         selected_players=selected_players,
         player_predictions=player_predictions,
         summary=summary,
+        diagnostics=diagnostics,
     )
 
 
@@ -174,6 +185,7 @@ def _write_outputs(
     selected_players: pd.DataFrame,
     player_predictions: pd.DataFrame,
     summary: pd.DataFrame,
+    diagnostics: pd.DataFrame,
 ) -> None:
     output_path = config.output_path
     output_path.mkdir(parents=True, exist_ok=True)
@@ -181,3 +193,4 @@ def _write_outputs(
     selected_players.to_csv(output_path / "selected_players.csv", index=False, float_format=CSV_FLOAT_FORMAT)
     player_predictions.to_csv(output_path / "player_predictions.csv", index=False, float_format=CSV_FLOAT_FORMAT)
     summary.to_csv(output_path / "summary.csv", index=False, float_format=CSV_FLOAT_FORMAT)
+    diagnostics.to_csv(output_path / "diagnostics.csv", index=False, float_format=CSV_FLOAT_FORMAT)

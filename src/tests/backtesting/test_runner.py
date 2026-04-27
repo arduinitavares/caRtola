@@ -45,6 +45,7 @@ def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     assert (tmp_path / "data/08_reporting/backtests/2025/selected_players.csv").exists()
     assert (tmp_path / "data/08_reporting/backtests/2025/player_predictions.csv").exists()
     assert (tmp_path / "data/08_reporting/backtests/2025/summary.csv").exists()
+    assert (tmp_path / "data/08_reporting/backtests/2025/diagnostics.csv").exists()
 
 
 def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_path):
@@ -67,6 +68,14 @@ def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_pa
     }.issubset(result.player_predictions.columns)
     assert len(result.player_predictions) == 18
     assert set(result.summary["strategy"]) == {"baseline", "random_forest", "price"}
+    assert {
+        "section",
+        "strategy",
+        "position",
+        "metric",
+        "value",
+    }.issubset(result.diagnostics.columns)
+    assert not result.diagnostics.empty
 
 
 def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path, monkeypatch):

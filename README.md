@@ -30,6 +30,7 @@ Os resultados são gravados em `data/08_reporting/backtests/2025/`:
 
 ```bash
 sed -n '1,20p' data/08_reporting/backtests/2025/summary.csv
+sed -n '1,40p' data/08_reporting/backtests/2025/diagnostics.csv
 ```
 
 ## ✅ Qualidade
