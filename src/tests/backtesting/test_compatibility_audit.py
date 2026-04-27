@@ -203,3 +203,87 @@ def test_max_round_before_start_round_marks_feature_not_applicable(
     assert record.feature_status == "not_applicable"
     assert record.backtest_status == "skipped"
     assert record.evaluated_rounds == 0
+
+
+def test_backtest_stage_uses_isolated_output_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for round_number in range(1, 6):
+        _touch_round(tmp_path, 2025, f"rodada-{round_number}.csv")
+
+    observed_configs: list[BacktestConfig] = []
+    monkeypatch.setattr(audit, "load_season_data", lambda season, project_root: _season_frame(range(1, 6)))
+    monkeypatch.setattr(audit, "build_training_frame", lambda season_df, target_round, playable_statuses, fixtures: pd.DataFrame())
+    monkeypatch.setattr(audit, "build_prediction_frame", lambda season_df, target_round, fixtures: pd.DataFrame())
+
+    def fake_run_backtest(config: BacktestConfig) -> SimpleNamespace:
+        observed_configs.append(config)
+        return _fake_backtest_result(
+            pd.DataFrame(
+                [
+                    {"strategy": "baseline", "average_actual_points": 10.0},
+                    {"strategy": "random_forest", "average_actual_points": 20.0},
+                    {"strategy": "price", "average_actual_points": 5.0},
+                ]
+            )
+        )
+
+    monkeypatch.setattr(audit, "run_backtest", fake_run_backtest)
+
+    result = audit.run_compatibility_audit(
+        audit.AuditConfig(project_root=tmp_path, current_year=2026, output_root=Path("data/08_reporting/backtests/compatibility"))
+    )
+
+    assert observed_configs == [
+        BacktestConfig(
+            season=2025,
+            start_round=5,
+            project_root=tmp_path,
+            output_root=Path("data/08_reporting/backtests/compatibility/runs"),
+            fixture_mode="none",
+        )
+    ]
+    assert result.seasons[0].backtest_status == "ok"
+    assert result.seasons[0].baseline_avg_points == 10.0
+    assert result.seasons[0].random_forest_avg_points == 20.0
+    assert result.seasons[0].price_avg_points == 5.0
+
+
+def test_missing_strategy_metric_rows_are_null_without_failing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for round_number in range(1, 6):
+        _touch_round(tmp_path, 2025, f"rodada-{round_number}.csv")
+
+    monkeypatch.setattr(audit, "load_season_data", lambda season, project_root: _season_frame(range(1, 6)))
+    monkeypatch.setattr(audit, "build_training_frame", lambda season_df, target_round, playable_statuses, fixtures: pd.DataFrame())
+    monkeypatch.setattr(audit, "build_prediction_frame", lambda season_df, target_round, fixtures: pd.DataFrame())
+    monkeypatch.setattr(
+        audit,
+        "run_backtest",
+        lambda config: _fake_backtest_result(pd.DataFrame([{"strategy": "baseline", "average_actual_points": 10.0}])),
+    )
+
+    result = audit.run_compatibility_audit(audit.AuditConfig(project_root=tmp_path, current_year=2026))
+
+    record = result.seasons[0]
+    assert record.backtest_status == "ok"
+    assert record.baseline_avg_points == 10.0
+    assert record.random_forest_avg_points is None
+    assert record.price_avg_points is None
+    assert "missing expected strategy metrics" in "; ".join(record.notes)
+
+
+def test_backtest_failure_records_error_and_keeps_metrics_null(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for round_number in range(1, 6):
+        _touch_round(tmp_path, 2025, f"rodada-{round_number}.csv")
+
+    monkeypatch.setattr(audit, "load_season_data", lambda season, project_root: _season_frame(range(1, 6)))
+    monkeypatch.setattr(audit, "build_training_frame", lambda season_df, target_round, playable_statuses, fixtures: pd.DataFrame())
+    monkeypatch.setattr(audit, "build_prediction_frame", lambda season_df, target_round, fixtures: pd.DataFrame())
+    monkeypatch.setattr(audit, "run_backtest", lambda config: (_ for _ in ()).throw(RuntimeError("backtest broke")))
+
+    result = audit.run_compatibility_audit(audit.AuditConfig(project_root=tmp_path, current_year=2026))
+
+    record = result.seasons[0]
+    assert record.backtest_status == "failed"
+    assert record.error_stage == "backtest"
+    assert record.baseline_avg_points is None
+    assert record.random_forest_avg_points is None
+    assert record.price_avg_points is None

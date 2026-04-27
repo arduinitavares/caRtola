@@ -327,10 +327,56 @@ def _run_backtest_stage(
     season_df: pd.DataFrame,
     config: AuditConfig,
 ) -> None:
-    _ = run_backtest
     _ = season_df
-    _ = config
-    record.backtest_status = STATUS_SKIPPED
+    backtest_config = BacktestConfig(
+        season=record.season,
+        start_round=config.start_round,
+        project_root=config.project_root,
+        output_root=config.output_root / "runs",
+        fixture_mode="none",
+    )
+
+    try:
+        result = run_backtest(backtest_config)
+    except Exception as exc:  # noqa: BLE001 - audit reports exceptions per season
+        _mark_failure(record, "backtest", _error_detail("backtest", exc))
+        return
+
+    record.backtest_status = STATUS_OK
+    _populate_metrics(record, result.summary)
+
+
+def _populate_metrics(record: SeasonAuditRecord, summary: pd.DataFrame) -> None:
+    missing_strategies: list[str] = []
+    for strategy in EXPECTED_STRATEGIES:
+        average = _summary_average_for_strategy(summary, strategy)
+        if average is None:
+            missing_strategies.append(strategy)
+            continue
+
+        if strategy == "baseline":
+            record.baseline_avg_points = average
+        elif strategy == "random_forest":
+            record.random_forest_avg_points = average
+        elif strategy == "price":
+            record.price_avg_points = average
+
+    if missing_strategies:
+        record.notes.append(f"missing expected strategy metrics: {','.join(missing_strategies)}")
+
+
+def _summary_average_for_strategy(summary: pd.DataFrame, strategy: str) -> float | None:
+    if "strategy" not in summary or "average_actual_points" not in summary:
+        return None
+
+    strategy_rows = summary.loc[summary["strategy"] == strategy, "average_actual_points"]
+    if strategy_rows.empty:
+        return None
+
+    average = strategy_rows.iloc[0]
+    if pd.isna(average):
+        return None
+    return float(average)
 
 
 def _mark_failure(record: SeasonAuditRecord, stage: str, error_detail: ErrorDetail) -> None:
@@ -345,6 +391,8 @@ def _mark_failure(record: SeasonAuditRecord, stage: str, error_detail: ErrorDeta
         record.load_status = STATUS_SKIPPED
         record.feature_status = STATUS_SKIPPED
         record.backtest_status = STATUS_SKIPPED
+    elif stage == "backtest":
+        record.backtest_status = STATUS_FAILED
     _apply_error(record, stage, error_detail)
 
 
