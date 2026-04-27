@@ -28,11 +28,15 @@ FEATURE_COLUMNS: list[str] = [
     "rodada",
     "posicao",
     "prior_appearances",
+    "prior_appearance_rate",
     "prior_points_mean",
     "prior_points_roll3",
     "prior_points_roll5",
+    "prior_points_weighted3",
+    "prior_points_std",
     "prior_price_mean",
     "prior_variation_mean",
+    "club_points_roll3",
     "prior_media",
     "prior_num_jogos",
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
@@ -41,11 +45,15 @@ FEATURE_COLUMNS: list[str] = [
 NUMERIC_PRIOR_COLUMNS: list[str] = [
     "position_points_prior",
     "prior_appearances",
+    "prior_appearance_rate",
     "prior_points_mean",
     "prior_points_roll3",
     "prior_points_roll5",
+    "prior_points_weighted3",
+    "prior_points_std",
     "prior_price_mean",
     "prior_variation_mean",
+    "club_points_roll3",
     "prior_media",
     "prior_num_jogos",
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
@@ -54,8 +62,9 @@ NUMERIC_PRIOR_COLUMNS: list[str] = [
 
 def build_prediction_frame(season_df: pd.DataFrame, target_round: int) -> pd.DataFrame:
     candidates = season_df[season_df["rodada"] == target_round].copy()
-    history = _played_history(season_df, target_round)
-    return _add_prior_features(candidates, history)
+    played_history = _played_history(season_df, target_round)
+    all_history = season_df[season_df["rodada"] < target_round].copy()
+    return _add_prior_features(candidates, played_history, all_history)
 
 
 def build_training_frame(
@@ -91,22 +100,84 @@ def _played_history(season_df: pd.DataFrame, target_round: int) -> pd.DataFrame:
     return history
 
 
-def _add_prior_features(candidates: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
-    frame = candidates.merge(_player_history_features(history), on="id_atleta", how="left")
-    frame = frame.merge(_position_priors(history), on="posicao", how="left")
+def _appearance_history_features(all_history: pd.DataFrame) -> pd.DataFrame:
+    if all_history.empty:
+        return pd.DataFrame(columns=pd.Index(["id_atleta", "prior_appearance_rate"]))
+
+    history = all_history[["id_atleta", "rodada"]].copy()
+    if "entrou_em_campo" in all_history.columns:
+        history["entrou_em_campo"] = all_history["entrou_em_campo"].fillna(False).astype(bool)
+    else:
+        history["entrou_em_campo"] = False
+
+    appearances = (
+        history.groupby("id_atleta")
+        .agg(
+            total_rounds=("rodada", "count"),
+            played_rounds=("entrou_em_campo", "sum"),
+        )
+        .reset_index()
+    )
+    appearances["prior_appearance_rate"] = appearances["played_rounds"] / appearances["total_rounds"]
+    return appearances[["id_atleta", "prior_appearance_rate"]]
+
+
+def _club_history_features(played_history: pd.DataFrame) -> pd.DataFrame:
+    if played_history.empty:
+        return pd.DataFrame(columns=pd.Index(["id_clube", "club_points_roll3"]))
+
+    club_round = _club_round_points(played_history)
+    club_round["club_points_roll3"] = (
+        club_round.groupby("id_clube")["club_round_points"].transform(
+            lambda values: values.rolling(3, min_periods=1).mean()
+        )
+    )
+    return club_round.groupby("id_clube", as_index=False).agg(
+        club_points_roll3=("club_points_roll3", "last")
+    )
+
+
+def _global_club_points_prior(played_history: pd.DataFrame) -> float:
+    if played_history.empty:
+        return 0.0
+    return float(_club_round_points(played_history)["club_round_points"].mean())
+
+
+def _club_round_points(played_history: pd.DataFrame) -> pd.DataFrame:
+    return (
+        played_history.groupby(["id_clube", "rodada"], as_index=False)
+        .agg(club_round_points=("pontuacao", "sum"))
+        .sort_values(["id_clube", "rodada"])
+    )
+
+
+def _add_prior_features(
+    candidates: pd.DataFrame,
+    played_history: pd.DataFrame,
+    all_history: pd.DataFrame,
+) -> pd.DataFrame:
+    frame = candidates.merge(_player_history_features(played_history), on="id_atleta", how="left")
+    frame = frame.merge(_position_priors(played_history), on="posicao", how="left")
+    frame = frame.merge(_appearance_history_features(all_history), on="id_atleta", how="left")
+    frame = frame.merge(_club_history_features(played_history), on="id_clube", how="left")
 
     for column in NUMERIC_PRIOR_COLUMNS:
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
 
-    global_points_prior = float(history["pontuacao"].mean()) if not history.empty else 0.0
+    global_points_prior = float(played_history["pontuacao"].mean()) if not played_history.empty else 0.0
+    global_club_points_prior = _global_club_points_prior(played_history)
     frame["position_points_prior"] = frame["position_points_prior"].fillna(global_points_prior)
     frame["prior_points_mean"] = frame["prior_points_mean"].fillna(frame["position_points_prior"])
     frame["prior_points_roll3"] = frame["prior_points_roll3"].fillna(frame["prior_points_mean"])
     frame["prior_points_roll5"] = frame["prior_points_roll5"].fillna(frame["prior_points_mean"])
+    frame["prior_points_weighted3"] = frame["prior_points_weighted3"].fillna(frame["prior_points_mean"])
+    frame["prior_points_std"] = frame["prior_points_std"].fillna(0.0)
     frame["prior_appearances"] = frame["prior_appearances"].fillna(0)
+    frame["prior_appearance_rate"] = frame["prior_appearance_rate"].fillna(1.0)
     frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame[MARKET_OPEN_PRICE_COLUMN])
     frame["prior_variation_mean"] = frame["prior_variation_mean"].fillna(0)
+    frame["club_points_roll3"] = frame["club_points_roll3"].fillna(global_club_points_prior)
     frame["prior_media"] = frame["prior_media"].fillna(frame["prior_points_mean"])
     frame["prior_num_jogos"] = frame["prior_num_jogos"].fillna(0)
 
@@ -131,6 +202,8 @@ def _player_history_features(history: pd.DataFrame) -> pd.DataFrame:
             prior_points_mean=("pontuacao", "mean"),
             prior_points_roll3=("pontuacao", lambda values: float(values.tail(3).mean())),
             prior_points_roll5=("pontuacao", lambda values: float(values.tail(5).mean())),
+            prior_points_weighted3=("pontuacao", _weighted_recent_mean),
+            prior_points_std=("pontuacao", "std"),
             prior_price_mean=(MARKET_OPEN_PRICE_COLUMN, "mean"),
             prior_variation_mean=("variacao", "mean"),
             prior_media=("media", "last"),
@@ -161,6 +234,15 @@ def _scout_delta_frame(history: pd.DataFrame, scout_columns: list[str]) -> pd.Da
     return deltas
 
 
+def _weighted_recent_mean(values: pd.Series) -> float:
+    recent_values = [float(value) for value in values.dropna().tail(3).to_list()]
+    if not recent_values:
+        return float("nan")
+    weights = [0.2, 0.3, 0.5][-len(recent_values):]
+    weighted_sum = sum(value * weight for value, weight in zip(recent_values, weights, strict=True))
+    return float(weighted_sum / sum(weights))
+
+
 def _player_feature_columns() -> list[str]:
     return [
         "id_atleta",
@@ -168,6 +250,8 @@ def _player_feature_columns() -> list[str]:
         "prior_points_mean",
         "prior_points_roll3",
         "prior_points_roll5",
+        "prior_points_weighted3",
+        "prior_points_std",
         "prior_price_mean",
         "prior_variation_mean",
         "prior_media",

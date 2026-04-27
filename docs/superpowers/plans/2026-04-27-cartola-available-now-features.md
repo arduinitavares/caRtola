@@ -376,8 +376,8 @@ Expected: `1 passed`.
 **Files:**
 - Modify: `/Users/aaat/projects/caRtola/.worktrees/cartola-available-now-features/src/cartola/backtesting/features.py`
 - Modify: `/Users/aaat/projects/caRtola/.worktrees/cartola-available-now-features/src/tests/backtesting/test_features.py`
-- Regenerate: `/Users/aaat/projects/caRtola/.worktrees/cartola-available-now-features/data/08_reporting/backtests/2025/summary.csv`
-- Regenerate: `/Users/aaat/projects/caRtola/.worktrees/cartola-available-now-features/data/08_reporting/backtests/2025/diagnostics.csv`
+- Regenerate ignored output: `/Users/aaat/projects/caRtola/.worktrees/cartola-available-now-features/data/08_reporting/backtests/2025/summary.csv`
+- Regenerate ignored output: `/Users/aaat/projects/caRtola/.worktrees/cartola-available-now-features/data/08_reporting/backtests/2025/diagnostics.csv`
 
 - [ ] **Step 1: Run all feature tests**
 
@@ -446,7 +446,7 @@ Expected: changes are limited to feature implementation, feature tests, and rege
 Run:
 
 ```bash
-git add src/cartola/backtesting/features.py src/tests/backtesting/test_features.py data/08_reporting/backtests/2025
+git add docs/superpowers/plans/2026-04-27-cartola-available-now-features.md src/cartola/backtesting/features.py src/tests/backtesting/test_features.py src/tests/backtesting/test_models.py
 git commit -m "feat: add weighted form, appearance rate, volatility, and club form features"
 ```
 

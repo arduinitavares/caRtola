@@ -1,6 +1,7 @@
 import warnings
 
 import pandas as pd
+import pytest
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
 from cartola.backtesting.features import FEATURE_COLUMNS, build_prediction_frame, build_training_frame
@@ -150,6 +151,69 @@ def test_prediction_features_use_only_prior_rounds() -> None:
     assert player["prior_points_roll3"] == 5
     assert player["prior_G_mean"] == 0.5
     assert player["pontuacao"] == 100
+
+
+def test_prior_points_weighted3_weights_recent_rounds_higher() -> None:
+    season_df = _season_df()
+    next_round = season_df[season_df["rodada"] == 3].copy()
+    next_round["rodada"] = 4
+    season_df = pd.concat([season_df, next_round], ignore_index=True)
+    season_df.loc[season_df["id_atleta"].eq(1), "pontuacao"] = [2, 4, 10, 999]
+
+    frame = build_prediction_frame(season_df, target_round=4)
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["prior_points_weighted3"] == pytest.approx(6.6)
+
+
+def test_prior_points_std_measures_volatility() -> None:
+    season_df = _season_df()
+    season_df.loc[season_df["id_atleta"].eq(1), "pontuacao"] = [0, 10, 999]
+    season_df.loc[season_df["id_atleta"].eq(2), "pontuacao"] = [5, 5, 999]
+
+    frame = build_prediction_frame(season_df, target_round=3)
+    volatile_player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+    steady_player = frame.loc[frame["id_atleta"] == 2].iloc[0]
+
+    assert volatile_player["prior_points_std"] == pytest.approx(7.0710678119)
+    assert steady_player["prior_points_std"] == 0
+
+
+def test_prior_appearance_rate_counts_dnp_correctly() -> None:
+    season_df = _season_df()
+    round_4 = season_df[season_df["rodada"] == 3].copy()
+    round_4["rodada"] = 4
+    round_5 = season_df[season_df["rodada"] == 3].copy()
+    round_5["rodada"] = 5
+    season_df = pd.concat([season_df, round_4, round_5], ignore_index=True)
+    season_df.loc[season_df["id_atleta"].eq(1), "entrou_em_campo"] = [
+        True,
+        False,
+        True,
+        True,
+        True,
+    ]
+
+    frame = build_prediction_frame(season_df, target_round=5)
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["prior_appearance_rate"] == pytest.approx(0.75)
+
+
+def test_club_points_roll3_captures_team_form() -> None:
+    season_df = _season_df()
+    next_round = season_df[season_df["rodada"] == 3].copy()
+    next_round["rodada"] = 4
+    season_df = pd.concat([season_df, next_round], ignore_index=True)
+    season_df.loc[season_df["id_atleta"].eq(1), "pontuacao"] = [10, 20, 30, 999]
+    season_df.loc[season_df["id_atleta"].eq(2), "pontuacao"] = [90, 60, 30, 999]
+
+    frame = build_prediction_frame(season_df, target_round=4)
+    club_10_player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+    club_20_player = frame.loc[frame["id_atleta"] == 2].iloc[0]
+
+    assert club_10_player["club_points_roll3"] == pytest.approx(20)
+    assert club_20_player["club_points_roll3"] == pytest.approx(60)
 
 
 def test_prior_scout_features_use_per_round_deltas_from_cumulative_scouts() -> None:
