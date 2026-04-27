@@ -45,6 +45,20 @@ sed -n '1,20p' data/08_reporting/backtests/2025/summary.csv
 sed -n '1,40p' data/08_reporting/backtests/2025/diagnostics.csv
 ```
 
+Para auditar a compatibilidade do backtest em todas as temporadas locais:
+
+```bash
+uv run python scripts/audit_backtest_compatibility.py
+```
+
+O comando usa `fixture_mode=none` e grava os relatórios em:
+
+- `data/08_reporting/backtests/compatibility/season_compatibility.csv`
+- `data/08_reporting/backtests/compatibility/season_compatibility.json`
+- execuções isoladas em `data/08_reporting/backtests/compatibility/runs/{season}/`
+
+As execuções isoladas não sobrescrevem `data/08_reporting/backtests/{season}/`.
+
 ## ✅ Qualidade
 
 O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:

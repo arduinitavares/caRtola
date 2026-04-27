@@ -344,3 +344,57 @@ def test_partial_current_metrics_are_recorded_but_not_comparable(
     assert record.season_status == "partial_current"
     assert record.metrics_comparable is False
     assert record.random_forest_avg_points == 2.0
+
+
+def test_parse_args_accepts_current_year_and_output_root() -> None:
+    args = audit.parse_args(
+        [
+            "--project-root",
+            "/tmp/cartola",
+            "--start-round",
+            "6",
+            "--complete-round-threshold",
+            "20",
+            "--expected-complete-rounds",
+            "22",
+            "--current-year",
+            "2026",
+            "--output-root",
+            "/tmp/audit",
+        ]
+    )
+
+    assert args.project_root == Path("/tmp/cartola")
+    assert args.start_round == 6
+    assert args.complete_round_threshold == 20
+    assert args.expected_complete_rounds == 22
+    assert args.current_year == 2026
+    assert args.output_root == Path("/tmp/audit")
+
+
+def test_main_runs_audit_and_prints_report_paths(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    observed_configs: list[audit.AuditConfig] = []
+
+    def fake_run(config: audit.AuditConfig) -> audit.AuditRunResult:
+        observed_configs.append(config)
+        csv_path = tmp_path / "season_compatibility.csv"
+        json_path = tmp_path / "season_compatibility.json"
+        return audit.AuditRunResult(
+            generated_at_utc="2026-04-27T00:00:00Z",
+            project_root=config.project_root,
+            config=config,
+            seasons=[],
+            csv_path=csv_path,
+            json_path=json_path,
+        )
+
+    monkeypatch.setattr(audit, "run_compatibility_audit", fake_run)
+
+    exit_code = audit.main(["--project-root", str(tmp_path), "--current-year", "2026"])
+
+    assert exit_code == 0
+    assert observed_configs == [audit.AuditConfig(project_root=tmp_path, current_year=2026)]
+    output = capsys.readouterr().out
+    assert "Compatibility audit complete" in output
+    assert "season_compatibility.csv" in output
+    assert "season_compatibility.json" in output

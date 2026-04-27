@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import traceback as traceback_module
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, Sequence
 
 import pandas as pd
 
@@ -180,6 +181,37 @@ def run_compatibility_audit(
         csv_path=csv_path,
         json_path=json_path,
     )
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the Cartola multi-season backtest compatibility audit.")
+    parser.add_argument("--project-root", type=Path, default=Path("."))
+    parser.add_argument("--start-round", type=int, default=5)
+    parser.add_argument("--complete-round-threshold", type=int, default=38)
+    parser.add_argument("--expected-complete-rounds", type=int, default=38)
+    parser.add_argument("--current-year", type=int, default=None)
+    parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/backtests/compatibility"))
+    return parser.parse_args(argv)
+
+
+def config_from_args(args: argparse.Namespace) -> AuditConfig:
+    return AuditConfig(
+        project_root=args.project_root,
+        start_round=args.start_round,
+        complete_round_threshold=args.complete_round_threshold,
+        expected_complete_rounds=args.expected_complete_rounds,
+        current_year=args.current_year,
+        output_root=args.output_root,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    config = config_from_args(parse_args(argv))
+    result = run_compatibility_audit(config)
+    print("Compatibility audit complete")
+    print(f"CSV: {result.csv_path}")
+    print(f"JSON: {result.json_path}")
+    return 0
 
 
 def parse_round_number(path: Path) -> int:
