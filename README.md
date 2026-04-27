@@ -26,6 +26,16 @@ Se estiver usando Poetry, o comando equivalente é:
 poetry run python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100
 ```
 
+## ✅ Qualidade
+
+O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:
+
+```bash
+poetry run scripts/pyrepo-check --all
+```
+
+Esse comando roda Ruff, ty, Bandit e pytest usando a configuração versionada neste repositório.
+
 ## 🧑‍🏫 Tutoriais
 
 Estes são alguns tutoriais que escrevemos. Contribuições são sempre bem vindas!

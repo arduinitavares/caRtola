@@ -5,7 +5,10 @@ from os.path import exists, join
 import pandas as pd
 import requests
 
-data_json = requests.get("https://api.cartolafc.globo.com/atletas/mercado").json()
+data_json = requests.get(
+    "https://api.cartolafc.globo.com/atletas/mercado",
+    timeout=30,
+).json()
 
 df_atletas = pd.DataFrame(data_json["atletas"])
 df_atletas = df_atletas.join(pd.DataFrame(df_atletas.pop("scout").values.tolist()))

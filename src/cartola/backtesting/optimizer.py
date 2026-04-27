@@ -24,10 +24,11 @@ def optimize_squad(candidates: pd.DataFrame, score_column: str, config: Backtest
     if candidates.empty:
         return _empty_result("Empty", config.formation_name, candidates)
 
-    player_rows = candidates.drop_duplicates(subset=["id_atleta"], keep="first").reset_index(drop=True)
+    player_rows = candidates.loc[~candidates["id_atleta"].duplicated()].copy()
+    player_rows.index = range(len(player_rows))
     variables = {
-        row.Index: pulp.LpVariable(f"player_{row.Index}_{row.id_atleta}", cat=pulp.LpBinary)
-        for row in player_rows.itertuples()
+        index: pulp.LpVariable(f"player_{index}_{player_rows.loc[index, 'id_atleta']}", cat=pulp.LpBinary)
+        for index in player_rows.index
     }
 
     problem = pulp.LpProblem("CartolaSquadOptimizer", pulp.LpMaximize)
@@ -52,7 +53,8 @@ def optimize_squad(candidates: pd.DataFrame, score_column: str, config: Backtest
         return _empty_result(status, config.formation_name, candidates)
 
     selected_indexes = [index for index, variable in variables.items() if pulp.value(variable) == 1]
-    selected = player_rows.loc[selected_indexes].reset_index(drop=True)
+    selected = player_rows.loc[selected_indexes].copy()
+    selected.index = range(len(selected))
     budget_used = float(selected["preco"].sum())
     predicted_points = float(selected[score_column].sum())
     actual_points = float(selected["pontuacao"].sum()) if "pontuacao" in selected.columns else 0.0

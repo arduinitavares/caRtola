@@ -5,7 +5,11 @@ generated using Kedro 0.18.2
 import pandas as pd
 
 
-def merge_datasets(df_scouts: pd.DataFrame, df_players: pd.DataFrame, df_teams: pd.DataFrame) -> pd.DataFrame:
+def merge_datasets(
+    df_scouts: pd.DataFrame,
+    df_players: pd.DataFrame,
+    df_teams: pd.DataFrame,
+) -> dict[str, pd.DataFrame]:
     df_players = df_players.drop(columns="ClubeID")
     df_teams = df_teams.drop(columns="Abreviacao")
     return {
