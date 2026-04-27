@@ -66,6 +66,19 @@ def test_discover_seasons_records_malformed_round_filename(tmp_path: Path) -> No
     assert "Invalid round CSV filename" in seasons[0].discovery_error.message
 
 
+def test_discovery_failure_marks_load_failed_and_metrics_not_comparable(tmp_path: Path) -> None:
+    _touch_round(tmp_path, 2025, "rodada-final.csv")
+
+    result = audit.run_compatibility_audit(audit.AuditConfig(project_root=tmp_path, current_year=2026))
+
+    record = result.seasons[0]
+    assert record.error_stage == "discovery"
+    assert record.load_status == "failed"
+    assert record.feature_status == "skipped"
+    assert record.backtest_status == "skipped"
+    assert record.metrics_comparable is False
+
+
 def test_parse_round_number_rejects_zero_and_non_matching_names() -> None:
     with pytest.raises(ValueError, match="positive"):
         audit.parse_round_number(Path("rodada-0.csv"))
@@ -93,6 +106,16 @@ def test_classify_season_requires_contiguous_complete_rounds() -> None:
     )
 
 
+def test_classify_current_year_at_complete_threshold_is_complete_historical() -> None:
+    config = audit.AuditConfig(current_year=2026, expected_complete_rounds=38, complete_round_threshold=38)
+
+    status, comparable, notes = audit.classify_season(2026, list(range(1, 39)), config)
+
+    assert status == "complete_historical"
+    assert comparable is True
+    assert notes == []
+
+
 def test_short_error_message_caps_to_configured_limit() -> None:
     message = audit._short_error_message("x" * 350)
 
@@ -100,7 +123,8 @@ def test_short_error_message_caps_to_configured_limit() -> None:
 
 
 def test_load_failure_records_row_and_skips_later_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _touch_round(tmp_path, 2025, "rodada-1.csv")
+    for round_number in range(1, 39):
+        _touch_round(tmp_path, 2025, f"rodada-{round_number}.csv")
 
     def fail_load(season: int, project_root: Path) -> pd.DataFrame:
         raise ValueError(f"bad load {season} {project_root}")
@@ -117,6 +141,7 @@ def test_load_failure_records_row_and_skips_later_stages(tmp_path: Path, monkeyp
     assert record.error_type == "ValueError"
     assert record.error_detail is not None
     assert record.error_detail.stage == "load"
+    assert record.metrics_comparable is False
 
 
 def test_feature_check_covers_every_eligible_target_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -294,6 +319,7 @@ def test_missing_strategy_metric_rows_are_null_without_failing(tmp_path: Path, m
     assert record.baseline_avg_points == 10.0
     assert record.random_forest_avg_points is None
     assert record.price_avg_points is None
+    assert record.metrics_comparable is False
     assert "missing expected strategy metrics" in "; ".join(record.notes)
 
 

@@ -48,7 +48,7 @@ sed -n '1,40p' data/08_reporting/backtests/2025/diagnostics.csv
 Para auditar a compatibilidade do backtest em todas as temporadas locais:
 
 ```bash
-uv run python scripts/audit_backtest_compatibility.py
+uv run --frozen python scripts/audit_backtest_compatibility.py --current-year 2026
 ```
 
 O comando usa `fixture_mode=none` e grava os relatórios em:

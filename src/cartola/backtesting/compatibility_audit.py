@@ -394,6 +394,9 @@ def _run_backtest_stage(
     season_df: pd.DataFrame,
     config: AuditConfig,
 ) -> None:
+    # Intentionally re-run through the normal backtest loading path. The audit's
+    # prior load/feature stages prove compatibility, but the smoke test should
+    # still exercise the same entry path a CLI user runs for this season.
     _ = season_df
     backtest_config = BacktestConfig(
         season=record.season,
@@ -429,6 +432,7 @@ def _populate_metrics(record: SeasonAuditRecord, summary: pd.DataFrame) -> None:
             record.price_avg_points = average
 
     if missing_strategies:
+        record.metrics_comparable = False
         record.notes.append(f"missing expected strategy metrics: {','.join(missing_strategies)}")
 
 
@@ -447,6 +451,7 @@ def _summary_average_for_strategy(summary: pd.DataFrame, strategy: str) -> float
 
 
 def _mark_failure(record: SeasonAuditRecord, stage: str, error_detail: ErrorDetail) -> None:
+    record.metrics_comparable = False
     if stage == "load":
         record.load_status = STATUS_FAILED
         record.feature_status = STATUS_SKIPPED
@@ -455,7 +460,7 @@ def _mark_failure(record: SeasonAuditRecord, stage: str, error_detail: ErrorDeta
         record.feature_status = STATUS_FAILED
         record.backtest_status = STATUS_SKIPPED
     elif stage == "discovery":
-        record.load_status = STATUS_SKIPPED
+        record.load_status = STATUS_FAILED
         record.feature_status = STATUS_SKIPPED
         record.backtest_status = STATUS_SKIPPED
     elif stage == "backtest":
