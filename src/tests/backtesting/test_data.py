@@ -3,7 +3,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from cartola.backtesting.data import load_round_file, load_season_data, normalize_round_frame
+from cartola.backtesting.data import (
+    build_round_alignment_report,
+    load_fixtures,
+    load_round_file,
+    load_season_data,
+    normalize_round_frame,
+)
 
 
 def _base_raw_round(**overrides):
@@ -165,3 +171,124 @@ def test_load_season_data_reports_empty_directory(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="No round CSV files found"):
         load_season_data(2025, project_root=tmp_path)
+
+
+def _write_fixture_round(root: Path, round_number: int, rows: list[dict[str, object]]) -> None:
+    fixture_dir = root / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows, columns=["rodada", "id_clube_home", "id_clube_away", "data"]).to_csv(
+        fixture_dir / f"partidas-{round_number}.csv",
+        index=False,
+    )
+
+
+def test_load_fixtures_reads_and_normalizes_round_files(tmp_path):
+    _write_fixture_round(
+        tmp_path,
+        2,
+        [
+            {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
+            {"rodada": 2, "id_clube_home": 30, "id_clube_away": 40, "data": "2025-04-06"},
+        ],
+    )
+
+    loaded = load_fixtures(2025, project_root=tmp_path)
+
+    assert loaded["rodada"].tolist() == [2, 2]
+    assert loaded["id_clube_home"].tolist() == [10, 30]
+    assert loaded["id_clube_away"].tolist() == [20, 40]
+    assert str(loaded.loc[0, "data"]) == "2025-04-05"
+
+
+def test_load_fixtures_rejects_missing_required_columns(tmp_path):
+    fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_dir.mkdir(parents=True)
+    pd.DataFrame({"rodada": [2], "id_clube_home": [10], "data": ["2025-04-05"]}).to_csv(
+        fixture_dir / "partidas-2.csv",
+        index=False,
+    )
+
+    with pytest.raises(ValueError, match="Missing required fixture columns"):
+        load_fixtures(2025, project_root=tmp_path)
+
+
+def test_load_fixtures_rejects_duplicate_club_appearance_in_round(tmp_path):
+    _write_fixture_round(
+        tmp_path,
+        2,
+        [
+            {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
+            {"rodada": 2, "id_clube_home": 10, "id_clube_away": 30, "data": "2025-04-06"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Duplicate fixture club entries"):
+        load_fixtures(2025, project_root=tmp_path)
+
+
+def test_load_fixtures_rejects_self_matches(tmp_path):
+    _write_fixture_round(
+        tmp_path,
+        2,
+        [{"rodada": 2, "id_clube_home": 10, "id_clube_away": 10, "data": "2025-04-05"}],
+    )
+
+    with pytest.raises(ValueError, match="Fixture rows cannot have the same home and away club"):
+        load_fixtures(2025, project_root=tmp_path)
+
+
+def test_build_round_alignment_report_compares_fixture_and_played_clubs():
+    fixtures = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
+            {"rodada": 3, "id_clube_home": 10, "id_clube_away": 30, "data": "2025-04-12"},
+        ]
+    )
+    season_df = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube": 10, "entrou_em_campo": True},
+            {"rodada": 2, "id_clube": 20, "entrou_em_campo": True},
+            {"rodada": 3, "id_clube": 10, "entrou_em_campo": True},
+            {"rodada": 3, "id_clube": 40, "entrou_em_campo": True},
+        ]
+    )
+    official_fixtures = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
+            {"rodada": 3, "id_clube_home": 10, "id_clube_away": 30, "data": "2025-04-12"},
+            {"rodada": 3, "id_clube_home": 50, "id_clube_away": 60, "data": "2025-04-12"},
+        ]
+    )
+
+    report = build_round_alignment_report(fixtures, season_df, official_fixtures=official_fixtures)
+    round_2 = report.loc[report["rodada"] == 2].iloc[0]
+    round_3 = report.loc[report["rodada"] == 3].iloc[0]
+
+    assert bool(round_2["is_valid"]) is True
+    assert bool(round_3["is_valid"]) is False
+    assert round_3["missing_from_fixtures"] == "40"
+    assert round_3["extra_in_fixtures"] == "30"
+    assert round_3["discarded_official_match_count"] == 1
+    assert round_3["discarded_official_clubs"] == "50,60"
+
+
+def test_build_round_alignment_report_rejects_extra_canonical_fixture_clubs_without_missing_played_clubs():
+    fixtures = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
+            {"rodada": 2, "id_clube_home": 30, "id_clube_away": 40, "data": "2025-04-05"},
+        ]
+    )
+    season_df = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube": 10, "entrou_em_campo": True},
+            {"rodada": 2, "id_clube": 20, "entrou_em_campo": True},
+        ]
+    )
+
+    report = build_round_alignment_report(fixtures, season_df)
+    round_2 = report.loc[report["rodada"] == 2].iloc[0]
+
+    assert bool(round_2["is_valid"]) is False
+    assert round_2["missing_from_fixtures"] == ""
+    assert round_2["extra_in_fixtures"] == "30,40"

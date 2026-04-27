@@ -66,6 +66,8 @@ NUMERIC_COLUMNS: tuple[str, ...] = (
 )
 
 _ROUND_FILE_RE = re.compile(r"rodada-(\d+)\.csv$")
+FIXTURE_REQUIRED_COLUMNS: tuple[str, ...] = ("rodada", "id_clube_home", "id_clube_away", "data")
+_FIXTURE_FILE_RE = re.compile(r"partidas-(\d+)\.csv$")
 
 
 def load_round_file(path: str | Path) -> pd.DataFrame:
@@ -85,6 +87,92 @@ def load_season_data(season: int, project_root: str | Path = ".") -> pd.DataFram
         raise FileNotFoundError(f"No round CSV files found in season directory: {season_dir}")
 
     return pd.concat((load_round_file(path) for path in round_files), ignore_index=True)
+
+
+def load_fixtures(season: int, project_root: str | Path = ".") -> pd.DataFrame:
+    fixture_dir = Path(project_root) / "data" / "01_raw" / "fixtures" / str(season)
+    if not fixture_dir.exists():
+        raise FileNotFoundError(f"Fixture directory not found: {fixture_dir}")
+    if not fixture_dir.is_dir():
+        raise NotADirectoryError(f"Fixture path is not a directory: {fixture_dir}")
+
+    fixture_files = sorted(fixture_dir.glob("partidas-*.csv"), key=_fixture_round_number)
+    if not fixture_files:
+        raise FileNotFoundError(f"No fixture CSV files found in fixture directory: {fixture_dir}")
+
+    fixtures = pd.concat(
+        (normalize_fixture_frame(pd.read_csv(path), source=path) for path in fixture_files),
+        ignore_index=True,
+    )
+    _validate_fixture_club_entries(fixtures)
+    return fixtures
+
+
+def normalize_fixture_frame(frame: pd.DataFrame, source: str | Path) -> pd.DataFrame:
+    source_path = Path(source)
+    normalized = frame.copy()
+    normalized = normalized.drop(columns=[column for column in normalized.columns if _is_saved_index_column(column)])
+
+    missing = [column for column in FIXTURE_REQUIRED_COLUMNS if column not in normalized.columns]
+    if missing:
+        raise ValueError(f"Missing required fixture columns in {source_path}: {missing}")
+
+    for column in ("rodada", "id_clube_home", "id_clube_away"):
+        normalized[column] = pd.to_numeric(normalized[column], errors="raise").astype(int)
+    normalized["data"] = pd.to_datetime(normalized["data"], errors="raise").dt.date
+
+    _validate_fixture_club_entries(normalized)
+    return normalized
+
+
+def build_round_alignment_report(
+    fixtures: pd.DataFrame,
+    season_df: pd.DataFrame,
+    official_fixtures: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    fixture_rounds = set(pd.to_numeric(fixtures["rodada"], errors="raise").astype(int).tolist())
+    played_rounds = set(pd.to_numeric(season_df["rodada"], errors="raise").astype(int).tolist())
+
+    for round_number in sorted(fixture_rounds | played_rounds):
+        round_fixtures = fixtures.loc[fixtures["rodada"] == round_number]
+        fixture_clubs = _fixture_club_set(round_fixtures)
+        played_clubs = played_club_set(season_df, round_number)
+        missing = sorted(played_clubs - fixture_clubs)
+        extra = sorted(fixture_clubs - played_clubs)
+
+        discarded_match_count = 0
+        discarded_clubs: list[int] = []
+        if official_fixtures is not None:
+            round_official = official_fixtures.loc[official_fixtures["rodada"] == round_number]
+            discarded_match_count, discarded_clubs = _discarded_official_summary(round_official, fixture_clubs)
+
+        rows.append(
+            {
+                "rodada": round_number,
+                "fixture_club_count": len(fixture_clubs),
+                "played_club_count": len(played_clubs),
+                "missing_from_fixtures": _format_club_set(missing),
+                "extra_in_fixtures": _format_club_set(extra),
+                "discarded_official_match_count": discarded_match_count,
+                "discarded_official_clubs": _format_club_set(discarded_clubs),
+                "is_valid": not missing and not extra,
+            }
+        )
+
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "rodada",
+            "fixture_club_count",
+            "played_club_count",
+            "missing_from_fixtures",
+            "extra_in_fixtures",
+            "discarded_official_match_count",
+            "discarded_official_clubs",
+            "is_valid",
+        ],
+    )
 
 
 def normalize_round_frame(frame: pd.DataFrame, source: str | Path) -> pd.DataFrame:
@@ -133,6 +221,58 @@ def _round_number(path: Path) -> int:
     if not match:
         raise ValueError(f"Invalid round CSV filename: {path}")
     return int(match.group(1))
+
+
+def _fixture_round_number(path: Path) -> int:
+    match = _FIXTURE_FILE_RE.match(path.name)
+    if not match:
+        raise ValueError(f"Invalid fixture CSV filename: {path}")
+    return int(match.group(1))
+
+
+def _validate_fixture_club_entries(fixtures: pd.DataFrame) -> None:
+    self_matches = fixtures["id_clube_home"] == fixtures["id_clube_away"]
+    if self_matches.any():
+        raise ValueError("Fixture rows cannot have the same home and away club")
+
+    for round_number, round_fixtures in fixtures.groupby("rodada", sort=True):
+        clubs = pd.concat(
+            [round_fixtures["id_clube_home"], round_fixtures["id_clube_away"]],
+            ignore_index=True,
+        )
+        duplicated_clubs = sorted(clubs.loc[clubs.duplicated()].astype(int).unique().tolist())
+        if duplicated_clubs:
+            raise ValueError(f"Duplicate fixture club entries in round {round_number}: {duplicated_clubs}")
+
+
+def _fixture_club_set(fixtures: pd.DataFrame) -> set[int]:
+    if fixtures.empty:
+        return set()
+    clubs = pd.concat([fixtures["id_clube_home"], fixtures["id_clube_away"]], ignore_index=True)
+    return set(pd.to_numeric(clubs, errors="raise").astype(int).tolist())
+
+
+def _discarded_official_summary(official_fixtures: pd.DataFrame, fixture_clubs: set[int]) -> tuple[int, list[int]]:
+    discarded_match_count = 0
+    discarded_clubs: set[int] = set()
+    for _, row in official_fixtures.iterrows():
+        match_clubs = {int(row["id_clube_home"]), int(row["id_clube_away"])}
+        extra_clubs = match_clubs - fixture_clubs
+        if extra_clubs:
+            discarded_match_count += 1
+            discarded_clubs.update(extra_clubs)
+    return discarded_match_count, sorted(discarded_clubs)
+
+
+def played_club_set(season_df: pd.DataFrame, round_number: int) -> set[int]:
+    round_players = season_df.loc[season_df["rodada"] == round_number]
+    if "entrou_em_campo" in round_players.columns:
+        round_players = round_players.loc[round_players["entrou_em_campo"].astype(bool)]
+    return set(pd.to_numeric(round_players["id_clube"], errors="raise").dropna().astype(int).tolist())
+
+
+def _format_club_set(values: list[int]) -> str:
+    return ",".join(str(value) for value in sorted(values))
 
 
 def _is_saved_index_column(column: Any) -> bool:
