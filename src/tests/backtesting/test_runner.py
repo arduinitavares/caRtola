@@ -1,8 +1,12 @@
+from pathlib import Path
+
 import pandas as pd
+import pytest
 from pandas.testing import assert_frame_equal
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
 from cartola.backtesting.runner import run_backtest
+from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
 
 
 def _tiny_round(round_number: int) -> pd.DataFrame:
@@ -34,6 +38,29 @@ def _tiny_round(round_number: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _tiny_fixtures(rounds: range) -> pd.DataFrame:
+    rows = []
+    for round_number in rounds:
+        for home_id in range(1, 18, 2):
+            rows.append(
+                {
+                    "rodada": round_number,
+                    "id_clube_home": home_id,
+                    "id_clube_away": home_id + 1,
+                    "data": "2025-04-26",
+                }
+            )
+    return pd.DataFrame(rows, columns=["rodada", "id_clube_home", "id_clube_away", "data"])
+
+
+def _write_tiny_fixture_files(root: Path, rounds: range) -> None:
+    fixture_dir = root / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_dir.mkdir(parents=True)
+    fixtures = _tiny_fixtures(rounds)
+    for round_number, round_fixtures in fixtures.groupby("rodada", sort=True):
+        round_fixtures.to_csv(fixture_dir / f"partidas-{round_number}.csv", index=False)
+
+
 def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
@@ -46,6 +73,235 @@ def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     assert (tmp_path / "data/08_reporting/backtests/2025/player_predictions.csv").exists()
     assert (tmp_path / "data/08_reporting/backtests/2025/summary.csv").exists()
     assert (tmp_path / "data/08_reporting/backtests/2025/diagnostics.csv").exists()
+
+
+def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    run_backtest(config, season_df=season_df)
+
+    metadata = pd.read_json(tmp_path / "data/08_reporting/backtests/2025/run_metadata.json", typ="series").to_dict()
+    assert metadata["fixture_mode"] == "none"
+    assert metadata["fixture_source_directory"] is None
+    assert metadata["fixture_manifest_paths"] == []
+    assert metadata["fixture_manifest_sha256"] == {}
+    assert metadata["warnings"] == []
+
+
+def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    _write_tiny_fixture_files(tmp_path, range(1, 6))
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.fixture_mode == "none"
+    assert result.metadata.fixture_source_directory is None
+    assert result.metadata.warnings == []
+    assert result.player_predictions["is_home"].eq(0).all()
+
+
+def test_run_backtest_default_none_ignores_explicit_fixtures(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = _tiny_fixtures(range(1, 6))
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    result = run_backtest(config, season_df=season_df, fixtures=fixtures)
+
+    assert result.metadata.fixture_mode == "none"
+    assert result.player_predictions["is_home"].eq(0).all()
+
+
+def test_run_backtest_uses_fixture_files_when_available(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    _write_tiny_fixture_files(tmp_path, range(1, 6))
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
+
+    result = run_backtest(config, season_df=season_df)
+    round_5 = result.player_predictions[result.player_predictions["rodada"] == 5]
+    club_1 = round_5[round_5["id_clube"] == 1].iloc[0]
+    club_2 = round_5[round_5["id_clube"] == 2].iloc[0]
+
+    assert result.metadata.fixture_mode == "exploratory"
+    assert result.metadata.fixture_source_directory == "data/01_raw/fixtures/2025"
+    assert result.metadata.warnings
+    assert club_1["is_home"] == 1
+    assert club_2["is_home"] == 0
+    assert "opponent_club_points_roll3" in result.player_predictions.columns
+
+
+def test_run_backtest_exploratory_without_files_records_no_source(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.fixture_mode == "exploratory"
+    assert result.metadata.fixture_source_directory is None
+    assert "not found" in " ".join(result.metadata.warnings)
+    assert result.player_predictions["is_home"].eq(0).all()
+
+
+def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = _tiny_fixtures(range(1, 6))
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
+
+    result = run_backtest(config, season_df=season_df, fixtures=fixtures)
+    round_5 = result.player_predictions[result.player_predictions["rodada"] == 5]
+    club_1 = round_5[round_5["id_clube"] == 1].iloc[0]
+    club_2 = round_5[round_5["id_clube"] == 2].iloc[0]
+
+    assert club_1["is_home"] == 1
+    assert club_2["is_home"] == 0
+
+
+def test_run_backtest_strict_mode_missing_files_raises_for_first_required_round(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="strict")
+
+    with pytest.raises(FileNotFoundError, match="partidas-1"):
+        run_backtest(config, season_df=season_df)
+
+
+def test_run_backtest_strict_mode_loads_required_rounds_and_records_manifest_metadata(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    observed_calls: list[dict[str, object]] = []
+
+    def fake_load_strict_fixtures(**kwargs: object) -> StrictFixturesLoadResult:
+        observed_calls.append(kwargs)
+        return StrictFixturesLoadResult(
+            fixtures=_tiny_fixtures(range(1, 6)),
+            manifest_paths=[
+                "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json",
+                "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json",
+            ],
+            manifest_sha256={
+                "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "sha-1",
+                "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json": "sha-2",
+            },
+            generator_versions=["fixture_snapshot_v1"],
+        )
+
+    monkeypatch.setattr("cartola.backtesting.runner.load_strict_fixtures", fake_load_strict_fixtures)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="strict")
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert observed_calls == [
+        {
+            "season": 2025,
+            "project_root": tmp_path,
+            "required_rounds": [1, 2, 3, 4, 5],
+        }
+    ]
+    assert result.metadata.fixture_mode == "strict"
+    assert result.metadata.fixture_source_directory == "data/01_raw/fixtures_strict/2025"
+    assert result.metadata.fixture_manifest_paths == [
+        "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json",
+        "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json",
+    ]
+    assert result.metadata.fixture_manifest_sha256 == {
+        "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "sha-1",
+        "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json": "sha-2",
+    }
+    assert result.metadata.generator_versions == ["fixture_snapshot_v1"]
+
+
+def test_run_backtest_rejects_fixture_alignment_gaps(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = pd.DataFrame(
+        [
+            {"rodada": 5, "id_clube_home": 1, "id_clube_away": 2, "data": "2025-04-26"},
+        ],
+        columns=["rodada", "id_clube_home", "id_clube_away", "data"],
+    )
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
+
+    with pytest.raises(ValueError, match="Fixture alignment failed"):
+        run_backtest(config, season_df=season_df, fixtures=fixtures)
+
+
+def test_strict_alignment_policy_exclude_round_removes_invalid_round_before_training(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = _tiny_fixtures(range(1, 6))
+    fixtures = fixtures[fixtures["rodada"] != 3].copy()
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=3,
+        budget=100,
+        fixture_mode="strict",
+        strict_alignment_policy="exclude_round",
+    )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_strict_fixtures",
+        lambda **kwargs: StrictFixturesLoadResult(
+            fixtures=fixtures,
+            manifest_paths=["data/01_raw/fixtures_strict/2025/partidas-1.manifest.json"],
+            manifest_sha256={"data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "abc"},
+            generator_versions=["fixture_snapshot_v1"],
+        ),
+    )
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.excluded_rounds == [3]
+    assert result.metadata.fixture_manifest_paths == ["data/01_raw/fixtures_strict/2025/partidas-1.manifest.json"]
+    assert result.metadata.fixture_manifest_sha256 == {
+        "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "abc"
+    }
+    assert 3 not in set(result.player_predictions["rodada"].dropna().astype(int).tolist())
+    assert 3 not in set(result.round_results["rodada"].dropna().astype(int).tolist())
+
+
+def test_strict_alignment_policy_exclude_round_removes_missing_strict_fixture_round(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=3,
+        budget=100,
+        fixture_mode="strict",
+        strict_alignment_policy="exclude_round",
+    )
+
+    def fake_load_strict_fixtures(**kwargs: object) -> StrictFixturesLoadResult:
+        required_rounds = kwargs["required_rounds"]
+        if 3 in required_rounds:
+            raise FileNotFoundError("partidas-3")
+
+        round_number = required_rounds[0]
+        manifest_path = f"data/01_raw/fixtures_strict/2025/partidas-{round_number}.manifest.json"
+        return StrictFixturesLoadResult(
+            fixtures=_tiny_fixtures(range(round_number, round_number + 1)),
+            manifest_paths=[manifest_path],
+            manifest_sha256={manifest_path: f"sha-{round_number}"},
+            generator_versions=["fixture_snapshot_v1"],
+        )
+
+    monkeypatch.setattr("cartola.backtesting.runner.load_strict_fixtures", fake_load_strict_fixtures)
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.excluded_rounds == [3]
+    assert 3 not in set(result.player_predictions["rodada"].dropna().astype(int).tolist())
+    assert 3 not in set(result.round_results["rodada"].dropna().astype(int).tolist())
+    assert result.metadata.fixture_manifest_paths == [
+        "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json",
+        "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json",
+        "data/01_raw/fixtures_strict/2025/partidas-4.manifest.json",
+        "data/01_raw/fixtures_strict/2025/partidas-5.manifest.json",
+    ]
+    missing_manifest_path = "data/01_raw/fixtures_strict/2025/partidas-3.manifest.json"
+    assert missing_manifest_path not in result.metadata.fixture_manifest_paths
+    assert result.metadata.fixture_manifest_sha256 == {
+        "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "sha-1",
+        "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json": "sha-2",
+        "data/01_raw/fixtures_strict/2025/partidas-4.manifest.json": "sha-4",
+        "data/01_raw/fixtures_strict/2025/partidas-5.manifest.json": "sha-5",
+    }
+    assert result.metadata.generator_versions == ["fixture_snapshot_v1"]
 
 
 def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_path):

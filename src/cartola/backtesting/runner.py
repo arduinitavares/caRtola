@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pandas as pd
 
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
-from cartola.backtesting.data import load_season_data
+from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
 from cartola.backtesting.features import build_prediction_frame, build_training_frame
 from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
+from cartola.backtesting.strict_fixtures import load_strict_fixtures
 
 ROUND_RESULT_COLUMNS: list[str] = [
     "rodada",
@@ -38,27 +40,89 @@ FLOAT_NORMALIZATION_EXCLUDED_COLUMNS: set[str] = {
 
 
 @dataclass(frozen=True)
+class BacktestMetadata:
+    season: int
+    start_round: int
+    max_round: int
+    fixture_mode: str
+    strict_alignment_policy: str
+    fixture_source_directory: str | None
+    fixture_manifest_paths: list[str]
+    fixture_manifest_sha256: dict[str, str]
+    generator_versions: list[str]
+    excluded_rounds: list[int]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
 class BacktestResult:
     round_results: pd.DataFrame
     selected_players: pd.DataFrame
     player_predictions: pd.DataFrame
     summary: pd.DataFrame
     diagnostics: pd.DataFrame
+    metadata: BacktestMetadata
 
 
-def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) -> BacktestResult:
+@dataclass(frozen=True)
+class FixtureLoadForRun:
+    fixtures: pd.DataFrame | None
+    source_directory: str | None
+    manifest_paths: list[str]
+    manifest_sha256: dict[str, str]
+    generator_versions: list[str]
+    excluded_rounds: list[int]
+    warnings: list[str]
+
+
+def run_backtest(
+    config: BacktestConfig,
+    season_df: pd.DataFrame | None = None,
+    fixtures: pd.DataFrame | None = None,
+) -> BacktestResult:
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
+    resolved_fixtures = _resolve_fixtures(config, data, fixtures)
+    fixture_data = resolved_fixtures.fixtures
+    alignment_excluded_rounds = _validate_fixture_alignment(
+        fixture_data,
+        data,
+        policy=config.strict_alignment_policy if config.fixture_mode == "strict" else "fail",
+    )
+    excluded_rounds = sorted({*resolved_fixtures.excluded_rounds, *alignment_excluded_rounds})
+    if excluded_rounds:
+        data = data[~pd.to_numeric(data["rodada"], errors="raise").isin(excluded_rounds)].copy()
 
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
     prediction_frames: list[pd.DataFrame] = []
 
     max_round = _max_round(data)
+    metadata = BacktestMetadata(
+        season=config.season,
+        start_round=config.start_round,
+        max_round=max_round,
+        fixture_mode=config.fixture_mode,
+        strict_alignment_policy=config.strict_alignment_policy,
+        fixture_source_directory=resolved_fixtures.source_directory,
+        fixture_manifest_paths=resolved_fixtures.manifest_paths,
+        fixture_manifest_sha256=resolved_fixtures.manifest_sha256,
+        generator_versions=resolved_fixtures.generator_versions,
+        excluded_rounds=excluded_rounds,
+        warnings=resolved_fixtures.warnings,
+    )
     for round_number in range(config.start_round, max_round + 1):
-        training = build_training_frame(data, round_number, playable_statuses=config.playable_statuses)
-        candidates = build_prediction_frame(data, round_number)
+        if round_number in excluded_rounds:
+            continue
+
+        training = build_training_frame(
+            data,
+            round_number,
+            playable_statuses=config.playable_statuses,
+            fixtures=fixture_data,
+        )
+        candidates = build_prediction_frame(data, round_number, fixtures=fixture_data)
         candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy()
 
         if training.empty or candidates.empty:
@@ -115,13 +179,14 @@ def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) 
     summary = _normalize_float_outputs(summary)
     diagnostics = _normalize_float_outputs(diagnostics)
 
-    _write_outputs(config, round_results, selected_players, player_predictions, summary, diagnostics)
+    _write_outputs(config, round_results, selected_players, player_predictions, summary, diagnostics, metadata)
     return BacktestResult(
         round_results=round_results,
         selected_players=selected_players,
         player_predictions=player_predictions,
         summary=summary,
         diagnostics=diagnostics,
+        metadata=metadata,
     )
 
 
@@ -129,6 +194,158 @@ def _max_round(data: pd.DataFrame) -> int:
     if data.empty:
         return 0
     return int(data["rodada"].max())
+
+
+def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:
+    try:
+        return load_fixtures(config.season, project_root=config.project_root)
+    except FileNotFoundError:
+        return None
+
+
+def _strict_required_rounds(season_df: pd.DataFrame) -> list[int]:
+    if season_df.empty:
+        return []
+    max_round = int(pd.to_numeric(season_df["rodada"], errors="raise").max())
+    return list(range(1, max_round + 1))
+
+
+def _resolve_fixtures(
+    config: BacktestConfig,
+    season_df: pd.DataFrame,
+    fixtures: pd.DataFrame | None,
+) -> FixtureLoadForRun:
+    if config.fixture_mode == "none":
+        return FixtureLoadForRun(
+            fixtures=None,
+            source_directory=None,
+            manifest_paths=[],
+            manifest_sha256={},
+            generator_versions=[],
+            excluded_rounds=[],
+            warnings=[],
+        )
+
+    if config.fixture_mode == "strict":
+        required_rounds = _strict_required_rounds(season_df)
+        if config.strict_alignment_policy == "exclude_round":
+            return _load_strict_fixtures_with_exclusions(config, required_rounds)
+
+        loaded = load_strict_fixtures(
+            season=config.season,
+            project_root=config.project_root,
+            required_rounds=required_rounds,
+        )
+        return FixtureLoadForRun(
+            fixtures=loaded.fixtures,
+            source_directory=f"data/01_raw/fixtures_strict/{config.season}",
+            manifest_paths=loaded.manifest_paths,
+            manifest_sha256=loaded.manifest_sha256,
+            generator_versions=loaded.generator_versions,
+            excluded_rounds=[],
+            warnings=[],
+        )
+
+    if config.fixture_mode != "exploratory":
+        raise ValueError(f"Unknown fixture_mode: {config.fixture_mode!r}")
+
+    warnings = ["Exploratory fixture mode uses reconstructed fixture data and is not strict no-leakage."]
+    if fixtures is not None:
+        return FixtureLoadForRun(
+            fixtures=fixtures.copy(),
+            source_directory=None,
+            manifest_paths=[],
+            manifest_sha256={},
+            generator_versions=[],
+            excluded_rounds=[],
+            warnings=warnings,
+        )
+
+    loaded_fixtures = _load_optional_fixtures(config)
+    if loaded_fixtures is None:
+        return FixtureLoadForRun(
+            fixtures=None,
+            source_directory=None,
+            manifest_paths=[],
+            manifest_sha256={},
+            generator_versions=[],
+            excluded_rounds=[],
+            warnings=[*warnings, "Exploratory fixture files were not found; running with neutral fixture defaults."],
+        )
+
+    return FixtureLoadForRun(
+        fixtures=loaded_fixtures,
+        source_directory=f"data/01_raw/fixtures/{config.season}",
+        manifest_paths=[],
+        manifest_sha256={},
+        generator_versions=[],
+        excluded_rounds=[],
+        warnings=warnings,
+    )
+
+
+def _load_strict_fixtures_with_exclusions(config: BacktestConfig, required_rounds: list[int]) -> FixtureLoadForRun:
+    loaded_frames: list[pd.DataFrame] = []
+    manifest_paths: list[str] = []
+    manifest_sha256: dict[str, str] = {}
+    generator_versions: set[str] = set()
+    excluded_rounds: list[int] = []
+
+    for round_number in required_rounds:
+        try:
+            loaded = load_strict_fixtures(
+                season=config.season,
+                project_root=config.project_root,
+                required_rounds=[round_number],
+            )
+        except FileNotFoundError:
+            excluded_rounds.append(round_number)
+            continue
+
+        round_fixtures = loaded.fixtures[
+            pd.to_numeric(loaded.fixtures["rodada"], errors="raise").astype(int).eq(round_number)
+        ].copy()
+        loaded_frames.append(round_fixtures)
+        for manifest_path in loaded.manifest_paths:
+            if manifest_path not in manifest_paths:
+                manifest_paths.append(manifest_path)
+        manifest_sha256.update(loaded.manifest_sha256)
+        generator_versions.update(loaded.generator_versions)
+
+    return FixtureLoadForRun(
+        fixtures=_concat_or_empty(loaded_frames) if loaded_frames else None,
+        source_directory=f"data/01_raw/fixtures_strict/{config.season}",
+        manifest_paths=manifest_paths,
+        manifest_sha256=manifest_sha256,
+        generator_versions=sorted(generator_versions),
+        excluded_rounds=excluded_rounds,
+        warnings=[],
+    )
+
+
+def _validate_fixture_alignment(
+    fixtures: pd.DataFrame | None,
+    season_df: pd.DataFrame,
+    *,
+    policy: str = "fail",
+) -> list[int]:
+    if policy not in {"fail", "exclude_round"}:
+        raise ValueError(f"Unknown strict_alignment_policy: {policy!r}")
+
+    if fixtures is None:
+        return []
+
+    report = build_round_alignment_report(fixtures, season_df)
+    invalid = report[~report["is_valid"].astype(bool)]
+    if invalid.empty:
+        return []
+
+    invalid_rounds = sorted(pd.to_numeric(invalid["rodada"], errors="raise").astype(int).tolist())
+    if policy == "exclude_round":
+        return invalid_rounds
+
+    details = invalid[["rodada", "missing_from_fixtures", "extra_in_fixtures"]].to_dict("records")
+    raise ValueError(f"Fixture alignment failed: {details}")
 
 
 def _strategies() -> dict[str, str]:
@@ -186,6 +403,7 @@ def _write_outputs(
     player_predictions: pd.DataFrame,
     summary: pd.DataFrame,
     diagnostics: pd.DataFrame,
+    metadata: BacktestMetadata,
 ) -> None:
     output_path = config.output_path
     output_path.mkdir(parents=True, exist_ok=True)
@@ -194,3 +412,7 @@ def _write_outputs(
     player_predictions.to_csv(output_path / "player_predictions.csv", index=False, float_format=CSV_FLOAT_FORMAT)
     summary.to_csv(output_path / "summary.csv", index=False, float_format=CSV_FLOAT_FORMAT)
     diagnostics.to_csv(output_path / "diagnostics.csv", index=False, float_format=CSV_FLOAT_FORMAT)
+    (output_path / "run_metadata.json").write_text(
+        json.dumps(metadata.__dict__, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )

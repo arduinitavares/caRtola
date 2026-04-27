@@ -14,6 +14,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-round", type=int, default=5)
     parser.add_argument("--budget", type=float, default=100.0)
     parser.add_argument("--project-root", type=Path, default=Path("."))
+    parser.add_argument("--fixture-mode", choices=("none", "exploratory", "strict"), default="none")
+    parser.add_argument("--strict-alignment-policy", choices=("fail", "exclude_round"), default="fail")
     return parser.parse_args(argv)
 
 
@@ -24,9 +26,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         start_round=args.start_round,
         budget=args.budget,
         project_root=args.project_root,
+        fixture_mode=args.fixture_mode,
+        strict_alignment_policy=args.strict_alignment_policy,
     )
 
-    run_backtest(config)
+    result = run_backtest(config)
+    for warning in result.metadata.warnings:
+        print(f"WARNING: {warning}")
     print(f"Backtest complete: season={config.season} output={config.output_path}")
     return 0
 
