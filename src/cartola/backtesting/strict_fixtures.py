@@ -10,6 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
+from cartola.backtesting.data import normalize_fixture_frame
 from cartola.backtesting.fixture_snapshots import (
     CARTOLA_DEADLINE_ENDPOINT,
     CARTOLA_FIXTURE_ENDPOINT,
@@ -56,6 +59,14 @@ class StrictFixtureLoadResult:
     captured_at_utc: datetime
     deadline_at_utc: datetime
     generator_version: str
+
+
+@dataclass(frozen=True)
+class StrictFixturesLoadResult:
+    fixtures: pd.DataFrame
+    manifest_paths: list[str]
+    manifest_sha256: dict[str, str]
+    generator_versions: list[str]
 
 
 @dataclass(frozen=True)
@@ -167,6 +178,54 @@ def validate_strict_manifest(
         captured_at_utc=captured_at,
         deadline_at_utc=deadline_at,
         generator_version=str(manifest["generator_version"]),
+    )
+
+
+def load_strict_fixtures(
+    *,
+    season: int,
+    project_root: str | Path,
+    required_rounds: list[int],
+    source: str = STRICT_SOURCE,
+) -> StrictFixturesLoadResult:
+    if not required_rounds:
+        return StrictFixturesLoadResult(
+            fixtures=pd.DataFrame(columns=pd.Index(["rodada", "id_clube_home", "id_clube_away", "data"])),
+            manifest_paths=[],
+            manifest_sha256={},
+            generator_versions=[],
+        )
+
+    root = Path(project_root).resolve(strict=True)
+    fixture_dir = root / "data" / "01_raw" / "fixtures_strict" / str(season)
+    fixture_frames: list[pd.DataFrame] = []
+    manifest_paths: list[str] = []
+    manifest_sha256: dict[str, str] = {}
+    generator_versions: set[str] = set()
+
+    for round_number in sorted(set(required_rounds)):
+        fixture_path = fixture_dir / f"partidas-{round_number}.csv"
+        if not fixture_path.exists():
+            raise FileNotFoundError(f"Required strict fixture does not exist: {fixture_path}")
+
+        validation = validate_strict_manifest(
+            project_root=root,
+            fixture_path=fixture_path,
+            season=season,
+            round_number=round_number,
+            source=source,
+        )
+        manifest_path = validation.manifest_path.relative_to(root).as_posix()
+        manifest_paths.append(manifest_path)
+        manifest_sha256[manifest_path] = sha256_file(validation.manifest_path)
+        generator_versions.add(validation.generator_version)
+        fixture_frames.append(normalize_fixture_frame(pd.read_csv(validation.fixture_path), source=validation.fixture_path))
+
+    return StrictFixturesLoadResult(
+        fixtures=pd.concat(fixture_frames, ignore_index=True),
+        manifest_paths=manifest_paths,
+        manifest_sha256=manifest_sha256,
+        generator_versions=sorted(generator_versions),
     )
 
 

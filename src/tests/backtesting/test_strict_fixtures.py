@@ -12,6 +12,7 @@ import pytest
 import cartola.backtesting.strict_fixtures as strict_fixtures
 from cartola.backtesting.strict_fixtures import (
     generate_strict_fixture,
+    load_strict_fixtures,
     sha256_file,
     validate_strict_manifest,
 )
@@ -357,6 +358,43 @@ def test_generate_strict_fixtures_cli_parses_round_and_force() -> None:
     assert args.round_number == 12
     assert args.source == "cartola_api"
     assert args.force is True
+
+
+def test_load_strict_fixtures_validates_required_rounds(tmp_path: Path) -> None:
+    _write_snapshot(tmp_path, captured_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC))
+    generate_strict_fixture(project_root=tmp_path, season=2026, round_number=12, source="cartola_api")
+
+    result = load_strict_fixtures(season=2026, project_root=tmp_path, required_rounds=[12], source="cartola_api")
+
+    assert result.fixtures["rodada"].tolist() == [12]
+    assert result.manifest_paths == ["data/01_raw/fixtures_strict/2026/partidas-12.manifest.json"]
+    assert set(result.manifest_sha256) == set(result.manifest_paths)
+    assert result.manifest_sha256[result.manifest_paths[0]]
+    assert result.generator_versions == ["fixture_snapshot_v1"]
+
+
+def test_load_strict_fixtures_rejects_missing_required_round(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="partidas-12"):
+        load_strict_fixtures(season=2026, project_root=tmp_path, required_rounds=[12], source="cartola_api")
+
+
+def test_load_strict_fixtures_rejects_tampered_fixture(tmp_path: Path) -> None:
+    _write_snapshot(tmp_path, captured_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC))
+    generated = generate_strict_fixture(project_root=tmp_path, season=2026, round_number=12, source="cartola_api")
+    generated.fixture_path.write_text("rodada,id_clube_home,id_clube_away,data\n12,999,277,2026-06-01\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="canonical_fixture_sha256"):
+        load_strict_fixtures(season=2026, project_root=tmp_path, required_rounds=[12], source="cartola_api")
+
+
+def test_load_strict_fixtures_returns_empty_result_for_no_required_rounds(tmp_path: Path) -> None:
+    result = load_strict_fixtures(season=2026, project_root=tmp_path, required_rounds=[], source="cartola_api")
+
+    assert result.fixtures.empty
+    assert result.fixtures.columns.tolist() == ["rodada", "id_clube_home", "id_clube_away", "data"]
+    assert result.manifest_paths == []
+    assert result.manifest_sha256 == {}
+    assert result.generator_versions == []
 
 
 def _write_valid_fixture(tmp_path: Path) -> Path:
