@@ -179,6 +179,7 @@ conf/**/*credentials*
 # keep empty data folders
 !**/data/*
 !**/data/**/.gitkeep
+**/data/.DS_Store
 !**/logs/*
 !**/logs/**/.gitkeep
 
