@@ -359,7 +359,18 @@ def _check_feature_compatibility(
     season_df: pd.DataFrame,
     config: AuditConfig,
 ) -> bool:
-    assert record.last_evaluated_round is not None
+    if record.last_evaluated_round is None:
+        _mark_failure(
+            record,
+            "feature",
+            ErrorDetail(
+                stage="feature",
+                exception_type="ValueError",
+                message="last_evaluated_round is required before feature compatibility checks",
+            ),
+        )
+        return False
+
     playable_statuses = BacktestConfig().playable_statuses
     for target_round in range(config.start_round, record.last_evaluated_round + 1):
         try:

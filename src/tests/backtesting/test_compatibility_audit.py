@@ -159,6 +159,31 @@ def test_feature_check_covers_every_eligible_target_round(tmp_path: Path, monkey
     assert result.seasons[0].feature_status == "ok"
 
 
+def test_feature_check_requires_last_evaluated_round() -> None:
+    record = audit.SeasonAuditRecord(
+        season=2025,
+        season_status="complete_historical",
+        metrics_comparable=True,
+        round_file_count=5,
+        min_round=1,
+        max_round=5,
+        detected_rounds=[1, 2, 3, 4, 5],
+        start_round=5,
+        evaluated_rounds=1,
+        first_evaluated_round=5,
+        last_evaluated_round=None,
+    )
+
+    result = audit._check_feature_compatibility(record, pd.DataFrame(), audit.AuditConfig())
+
+    assert result is False
+    assert record.feature_status == "failed"
+    assert record.backtest_status == "skipped"
+    assert record.error_stage == "feature"
+    assert record.error_type == "ValueError"
+    assert record.error_message == "last_evaluated_round is required before feature compatibility checks"
+
+
 def test_feature_failure_records_target_round_and_skips_backtest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
