@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -287,3 +289,58 @@ def test_backtest_failure_records_error_and_keeps_metrics_null(tmp_path: Path, m
     assert record.baseline_avg_points is None
     assert record.random_forest_avg_points is None
     assert record.price_avg_points is None
+
+
+def test_reports_record_current_year_detected_rounds_and_full_error_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _touch_round(tmp_path, 2025, "rodada-1.csv")
+    long_message = "x" * 350
+    monkeypatch.setattr(audit, "load_season_data", lambda season, project_root: (_ for _ in ()).throw(ValueError(long_message)))
+
+    result = audit.run_compatibility_audit(audit.AuditConfig(project_root=tmp_path, current_year=2026))
+
+    csv_frame = pd.read_csv(result.csv_path)
+    with result.csv_path.open(newline="", encoding="utf-8") as file:
+        csv_rows = list(csv.DictReader(file))
+    payload = json.loads(result.json_path.read_text(encoding="utf-8"))
+
+    assert csv_rows[0]["detected_rounds"] == "1"
+    assert len(csv_frame.loc[0, "error_message"]) == 300
+    assert payload["config"]["current_year"] == 2026
+    assert payload["config"]["fixture_mode"] == "none"
+    assert payload["seasons"][0]["detected_rounds"] == [1]
+    assert payload["seasons"][0]["error_detail"]["message"] == long_message
+    assert "ValueError" in payload["seasons"][0]["error_detail"]["traceback"]
+
+
+def test_partial_current_metrics_are_recorded_but_not_comparable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for round_number in range(1, 14):
+        _touch_round(tmp_path, 2026, f"rodada-{round_number}.csv")
+
+    monkeypatch.setattr(audit, "load_season_data", lambda season, project_root: _season_frame(range(1, 14)))
+    monkeypatch.setattr(audit, "build_training_frame", lambda season_df, target_round, playable_statuses, fixtures: pd.DataFrame())
+    monkeypatch.setattr(audit, "build_prediction_frame", lambda season_df, target_round, fixtures: pd.DataFrame())
+    monkeypatch.setattr(
+        audit,
+        "run_backtest",
+        lambda config: _fake_backtest_result(
+            pd.DataFrame(
+                [
+                    {"strategy": "baseline", "average_actual_points": 1.0},
+                    {"strategy": "random_forest", "average_actual_points": 2.0},
+                    {"strategy": "price", "average_actual_points": 3.0},
+                ]
+            )
+        ),
+    )
+
+    result = audit.run_compatibility_audit(audit.AuditConfig(project_root=tmp_path, current_year=2026))
+
+    record = result.seasons[0]
+    assert record.season_status == "partial_current"
+    assert record.metrics_comparable is False
+    assert record.random_forest_avg_points == 2.0

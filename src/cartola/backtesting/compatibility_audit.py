@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 import re
 import traceback as traceback_module
@@ -19,6 +18,31 @@ from cartola.backtesting.runner import run_backtest
 ROUND_FILE_RE = re.compile(r"^rodada-(\d+)\.csv$")
 EXPECTED_STRATEGIES: tuple[str, ...] = ("baseline", "random_forest", "price")
 CSV_ERROR_MESSAGE_LIMIT = 300
+CSV_COLUMNS: tuple[str, ...] = (
+    "season",
+    "season_status",
+    "metrics_comparable",
+    "round_file_count",
+    "min_round",
+    "max_round",
+    "detected_rounds",
+    "start_round",
+    "evaluated_rounds",
+    "first_evaluated_round",
+    "last_evaluated_round",
+    "fixture_mode",
+    "fixture_status",
+    "load_status",
+    "feature_status",
+    "backtest_status",
+    "error_stage",
+    "error_type",
+    "error_message",
+    "baseline_avg_points",
+    "random_forest_avg_points",
+    "price_avg_points",
+    "notes",
+)
 STATUS_OK = "ok"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
@@ -415,14 +439,11 @@ def write_audit_reports(
     json_path = output_dir / "compatibility_audit.json"
 
     rows = [season.to_csv_row() for season in seasons]
-    fieldnames = list(rows[0]) if rows else list(SeasonAuditRecord.__dataclass_fields__)
-    with csv_path.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    pd.DataFrame(rows, columns=pd.Index(CSV_COLUMNS)).to_csv(csv_path, index=False)
 
     payload = {
         "generated_at_utc": generated_at_utc,
+        "project_root": str(config.project_root),
         "config": _config_json(config),
         "seasons": [season.to_json_object() for season in seasons],
     }
