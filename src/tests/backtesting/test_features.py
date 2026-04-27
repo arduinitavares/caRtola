@@ -143,6 +143,15 @@ def _season_df() -> pd.DataFrame:
     return frame
 
 
+def _fixture_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"rodada": 3, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-12"},
+            {"rodada": 4, "id_clube_home": 20, "id_clube_away": 10, "data": "2025-04-19"},
+        ]
+    )
+
+
 def test_prediction_features_use_only_prior_rounds() -> None:
     frame = build_prediction_frame(_season_df(), target_round=3)
     player = frame.loc[frame["id_atleta"] == 1].iloc[0]
@@ -329,3 +338,46 @@ def test_prior_cumulative_replacements_use_only_prior_rounds() -> None:
     assert player["num_jogos"] == 3
     assert player["prior_media"] == 5
     assert player["prior_num_jogos"] == 2
+
+
+def test_fixture_features_mark_home_and_away_players() -> None:
+    frame = build_prediction_frame(_season_df(), target_round=3, fixtures=_fixture_df())
+    home_player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+    away_player = frame.loc[frame["id_atleta"] == 2].iloc[0]
+
+    assert home_player["is_home"] == 1
+    assert away_player["is_home"] == 0
+
+
+def test_opponent_club_points_roll3_uses_prior_rounds_only() -> None:
+    season_df = _season_df()
+    season_df.loc[season_df["id_atleta"].eq(2), "pontuacao"] = [10, 20, 500]
+
+    frame = build_prediction_frame(season_df, target_round=3, fixtures=_fixture_df())
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["opponent_club_points_roll3"] == pytest.approx(15)
+
+
+def test_fixture_features_fall_back_without_fixtures() -> None:
+    frame = build_prediction_frame(_season_df(), target_round=3)
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["is_home"] == 0
+    assert player["opponent_club_points_roll3"] == pytest.approx(5)
+
+
+def test_fixture_features_match_string_round_values() -> None:
+    fixtures = _fixture_df()
+    fixtures["rodada"] = fixtures["rodada"].astype(str)
+
+    frame = build_prediction_frame(_season_df(), target_round=3, fixtures=fixtures)
+    home_player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert home_player["is_home"] == 1
+
+
+def test_opponent_id_is_join_only_not_model_feature() -> None:
+    assert "opponent_id" not in FEATURE_COLUMNS
+    assert "is_home" in FEATURE_COLUMNS
+    assert "opponent_club_points_roll3" in FEATURE_COLUMNS

@@ -37,6 +37,8 @@ FEATURE_COLUMNS: list[str] = [
     "prior_price_mean",
     "prior_variation_mean",
     "club_points_roll3",
+    "is_home",
+    "opponent_club_points_roll3",
     "prior_media",
     "prior_num_jogos",
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
@@ -54,23 +56,30 @@ NUMERIC_PRIOR_COLUMNS: list[str] = [
     "prior_price_mean",
     "prior_variation_mean",
     "club_points_roll3",
+    "is_home",
+    "opponent_club_points_roll3",
     "prior_media",
     "prior_num_jogos",
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
 ]
 
 
-def build_prediction_frame(season_df: pd.DataFrame, target_round: int) -> pd.DataFrame:
+def build_prediction_frame(
+    season_df: pd.DataFrame,
+    target_round: int,
+    fixtures: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     candidates = season_df[season_df["rodada"] == target_round].copy()
     played_history = _played_history(season_df, target_round)
     all_history = season_df[season_df["rodada"] < target_round].copy()
-    return _add_prior_features(candidates, played_history, all_history)
+    return _add_prior_features(candidates, played_history, all_history, fixtures, target_round)
 
 
 def build_training_frame(
     season_df: pd.DataFrame,
     target_round: int,
     playable_statuses: tuple[str, ...] | None = None,
+    fixtures: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     historical_rounds = sorted(
@@ -78,7 +87,7 @@ def build_training_frame(
     )
 
     for round_number in historical_rounds:
-        round_frame = build_prediction_frame(season_df, int(round_number))
+        round_frame = build_prediction_frame(season_df, int(round_number), fixtures=fixtures)
         if playable_statuses is not None:
             round_frame = round_frame[round_frame["status"].isin(playable_statuses)].copy()
         round_frame["target"] = round_frame["pontuacao"]
@@ -137,6 +146,39 @@ def _club_history_features(played_history: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _fixture_context_features(
+    fixtures: pd.DataFrame | None,
+    *,
+    target_round: int,
+    played_history: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = pd.Index(["id_clube", "is_home", "opponent_club_points_roll3"])
+    if fixtures is None or fixtures.empty:
+        return pd.DataFrame(columns=columns)
+
+    fixture_frame = fixtures.copy()
+    fixture_frame["rodada"] = pd.to_numeric(fixture_frame["rodada"], errors="raise").astype(int)
+    round_fixtures = fixture_frame[fixture_frame["rodada"].eq(target_round)]
+    if round_fixtures.empty:
+        return pd.DataFrame(columns=columns)
+
+    home_context = round_fixtures[["id_clube_home", "id_clube_away"]].rename(
+        columns={"id_clube_home": "id_clube", "id_clube_away": "opponent_id"}
+    )
+    home_context["is_home"] = 1
+    away_context = round_fixtures[["id_clube_away", "id_clube_home"]].rename(
+        columns={"id_clube_away": "id_clube", "id_clube_home": "opponent_id"}
+    )
+    away_context["is_home"] = 0
+    context = pd.concat([home_context, away_context], ignore_index=True)
+
+    opponent_roll = _club_history_features(played_history).rename(
+        columns={"id_clube": "opponent_id", "club_points_roll3": "opponent_club_points_roll3"}
+    )
+    context = context.merge(opponent_roll, on="opponent_id", how="left")
+    return context[["id_clube", "is_home", "opponent_club_points_roll3"]]
+
+
 def _global_club_points_prior(played_history: pd.DataFrame) -> float:
     if played_history.empty:
         return 0.0
@@ -155,11 +197,18 @@ def _add_prior_features(
     candidates: pd.DataFrame,
     played_history: pd.DataFrame,
     all_history: pd.DataFrame,
+    fixtures: pd.DataFrame | None,
+    target_round: int,
 ) -> pd.DataFrame:
     frame = candidates.merge(_player_history_features(played_history), on="id_atleta", how="left")
     frame = frame.merge(_position_priors(played_history), on="posicao", how="left")
     frame = frame.merge(_appearance_history_features(all_history), on="id_atleta", how="left")
     frame = frame.merge(_club_history_features(played_history), on="id_clube", how="left")
+    frame = frame.merge(
+        _fixture_context_features(fixtures, target_round=target_round, played_history=played_history),
+        on="id_clube",
+        how="left",
+    )
 
     for column in NUMERIC_PRIOR_COLUMNS:
         if column in frame.columns:
@@ -178,6 +227,8 @@ def _add_prior_features(
     frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame[MARKET_OPEN_PRICE_COLUMN])
     frame["prior_variation_mean"] = frame["prior_variation_mean"].fillna(0)
     frame["club_points_roll3"] = frame["club_points_roll3"].fillna(global_club_points_prior)
+    frame["is_home"] = frame["is_home"].fillna(0).astype(int)
+    frame["opponent_club_points_roll3"] = frame["opponent_club_points_roll3"].fillna(global_club_points_prior)
     frame["prior_media"] = frame["prior_media"].fillna(frame["prior_points_mean"])
     frame["prior_num_jogos"] = frame["prior_num_jogos"].fillna(0)
 
