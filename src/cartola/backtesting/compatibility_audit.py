@@ -467,8 +467,8 @@ def write_audit_reports(
 ) -> tuple[Path, Path]:
     output_dir = config.project_root / config.output_root
     output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = output_dir / "compatibility_audit.csv"
-    json_path = output_dir / "compatibility_audit.json"
+    csv_path = output_dir / "season_compatibility.csv"
+    json_path = output_dir / "season_compatibility.json"
 
     rows = [season.to_csv_row() for season in seasons]
     pd.DataFrame(rows, columns=pd.Index(CSV_COLUMNS)).to_csv(csv_path, index=False)

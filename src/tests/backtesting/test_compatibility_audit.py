@@ -301,6 +301,11 @@ def test_reports_record_current_year_detected_rounds_and_full_error_details(
 
     result = audit.run_compatibility_audit(audit.AuditConfig(project_root=tmp_path, current_year=2026))
 
+    assert result.csv_path.name == "season_compatibility.csv"
+    assert result.json_path.name == "season_compatibility.json"
+    assert result.csv_path.exists()
+    assert result.json_path.exists()
+
     csv_frame = pd.read_csv(result.csv_path)
     with result.csv_path.open(newline="", encoding="utf-8") as file:
         csv_rows = list(csv.DictReader(file))
