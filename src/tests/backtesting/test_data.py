@@ -200,6 +200,24 @@ def test_load_fixtures_reads_and_normalizes_round_files(tmp_path):
     assert str(loaded.loc[0, "data"]) == "2025-04-05"
 
 
+def test_load_fixtures_drops_extra_columns(tmp_path):
+    fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "rodada": [2],
+            "id_clube_home": [10],
+            "id_clube_away": [20],
+            "data": ["2025-04-05"],
+            "source_id": ["official-api"],
+        }
+    ).to_csv(fixture_dir / "partidas-2.csv", index=False)
+
+    loaded = load_fixtures(2025, project_root=tmp_path)
+
+    assert loaded.columns.tolist() == ["rodada", "id_clube_home", "id_clube_away", "data"]
+
+
 def test_load_fixtures_rejects_missing_required_columns(tmp_path):
     fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
     fixture_dir.mkdir(parents=True)

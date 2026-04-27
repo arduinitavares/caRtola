@@ -117,6 +117,7 @@ def normalize_fixture_frame(frame: pd.DataFrame, source: str | Path) -> pd.DataF
     if missing:
         raise ValueError(f"Missing required fixture columns in {source_path}: {missing}")
 
+    normalized = normalized.loc[:, list(FIXTURE_REQUIRED_COLUMNS)]
     for column in ("rodada", "id_clube_home", "id_clube_away"):
         normalized[column] = pd.to_numeric(normalized[column], errors="raise").astype(int)
     normalized["data"] = pd.to_datetime(normalized["data"], errors="raise").dt.date
