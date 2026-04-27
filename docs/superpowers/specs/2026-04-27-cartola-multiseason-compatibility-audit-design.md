@@ -41,7 +41,7 @@ expected_complete_rounds = 38
 fixture_mode = none
 ```
 
-The current calendar year is detected from the runtime date. For this milestone, the current year is 2026.
+The audit derives `current_year` from an injectable clock, defaulting to the runtime date, and records it in the JSON `config`. Tests must pass an explicit current year. For this milestone, the expected runtime current year is 2026.
 
 ## Season Discovery
 
@@ -71,13 +71,16 @@ Round metadata is computed from filenames, not loaded data:
 round_file_count = number of rodada-*.csv files
 min_round = minimum parsed round number
 max_round = maximum parsed round number
+detected_rounds = sorted parsed round numbers
 ```
 
 Round filenames must match the existing project convention:
 
 ```text
-rodada-<round>.csv
+^rodada-(\d+)\.csv$
 ```
+
+Parsed round numbers must be positive integers.
 
 If a numeric season directory has malformed round filenames, the season receives a report row with:
 
@@ -95,7 +98,7 @@ Each season gets a `season_status`:
 ```text
 if season == current_year and max_round < complete_round_threshold:
     season_status = partial_current
-elif round_file_count == expected_complete_rounds and max_round == expected_complete_rounds:
+elif round_file_count == expected_complete_rounds and detected_rounds == [1, 2, ..., expected_complete_rounds]:
     season_status = complete_historical
 else:
     season_status = irregular_historical
@@ -110,9 +113,10 @@ false for partial_current and irregular_historical
 
 Examples:
 
-- `2025` with 38 round files and `max_round=38`: `complete_historical`.
+- `2025` with parsed rounds exactly `1..38`: `complete_historical`.
 - `2026` with 13 round files and `max_round=13`: `partial_current`.
 - `2022` with 39 round files: `irregular_historical`.
+- A historical season with 38 files but missing round 7 and containing round 39: `irregular_historical`.
 
 For `partial_current`, add:
 
@@ -144,7 +148,7 @@ not_applicable
 Run:
 
 ```python
-load_season_data(season)
+load_season_data(season, project_root=project_root)
 ```
 
 If loading succeeds:
@@ -226,6 +230,8 @@ The backtest must use an isolated output path:
 data/08_reporting/backtests/compatibility/runs/{season}/
 ```
 
+This is achieved by constructing `BacktestConfig` with `project_root` and an explicit `output_root` under the compatibility runs directory. All pipeline calls must pass `project_root` explicitly; the audit must not depend on the process working directory.
+
 It must not overwrite normal experiment outputs:
 
 ```text
@@ -300,6 +306,7 @@ metrics_comparable
 round_file_count
 min_round
 max_round
+detected_rounds
 start_round
 evaluated_rounds
 first_evaluated_round
@@ -343,6 +350,7 @@ seasons
 start_round
 complete_round_threshold
 expected_complete_rounds
+current_year
 fixture_mode
 ```
 
@@ -364,6 +372,8 @@ target_round
 
 `traceback` may be null when no error occurred.
 
+Each season object also includes `detected_rounds` as a JSON array of integers. In the CSV, `detected_rounds` is serialized as a compact comma-separated string.
+
 ## Metrics
 
 When `backtest_status="ok"`, read the returned `summary` dataframe from `run_backtest`.
@@ -376,7 +386,17 @@ random_forest_avg_points
 price_avg_points
 ```
 
-The value for each strategy is the average actual points per evaluated round.
+Expected strategy names are:
+
+```text
+baseline
+random_forest
+price
+```
+
+For each expected strategy, read `summary.average_actual_points` where `summary.strategy == strategy_name`.
+
+If a strategy row is absent from `summary`, the corresponding metric column is null and `backtest_status` remains `ok`. Add a note stating that one or more expected strategy metrics were missing.
 
 For `partial_current` seasons such as 2026, metrics are recorded but `metrics_comparable=false`.
 
@@ -395,6 +415,7 @@ Supported options:
 --start-round INT
 --complete-round-threshold INT
 --expected-complete-rounds INT
+--current-year INT
 --output-root PATH
 ```
 
@@ -405,6 +426,7 @@ Defaults:
 --start-round 5
 --complete-round-threshold 38
 --expected-complete-rounds 38
+--current-year <runtime year>
 --output-root data/08_reporting/backtests/compatibility
 ```
 
@@ -432,13 +454,17 @@ Add tests for:
 - season discovery includes numeric season directories with `rodada-*.csv`;
 - season discovery ignores non-season directories;
 - round metadata is parsed from filenames;
+- round filename parsing rejects malformed names and non-positive round numbers;
 - season classification for complete historical, partial current, and irregular historical seasons;
+- a historical season with gapped round numbers is `irregular_historical`;
+- tests pass an explicit current year and do not depend on runtime date;
 - load failure produces one report row and skips later stages;
 - feature failure records the target round and skips backtest;
 - feature check covers every eligible target round from `start_round..max_round`;
 - backtest output path is isolated under compatibility output root;
 - 2026 partial season has `metrics_comparable=false`;
 - metrics are null unless backtest succeeds;
+- missing expected strategy rows produce null metrics without failing the audit;
 - CSV error messages are truncated;
 - JSON preserves full error details.
 
