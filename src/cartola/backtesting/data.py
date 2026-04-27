@@ -68,6 +68,16 @@ NUMERIC_COLUMNS: tuple[str, ...] = (
 _ROUND_FILE_RE = re.compile(r"rodada-(\d+)\.csv$")
 FIXTURE_REQUIRED_COLUMNS: tuple[str, ...] = ("rodada", "id_clube_home", "id_clube_away", "data")
 _FIXTURE_FILE_RE = re.compile(r"partidas-(\d+)\.csv$")
+ROUND_ALIGNMENT_REPORT_COLUMNS: tuple[str, ...] = (
+    "rodada",
+    "fixture_club_count",
+    "played_club_count",
+    "missing_from_fixtures",
+    "extra_in_fixtures",
+    "discarded_official_match_count",
+    "discarded_official_clubs",
+    "is_valid",
+)
 
 
 def load_round_file(path: str | Path) -> pd.DataFrame:
@@ -177,16 +187,7 @@ def build_round_alignment_report(
 
     return pd.DataFrame(
         rows,
-        columns=[
-            "rodada",
-            "fixture_club_count",
-            "played_club_count",
-            "missing_from_fixtures",
-            "extra_in_fixtures",
-            "discarded_official_match_count",
-            "discarded_official_clubs",
-            "is_valid",
-        ],
+        columns=pd.Index(ROUND_ALIGNMENT_REPORT_COLUMNS),
     )
 
 

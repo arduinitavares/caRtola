@@ -11,7 +11,7 @@ from cartola.backtesting.data import played_club_set
 
 THESPORTSDB_ROUND_URL = "https://www.thesportsdb.com/api/v1/json/{api_key}/eventsround.php"
 DEFAULT_THESPORTSDB_LEAGUE_ID = 4351
-CANONICAL_FIXTURE_COLUMNS = ["rodada", "id_clube_home", "id_clube_away", "data"]
+CANONICAL_FIXTURE_COLUMNS = ("rodada", "id_clube_home", "id_clube_away", "data")
 
 
 @dataclass(frozen=True)
@@ -80,14 +80,14 @@ def events_to_fixture_frame(
                 "rodada": int(round_number),
                 "id_clube_home": home_id,
                 "id_clube_away": away_id,
-                "data": pd.to_datetime(event.get("dateEvent"), errors="raise").date(),
+                "data": _event_date(event, round_number=round_number),
             }
         )
 
     if unmapped:
         raise ValueError(f"Unmapped fixture team names: {sorted(unmapped)}")
 
-    return pd.DataFrame(rows, columns=CANONICAL_FIXTURE_COLUMNS)
+    return pd.DataFrame(rows, columns=pd.Index(CANONICAL_FIXTURE_COLUMNS))
 
 
 def import_thesportsdb_fixtures(
@@ -101,14 +101,14 @@ def import_thesportsdb_fixtures(
 ) -> FixtureImportResult:
     root = Path(project_root)
     mapping = load_club_mapping(root / "data" / "01_raw" / "fixtures" / "club_mapping.csv")
-    fixture_dir = root / "data" / "01_raw" / "fixtures" / str(season)
-    fixture_dir.mkdir(parents=True, exist_ok=True)
 
     imported_frames: list[pd.DataFrame] = []
     official_frames: list[pd.DataFrame] = []
+    fixture_writes: list[tuple[int, pd.DataFrame]] = []
     for round_number in rounds:
+        current_round = int(round_number)
         events = fetch_thesportsdb_round(
-            round_number=int(round_number),
+            round_number=current_round,
             season=season,
             api_key=api_key,
             league_id=league_id,
@@ -116,25 +116,30 @@ def import_thesportsdb_fixtures(
         official_fixtures = events_to_fixture_frame(
             events,
             mapping,
-            round_number=int(round_number),
+            round_number=current_round,
             played_clubs=None,
         )
-        current_played_clubs = played_club_set(season_df, int(round_number))
+        current_played_clubs = played_club_set(season_df, current_round)
         fixtures = events_to_fixture_frame(
             events,
             mapping,
-            round_number=int(round_number),
+            round_number=current_round,
             played_clubs=current_played_clubs,
         )
 
         fixture_clubs = set(fixtures["id_clube_home"]) | set(fixtures["id_clube_away"])
         missing = sorted(current_played_clubs - fixture_clubs)
         if missing:
-            raise ValueError(f"Missing Cartola played clubs in round {round_number}: {missing}")
+            raise ValueError(f"Missing Cartola played clubs in round {current_round}: {missing}")
 
-        fixtures.to_csv(fixture_dir / f"partidas-{round_number}.csv", index=False)
         imported_frames.append(fixtures)
         official_frames.append(official_fixtures)
+        fixture_writes.append((current_round, fixtures))
+
+    fixture_dir = root / "data" / "01_raw" / "fixtures" / str(season)
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    for round_number, fixtures in fixture_writes:
+        fixtures.to_csv(fixture_dir / f"partidas-{round_number}.csv", index=False)
 
     return FixtureImportResult(
         fixtures=_concat_fixture_frames(imported_frames),
@@ -144,5 +149,17 @@ def import_thesportsdb_fixtures(
 
 def _concat_fixture_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
     if not frames:
-        return pd.DataFrame(columns=CANONICAL_FIXTURE_COLUMNS)
+        return pd.DataFrame(columns=pd.Index(CANONICAL_FIXTURE_COLUMNS))
     return pd.concat(frames, ignore_index=True)
+
+
+def _event_date(event: dict[str, Any], *, round_number: int) -> str:
+    value = event.get("dateEvent")
+    if value is None or pd.isna(value) or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"Invalid dateEvent in round {round_number}: {value!r}")
+
+    try:
+        parsed = pd.to_datetime(str(value), errors="raise")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid dateEvent in round {round_number}: {value!r}") from exc
+    return parsed.date().isoformat()
