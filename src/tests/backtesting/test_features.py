@@ -200,6 +200,15 @@ def test_prior_appearance_rate_counts_dnp_correctly() -> None:
     assert player["prior_appearance_rate"] == pytest.approx(0.75)
 
 
+def test_prior_appearance_rate_defaults_to_one_when_entry_flag_is_missing() -> None:
+    season_df = _season_df().drop(columns=["entrou_em_campo"])
+
+    frame = build_prediction_frame(season_df, target_round=3)
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["prior_appearance_rate"] == 1.0
+
+
 def test_club_points_roll3_captures_team_form() -> None:
     season_df = _season_df()
     next_round = season_df[season_df["rodada"] == 3].copy()

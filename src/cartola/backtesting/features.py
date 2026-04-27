@@ -108,7 +108,7 @@ def _appearance_history_features(all_history: pd.DataFrame) -> pd.DataFrame:
     if "entrou_em_campo" in all_history.columns:
         history["entrou_em_campo"] = all_history["entrou_em_campo"].fillna(False).astype(bool)
     else:
-        history["entrou_em_campo"] = False
+        history["entrou_em_campo"] = True
 
     appearances = (
         history.groupby("id_atleta")
