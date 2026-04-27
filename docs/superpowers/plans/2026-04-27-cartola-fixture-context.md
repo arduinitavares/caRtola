@@ -4,7 +4,7 @@
 
 **Goal:** Add leakage-safe fixture context to the Cartola walk-forward backtest and measure whether Random Forest improves beyond the player-only feature ceiling.
 
-**Architecture:** Commit a canonical fixture layout under `data/01_raw/fixtures/`, load it through the backtesting data layer, and pass it into feature construction as optional context. Generate 2025 fixture files from TheSportsDB official round data, filtered to the clubs that actually entered the field in each Cartola round so postponed matches do not pollute target-round availability.
+**Architecture:** Commit a canonical fixture layout under `data/01_raw/fixtures/`, load it through the backtesting data layer, and pass it into feature construction as optional context. Generate 2025 fixture files from TheSportsDB official round data, filtered to the clubs that actually entered the field in each Cartola round so postponed matches do not pollute target-round availability. Report official matches discarded by that filter so source-vs-Cartola mismatches remain visible.
 
 **Tech Stack:** Python 3.13.12, uv, pandas, requests, pytest, Ruff, ty, Bandit, TheSportsDB v1 JSON API.
 
@@ -22,12 +22,12 @@ https://www.thesportsdb.com/api/v1/json/{api_key}/eventsround.php?id=4351&r={rou
 
 Verified locally with the public test key `3`: the endpoint returns 10 official Brazilian Serie A events for each round and includes `intRound`, `dateEvent`, `strHomeTeam`, and `strAwayTeam`.
 
-The importer must filter each official round to matches where both clubs are present in the Cartola `entrou_em_campo == True` club set for that same round. This makes `partidas-{round}.csv` align with the Cartola market data instead of the full official round when postponed matches exist.
+The importer may filter each official round to matches where both clubs are present in the Cartola `entrou_em_campo == True` played set for that same round, because canonical `partidas-{round}.csv` files must represent the Cartola round, not necessarily all official-round matches. Discarded official matches and clubs must remain visible in the validation report. Extra official clubs that were not in the Cartola played set should not automatically fail the import; if any Cartola played club is missing from generated canonical fixtures, the import must fail.
 
 ## File Structure
 
 - Modify `/Users/aaat/projects/caRtola/.worktrees/cartola-fixture-context/.gitignore`
-  - Allow committed files under `data/01_raw/fixtures/`.
+  - Allow only committed fixture mapping and canonical `partidas-*.csv` files under `data/01_raw/fixtures/`.
 - Modify `/Users/aaat/projects/caRtola/.worktrees/cartola-fixture-context/docs/superpowers/specs/2026-04-27-cartola-fixture-context-design.md`
   - Record the source refinement from Football-Data to TheSportsDB and the Cartola-played-club filter.
 - Create `/Users/aaat/projects/caRtola/.worktrees/cartola-fixture-context/data/01_raw/fixtures/club_mapping.csv`
@@ -66,7 +66,9 @@ Add these lines after the existing example dataset exceptions:
 ```gitignore
 # keep curated Cartola backtesting fixture inputs
 !**/data/01_raw/fixtures/
-!**/data/01_raw/fixtures/**
+!**/data/01_raw/fixtures/club_mapping.csv
+!**/data/01_raw/fixtures/[0-9][0-9][0-9][0-9]/
+!**/data/01_raw/fixtures/[0-9][0-9][0-9][0-9]/partidas-*.csv
 ```
 
 - [ ] **Step 2: Create the curated club mapping**
@@ -101,6 +103,8 @@ Vasco da Gama,267
 Vitória,287
 ```
 
+Extra aliases such as `Botafogo (RJ)`, `Flamengo RJ`, `RB Bragantino`, and `Sport Recife` are intentional compatibility aliases for source-name variations.
+
 - [ ] **Step 3: Update the design source section**
 
 In `/Users/aaat/projects/caRtola/.worktrees/cartola-fixture-context/docs/superpowers/specs/2026-04-27-cartola-fixture-context-design.md`, replace the `Source Strategy` section with:
@@ -123,11 +127,12 @@ The import step must:
 1. Fetch TheSportsDB events for rounds 1 through 38.
 2. Map `strHomeTeam` and `strAwayTeam` through committed `club_mapping.csv`.
 3. Load normalized Cartola player data for the season.
-4. Keep only official-round matches where both clubs are in the Cartola `entrou_em_campo == True` club set for that same round.
+4. Filter official-round matches down to matches where both clubs are in the Cartola `entrou_em_campo == True` played set for that same round, because canonical `partidas-{round}.csv` files must represent the Cartola round, not necessarily all official-round matches.
 5. Write one canonical `partidas-{round}.csv` per round.
-6. Produce a validation report comparing fixture club sets with clubs that actually entered the field in each Cartola round.
+6. Produce a validation report comparing fixture club sets with clubs that actually entered the field in each Cartola round, while also reporting discarded official matches and clubs.
 
 If any club that entered the field in Cartola is missing from the generated fixture file for that round, the import must fail rather than silently creating unreliable fixture files.
+Extra official clubs that were not in the Cartola played set must not automatically fail the import; they must be reported as discarded official clubs so postponed or otherwise non-Cartola matches remain visible.
 ````
 
 - [ ] **Step 4: Verify fixture files are not ignored**
@@ -136,9 +141,11 @@ Run:
 
 ```bash
 git check-ignore -q data/01_raw/fixtures/club_mapping.csv && exit 1 || exit 0
+git check-ignore -q data/01_raw/fixtures/2025/partidas-1.csv && exit 1 || exit 0
+git check-ignore -q data/01_raw/fixtures/2025/raw-api-dump.json
 ```
 
-Expected: command exits `0`.
+Expected: all three commands exit `0`; the first two are unignored, and the raw API dump remains ignored.
 
 - [ ] **Step 5: Commit**
 
@@ -249,8 +256,15 @@ def test_build_round_alignment_report_compares_fixture_and_played_clubs():
             {"rodada": 3, "id_clube": 40, "entrou_em_campo": True},
         ]
     )
+    official_fixtures = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
+            {"rodada": 3, "id_clube_home": 10, "id_clube_away": 30, "data": "2025-04-12"},
+            {"rodada": 3, "id_clube_home": 50, "id_clube_away": 60, "data": "2025-04-12"},
+        ]
+    )
 
-    report = build_round_alignment_report(fixtures, season_df)
+    report = build_round_alignment_report(fixtures, season_df, official_fixtures=official_fixtures)
     round_2 = report.loc[report["rodada"] == 2].iloc[0]
     round_3 = report.loc[report["rodada"] == 3].iloc[0]
 
@@ -258,6 +272,8 @@ def test_build_round_alignment_report_compares_fixture_and_played_clubs():
     assert bool(round_3["is_valid"]) is False
     assert round_3["missing_from_fixtures"] == "40"
     assert round_3["extra_in_fixtures"] == "30"
+    assert round_3["discarded_official_match_count"] == 1
+    assert round_3["discarded_official_clubs"] == "50,60"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -321,8 +337,18 @@ def normalize_fixture_frame(frame: pd.DataFrame, source: str | Path) -> pd.DataF
     return normalized
 
 
-def build_round_alignment_report(fixtures: pd.DataFrame, season_df: pd.DataFrame) -> pd.DataFrame:
-    rounds = sorted(set(fixtures["rodada"].dropna().astype(int)) | set(season_df["rodada"].dropna().astype(int)))
+def build_round_alignment_report(
+    fixtures: pd.DataFrame,
+    season_df: pd.DataFrame,
+    official_fixtures: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    round_sources = [
+        set(fixtures["rodada"].dropna().astype(int)),
+        set(season_df["rodada"].dropna().astype(int)),
+    ]
+    if official_fixtures is not None:
+        round_sources.append(set(official_fixtures["rodada"].dropna().astype(int)))
+    rounds = sorted(set().union(*round_sources))
     rows: list[dict[str, object]] = []
     for round_number in rounds:
         round_fixtures = fixtures[fixtures["rodada"].eq(round_number)]
@@ -330,6 +356,11 @@ def build_round_alignment_report(fixtures: pd.DataFrame, season_df: pd.DataFrame
         played_clubs = played_club_set(season_df, round_number)
         missing = sorted(played_clubs - fixture_clubs)
         extra = sorted(fixture_clubs - played_clubs)
+        discarded_count = 0
+        discarded_clubs: list[int] = []
+        if official_fixtures is not None:
+            round_official = official_fixtures[official_fixtures["rodada"].eq(round_number)]
+            discarded_count, discarded_clubs = _discarded_official_summary(round_official, fixture_clubs)
         rows.append(
             {
                 "rodada": round_number,
@@ -337,7 +368,9 @@ def build_round_alignment_report(fixtures: pd.DataFrame, season_df: pd.DataFrame
                 "played_club_count": len(played_clubs),
                 "missing_from_fixtures": _format_club_set(missing),
                 "extra_in_fixtures": _format_club_set(extra),
-                "is_valid": not missing and not extra,
+                "discarded_official_match_count": discarded_count,
+                "discarded_official_clubs": _format_club_set(discarded_clubs),
+                "is_valid": not missing,
             }
         )
     return pd.DataFrame(rows)
@@ -380,6 +413,17 @@ def _fixture_club_set(fixtures: pd.DataFrame) -> set[int]:
     home = fixtures["id_clube_home"].dropna().astype(int)
     away = fixtures["id_clube_away"].dropna().astype(int)
     return set(home) | set(away)
+
+
+def _discarded_official_summary(official_fixtures: pd.DataFrame, fixture_clubs: set[int]) -> tuple[int, list[int]]:
+    discarded_clubs: set[int] = set()
+    discarded_count = 0
+    for row in official_fixtures.itertuples(index=False):
+        match_clubs = {int(row.id_clube_home), int(row.id_clube_away)}
+        if not match_clubs.issubset(fixture_clubs):
+            discarded_count += 1
+            discarded_clubs.update(match_clubs - fixture_clubs)
+    return discarded_count, sorted(discarded_clubs)
 
 
 def played_club_set(season_df: pd.DataFrame, round_number: int) -> set[int]:
@@ -434,6 +478,7 @@ import pandas as pd
 import pytest
 
 from cartola.backtesting.fixture_import import (
+    FixtureImportResult,
     events_to_fixture_frame,
     fetch_thesportsdb_round,
     import_thesportsdb_fixtures,
@@ -554,7 +599,7 @@ def test_import_thesportsdb_fixtures_writes_one_file_per_round(tmp_path, monkeyp
 
     monkeypatch.setattr("cartola.backtesting.fixture_import.fetch_thesportsdb_round", fake_fetch)
 
-    fixtures = import_thesportsdb_fixtures(
+    result = import_thesportsdb_fixtures(
         season=2025,
         season_df=season_df,
         project_root=tmp_path,
@@ -564,7 +609,9 @@ def test_import_thesportsdb_fixtures_writes_one_file_per_round(tmp_path, monkeyp
         last_round=2,
     )
 
-    assert len(fixtures) == 1
+    assert isinstance(result, FixtureImportResult)
+    assert len(result.fixtures) == 1
+    assert len(result.official_fixtures) == 4
     assert (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-1.csv").exists()
     assert (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv").exists()
     round_2 = pd.read_csv(tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv")
@@ -590,6 +637,7 @@ Create `src/cartola/backtesting/fixture_import.py`:
 ```python
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -601,6 +649,12 @@ from cartola.backtesting.data import played_club_set
 THESPORTSDB_ROUND_URL = "https://www.thesportsdb.com/api/v1/json/{api_key}/eventsround.php"
 DEFAULT_THESPORTSDB_LEAGUE_ID = 4351
 CANONICAL_FIXTURE_COLUMNS = ["rodada", "id_clube_home", "id_clube_away", "data"]
+
+
+@dataclass(frozen=True)
+class FixtureImportResult:
+    fixtures: pd.DataFrame
+    official_fixtures: pd.DataFrame
 
 
 def load_club_mapping(path: str | Path) -> dict[str, int]:
@@ -635,7 +689,7 @@ def events_to_fixture_frame(
     club_mapping: dict[str, int],
     *,
     round_number: int,
-    played_clubs: set[int],
+    played_clubs: set[int] | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     unmapped: set[str] = set()
@@ -652,7 +706,7 @@ def events_to_fixture_frame(
 
         home_id = club_mapping[home_name]
         away_id = club_mapping[away_name]
-        if home_id not in played_clubs or away_id not in played_clubs:
+        if played_clubs is not None and (home_id not in played_clubs or away_id not in played_clubs):
             continue
 
         rows.append(
@@ -679,19 +733,26 @@ def import_thesportsdb_fixtures(
     league_id: int = DEFAULT_THESPORTSDB_LEAGUE_ID,
     first_round: int = 1,
     last_round: int = 38,
-) -> pd.DataFrame:
+) -> FixtureImportResult:
     root = Path(project_root)
     mapping = load_club_mapping(root / "data" / "01_raw" / "fixtures" / "club_mapping.csv")
     output_dir = root / "data" / "01_raw" / "fixtures" / str(season)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     frames: list[pd.DataFrame] = []
+    official_frames: list[pd.DataFrame] = []
     for round_number in range(first_round, last_round + 1):
         events = fetch_thesportsdb_round(
             round_number=round_number,
             season=season,
             api_key=api_key,
             league_id=league_id,
+        )
+        official_fixtures = events_to_fixture_frame(
+            events,
+            mapping,
+            round_number=round_number,
+            played_clubs=None,
         )
         fixtures = events_to_fixture_frame(
             events,
@@ -700,9 +761,16 @@ def import_thesportsdb_fixtures(
             played_clubs=played_club_set(season_df, round_number),
         )
         fixtures.to_csv(output_dir / f"partidas-{round_number}.csv", index=False)
+        official_frames.append(official_fixtures)
         frames.append(fixtures)
 
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=CANONICAL_FIXTURE_COLUMNS)
+    imported = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=CANONICAL_FIXTURE_COLUMNS)
+    official = (
+        pd.concat(official_frames, ignore_index=True)
+        if official_frames
+        else pd.DataFrame(columns=CANONICAL_FIXTURE_COLUMNS)
+    )
+    return FixtureImportResult(fixtures=imported, official_fixtures=official)
 ```
 
 - [ ] **Step 4: Add CLI wrapper**
@@ -735,7 +803,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     season_df = load_season_data(args.season, project_root=args.project_root)
-    import_thesportsdb_fixtures(
+    result = import_thesportsdb_fixtures(
         season=args.season,
         season_df=season_df,
         project_root=args.project_root,
@@ -746,7 +814,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     fixtures = load_fixtures(args.season, project_root=args.project_root)
-    report = build_round_alignment_report(fixtures, season_df)
+    report = build_round_alignment_report(fixtures, season_df, official_fixtures=result.official_fixtures)
     report_path = args.project_root / "data" / "08_reporting" / "fixtures" / str(args.season) / "round_alignment.csv"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report.to_csv(report_path, index=False)
@@ -1228,6 +1296,6 @@ Expected: commit succeeds.
 - [ ] Spec coverage: committed mapping, canonical fixture files, fixture loader, alignment report, `is_home`, `opponent_club_points_roll3`, runner wiring, README, and verification are covered.
 - [ ] Scope boundary: `opponent_id` is join-only, model architecture is unchanged, optimizer is unchanged, opponent defensive weakness is not implemented.
 - [ ] Leakage boundary: fixture assignment comes from target-round schedule, while opponent rolling points use only `played_history` where `rodada < target_round`.
-- [ ] Source reliability: TheSportsDB provides explicit official round numbers; importer filters official matches to Cartola played club sets before writing canonical fixtures.
-- [ ] Type consistency: `build_prediction_frame`, `build_training_frame`, `load_fixtures`, `build_round_alignment_report`, `import_thesportsdb_fixtures`, and `run_backtest` signatures are consistent across tasks.
+- [ ] Source reliability: TheSportsDB provides explicit official round numbers; importer filters official matches to Cartola played club sets before writing canonical fixtures and reports discarded official clubs.
+- [ ] Type consistency: `build_prediction_frame`, `build_training_frame`, `load_fixtures`, `build_round_alignment_report(..., official_fixtures=...)`, `import_thesportsdb_fixtures` returning `FixtureImportResult`, and `run_backtest` signatures are consistent across tasks.
 - [ ] Verification: targeted tests, full backtesting tests, fixture import, alignment inspection, backtest, diagnostics inspection, and `pyrepo-check --all` are included.

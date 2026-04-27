@@ -188,7 +188,9 @@ conf/**/*credentials*
 
 # keep curated Cartola backtesting fixture inputs
 !**/data/01_raw/fixtures/
-!**/data/01_raw/fixtures/**
+!**/data/01_raw/fixtures/club_mapping.csv
+!**/data/01_raw/fixtures/[0-9][0-9][0-9][0-9]/
+!**/data/01_raw/fixtures/[0-9][0-9][0-9][0-9]/partidas-*.csv
 
 # also keep all .gitkeep files
 !.gitkeep

@@ -60,6 +60,7 @@ Corinthians,264
 ```
 
 The exact external names must match the selected source. The loader never fetches or infers this mapping at runtime.
+Extra aliases such as `Botafogo (RJ)`, `Flamengo RJ`, `RB Bragantino`, and `Sport Recife` are intentional compatibility aliases for source-name variations.
 
 Each `partidas-{round}.csv` file uses this canonical schema:
 
@@ -95,11 +96,12 @@ The import step must:
 1. Fetch TheSportsDB events for rounds 1 through 38.
 2. Map `strHomeTeam` and `strAwayTeam` through committed `club_mapping.csv`.
 3. Load normalized Cartola player data for the season.
-4. Keep only official-round matches where both clubs are in the Cartola `entrou_em_campo == True` club set for that same round.
+4. Filter official-round matches down to matches where both clubs are in the Cartola `entrou_em_campo == True` played set for that same round, because canonical `partidas-{round}.csv` files must represent the Cartola round, not necessarily all official-round matches.
 5. Write one canonical `partidas-{round}.csv` per round.
-6. Produce a validation report comparing fixture club sets with clubs that actually entered the field in each Cartola round.
+6. Produce a validation report comparing fixture club sets with clubs that actually entered the field in each Cartola round, while also reporting discarded official matches and clubs.
 
 If any club that entered the field in Cartola is missing from the generated fixture file for that round, the import must fail rather than silently creating unreliable fixture files.
+Extra official clubs that were not in the Cartola played set must not automatically fail the import; they must be reported as discarded official clubs so postponed or otherwise non-Cartola matches remain visible.
 
 ## Round Alignment Validation
 
@@ -119,13 +121,23 @@ fixture_clubs = set(id_clube_home) union set(id_clube_away)
 played_clubs = clubs with at least one row where rodada == N and entrou_em_campo == True
 ```
 
-3. Report:
+3. Optionally build the official source club set from unfiltered TheSportsDB events for that round:
+
+```text
+official_clubs = set(id_clube_home) union set(id_clube_away)
+discarded_official_clubs = official_clubs - fixture_clubs
+discarded_official_match_count = official matches not written to partidas-{round}.csv
+```
+
+4. Report:
 
 - `rodada`
 - `fixture_club_count`
 - `played_club_count`
 - `missing_from_fixtures`
 - `extra_in_fixtures`
+- `discarded_official_match_count`
+- `discarded_official_clubs`
 - `is_valid`
 
 Validation output should be written under:
@@ -134,7 +146,7 @@ Validation output should be written under:
 data/08_reporting/fixtures/2025/round_alignment.csv
 ```
 
-A round is valid when both differences are empty. If real Cartola data has incomplete player rows for a round, the validation report should make the mismatch visible; implementation should not hide it.
+A round is valid when `missing_from_fixtures` is empty. Extra official clubs that were filtered out because they were not in the Cartola played set should remain visible in `discarded_official_clubs`, but should not automatically fail validation. If real Cartola data has incomplete player rows for a round, the validation report should make the mismatch visible; implementation should not hide it.
 
 ## Fixture Loader
 
