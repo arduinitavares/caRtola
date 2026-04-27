@@ -152,6 +152,18 @@ def test_prediction_features_use_only_prior_rounds() -> None:
     assert player["pontuacao"] == 100
 
 
+def test_prior_scout_features_use_per_round_deltas_from_cumulative_scouts() -> None:
+    season_df = _season_df()
+    season_df.loc[season_df["id_atleta"].eq(1), "G"] = [1, 1, 2]
+    season_df.loc[season_df["id_atleta"].eq(1), "DS"] = [3, 5, 5]
+
+    frame = build_prediction_frame(season_df, target_round=3)
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["prior_G_mean"] == 0.5
+    assert player["prior_DS_mean"] == 2.5
+
+
 def test_training_frame_excludes_target_round_from_feature_history() -> None:
     frame = build_training_frame(_season_df(), target_round=3)
     player_round_2 = frame[(frame["id_atleta"] == 1) & (frame["rodada"] == 2)].iloc[0]

@@ -141,8 +141,9 @@ def _player_history_features(history: pd.DataFrame) -> pd.DataFrame:
 
     scout_columns = [scout for scout in DEFAULT_SCOUT_COLUMNS if scout in ordered.columns]
     if scout_columns:
+        scout_deltas = _scout_delta_frame(ordered, scout_columns)
         scout_means = (
-            ordered.groupby("id_atleta")[scout_columns]
+            scout_deltas.groupby("id_atleta")[scout_columns]
             .mean()
             .rename(columns={scout: f"prior_{scout}_mean" for scout in scout_columns})
             .reset_index()
@@ -150,6 +151,14 @@ def _player_history_features(history: pd.DataFrame) -> pd.DataFrame:
         features = features.merge(scout_means, on="id_atleta", how="left")
 
     return features
+
+
+def _scout_delta_frame(history: pd.DataFrame, scout_columns: list[str]) -> pd.DataFrame:
+    deltas = history[["id_atleta", *scout_columns]].copy()
+    for scout in scout_columns:
+        values = pd.to_numeric(deltas[scout], errors="coerce").fillna(0)
+        deltas[scout] = values.groupby(deltas["id_atleta"]).diff().fillna(values).clip(lower=0)
+    return deltas
 
 
 def _player_feature_columns() -> list[str]:
