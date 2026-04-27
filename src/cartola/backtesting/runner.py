@@ -84,7 +84,13 @@ def run_backtest(
     )
     resolved_fixtures = _resolve_fixtures(config, data, fixtures)
     fixture_data = resolved_fixtures.fixtures
-    _validate_fixture_alignment(fixture_data, data)
+    excluded_rounds = _validate_fixture_alignment(
+        fixture_data,
+        data,
+        policy=config.strict_alignment_policy if config.fixture_mode == "strict" else "fail",
+    )
+    if excluded_rounds:
+        data = data[~pd.to_numeric(data["rodada"], errors="raise").isin(excluded_rounds)].copy()
 
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
@@ -101,7 +107,7 @@ def run_backtest(
         fixture_manifest_paths=resolved_fixtures.manifest_paths,
         fixture_manifest_sha256=resolved_fixtures.manifest_sha256,
         generator_versions=resolved_fixtures.generator_versions,
-        excluded_rounds=[],
+        excluded_rounds=excluded_rounds,
         warnings=resolved_fixtures.warnings,
     )
     for round_number in range(config.start_round, max_round + 1):
@@ -264,14 +270,26 @@ def _resolve_fixtures(
     )
 
 
-def _validate_fixture_alignment(fixtures: pd.DataFrame | None, season_df: pd.DataFrame) -> None:
+def _validate_fixture_alignment(
+    fixtures: pd.DataFrame | None,
+    season_df: pd.DataFrame,
+    *,
+    policy: str = "fail",
+) -> list[int]:
+    if policy not in {"fail", "exclude_round"}:
+        raise ValueError(f"Unknown strict_alignment_policy: {policy!r}")
+
     if fixtures is None:
-        return
+        return []
 
     report = build_round_alignment_report(fixtures, season_df)
     invalid = report[~report["is_valid"].astype(bool)]
     if invalid.empty:
-        return
+        return []
+
+    invalid_rounds = sorted(pd.to_numeric(invalid["rodada"], errors="raise").astype(int).tolist())
+    if policy == "exclude_round":
+        return invalid_rounds
 
     details = invalid[["rodada", "missing_from_fixtures", "extra_in_fixtures"]].to_dict("records")
     raise ValueError(f"Fixture alignment failed: {details}")

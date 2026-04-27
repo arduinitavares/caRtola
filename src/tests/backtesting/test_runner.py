@@ -223,6 +223,38 @@ def test_run_backtest_rejects_fixture_alignment_gaps(tmp_path):
         run_backtest(config, season_df=season_df, fixtures=fixtures)
 
 
+def test_strict_alignment_policy_exclude_round_removes_invalid_round_before_training(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = _tiny_fixtures(range(1, 6))
+    fixtures = fixtures[fixtures["rodada"] != 3].copy()
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=3,
+        budget=100,
+        fixture_mode="strict",
+        strict_alignment_policy="exclude_round",
+    )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_strict_fixtures",
+        lambda **kwargs: StrictFixturesLoadResult(
+            fixtures=fixtures,
+            manifest_paths=["data/01_raw/fixtures_strict/2025/partidas-1.manifest.json"],
+            manifest_sha256={"data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "abc"},
+            generator_versions=["fixture_snapshot_v1"],
+        ),
+    )
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.excluded_rounds == [3]
+    assert result.metadata.fixture_manifest_paths == ["data/01_raw/fixtures_strict/2025/partidas-1.manifest.json"]
+    assert result.metadata.fixture_manifest_sha256 == {
+        "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "abc"
+    }
+    assert 3 not in set(result.player_predictions["rodada"].dropna().astype(int).tolist())
+
+
 def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)

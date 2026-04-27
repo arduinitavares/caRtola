@@ -23,7 +23,7 @@ uv sync --dev
 Para executar o backtest offline de 2025:
 
 ```bash
-uv run python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100
+uv run python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100 --fixture-mode none
 ```
 
 Para importar partidas de 2025 para features de mando/oponente:
@@ -32,9 +32,11 @@ Para importar partidas de 2025 para features de mando/oponente:
 uv run --frozen python scripts/import_fixture_schedule.py --season 2025
 ```
 
-O backtest carrega automaticamente `data/01_raw/fixtures/{season}/partidas-*.csv` quando esses arquivos existem. Sem esses arquivos, ele roda com os mesmos defaults sem contexto de partidas.
+O backtest tem três modos explícitos de fixtures:
 
-Os arquivos de partidas de 2025 são uma reconstrução histórica das partidas elegíveis no Cartola, gerada a partir da rodada oficial do TheSportsDB e alinhada com os clubes que efetivamente tiveram atletas em campo nos CSVs do Cartola. Isso é suficiente para medir o valor de features de contexto, mas não substitui snapshots pré-fechamento do mercado para uma simulação live perfeita. O arquivo `partidas-1.csv` fica vazio de propósito porque a rodada 1 de 2025 não tem clubes com `entrou_em_campo=True` nos dados históricos.
+- `--fixture-mode none`: modo padrão, sem contexto de partidas.
+- `--fixture-mode exploratory`: carrega `data/01_raw/fixtures/{season}/partidas-*.csv` quando esses arquivos existem. As partidas exploratórias de 2025 são uma reconstrução histórica das partidas elegíveis no Cartola, gerada a partir da rodada oficial do TheSportsDB e alinhada com os clubes que efetivamente tiveram atletas em campo nos CSVs do Cartola. Isso é suficiente para medir o valor de features de contexto, mas não é uma simulação strict no-leakage e não substitui snapshots pré-fechamento do mercado. O arquivo `partidas-1.csv` fica vazio de propósito porque a rodada 1 de 2025 não tem clubes com `entrou_em_campo=True` nos dados históricos.
+- `--fixture-mode strict`: usa apenas snapshots pré-fechamento do mercado em `data/01_raw/fixtures_strict/{season}/`, com manifests válidos para as rodadas obrigatórias. Use este modo quando precisar de simulação strict no-leakage.
 
 Os resultados são gravados em `data/08_reporting/backtests/2025/`:
 
