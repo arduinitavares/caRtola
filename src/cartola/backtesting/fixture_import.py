@@ -126,6 +126,7 @@ def import_thesportsdb_fixtures(
             round_number=current_round,
             played_clubs=current_played_clubs,
         )
+        _validate_generated_fixture_frame(fixtures)
 
         fixture_clubs = set(fixtures["id_clube_home"]) | set(fixtures["id_clube_away"])
         missing = sorted(current_played_clubs - fixture_clubs)
@@ -151,6 +152,21 @@ def _concat_fixture_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame(columns=pd.Index(CANONICAL_FIXTURE_COLUMNS))
     return pd.concat(frames, ignore_index=True)
+
+
+def _validate_generated_fixture_frame(fixtures: pd.DataFrame) -> None:
+    self_matches = fixtures["id_clube_home"] == fixtures["id_clube_away"]
+    if self_matches.any():
+        raise ValueError("Fixture rows cannot have the same home and away club")
+
+    for round_number, round_fixtures in fixtures.groupby("rodada", sort=True):
+        clubs = pd.concat(
+            [round_fixtures["id_clube_home"], round_fixtures["id_clube_away"]],
+            ignore_index=True,
+        )
+        duplicated_clubs = sorted(clubs.loc[clubs.duplicated()].astype(int).unique().tolist())
+        if duplicated_clubs:
+            raise ValueError(f"Duplicate fixture club entries in round {round_number}: {duplicated_clubs}")
 
 
 def _event_date(event: dict[str, Any], *, round_number: int) -> str:

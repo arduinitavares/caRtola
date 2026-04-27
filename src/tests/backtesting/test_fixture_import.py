@@ -203,6 +203,59 @@ def test_import_thesportsdb_fixtures_rejects_missing_played_clubs_before_writing
     assert not (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv").exists()
 
 
+def test_import_thesportsdb_fixtures_rejects_duplicate_generated_clubs_before_writing(tmp_path, monkeypatch):
+    _write_mapping(tmp_path)
+    season_df = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube": 262, "entrou_em_campo": True},
+            {"rodada": 2, "id_clube": 277, "entrou_em_campo": True},
+            {"rodada": 2, "id_clube": 275, "entrou_em_campo": True},
+        ]
+    )
+
+    def fake_fetch(*, round_number, season, api_key, league_id):
+        assert round_number == 2
+        return [
+            {"strHomeTeam": "Flamengo", "strAwayTeam": "Santos", "dateEvent": "2025-04-05"},
+            {"strHomeTeam": "Flamengo", "strAwayTeam": "Palmeiras", "dateEvent": "2025-04-06"},
+        ]
+
+    monkeypatch.setattr("cartola.backtesting.fixture_import.fetch_thesportsdb_round", fake_fetch)
+
+    with pytest.raises(ValueError, match="Duplicate fixture club entries"):
+        import_thesportsdb_fixtures(
+            season=2025,
+            season_df=season_df,
+            rounds=[2],
+            project_root=tmp_path,
+            api_key="abc",
+        )
+
+    assert not (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv").exists()
+
+
+def test_import_thesportsdb_fixtures_rejects_self_matches_before_writing(tmp_path, monkeypatch):
+    _write_mapping(tmp_path)
+    season_df = pd.DataFrame([{"rodada": 2, "id_clube": 262, "entrou_em_campo": True}])
+
+    def fake_fetch(*, round_number, season, api_key, league_id):
+        assert round_number == 2
+        return [{"strHomeTeam": "Flamengo", "strAwayTeam": "Flamengo", "dateEvent": "2025-04-05"}]
+
+    monkeypatch.setattr("cartola.backtesting.fixture_import.fetch_thesportsdb_round", fake_fetch)
+
+    with pytest.raises(ValueError, match="same home and away club"):
+        import_thesportsdb_fixtures(
+            season=2025,
+            season_df=season_df,
+            rounds=[2],
+            project_root=tmp_path,
+            api_key="abc",
+        )
+
+    assert not (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv").exists()
+
+
 def test_import_thesportsdb_fixtures_does_not_write_partial_files_when_later_round_fails(tmp_path, monkeypatch):
     _write_mapping(tmp_path)
     season_df = pd.DataFrame(
