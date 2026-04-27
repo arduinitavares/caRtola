@@ -11,6 +11,7 @@ from cartola.backtesting.features import build_prediction_frame, build_training_
 from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
+from cartola.backtesting.strict_fixtures import load_strict_fixtures
 
 ROUND_RESULT_COLUMNS: list[str] = [
     "rodada",
@@ -64,9 +65,12 @@ class BacktestResult:
 
 
 @dataclass(frozen=True)
-class ResolvedFixtures:
+class FixtureLoadForRun:
     fixtures: pd.DataFrame | None
     source_directory: str | None
+    manifest_paths: list[str]
+    manifest_sha256: dict[str, str]
+    generator_versions: list[str]
     warnings: list[str]
 
 
@@ -78,7 +82,7 @@ def run_backtest(
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
-    resolved_fixtures = _resolve_fixtures(config, fixtures)
+    resolved_fixtures = _resolve_fixtures(config, data, fixtures)
     fixture_data = resolved_fixtures.fixtures
     _validate_fixture_alignment(fixture_data, data)
 
@@ -94,9 +98,9 @@ def run_backtest(
         fixture_mode=config.fixture_mode,
         strict_alignment_policy=config.strict_alignment_policy,
         fixture_source_directory=resolved_fixtures.source_directory,
-        fixture_manifest_paths=[],
-        fixture_manifest_sha256={},
-        generator_versions=[],
+        fixture_manifest_paths=resolved_fixtures.manifest_paths,
+        fixture_manifest_sha256=resolved_fixtures.manifest_sha256,
+        generator_versions=resolved_fixtures.generator_versions,
         excluded_rounds=[],
         warnings=resolved_fixtures.warnings,
     )
@@ -188,31 +192,74 @@ def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:
         return None
 
 
-def _resolve_fixtures(config: BacktestConfig, fixtures: pd.DataFrame | None) -> ResolvedFixtures:
+def _strict_required_rounds(season_df: pd.DataFrame) -> list[int]:
+    if season_df.empty:
+        return []
+    max_round = int(pd.to_numeric(season_df["rodada"], errors="raise").max())
+    return list(range(1, max_round + 1))
+
+
+def _resolve_fixtures(
+    config: BacktestConfig,
+    season_df: pd.DataFrame,
+    fixtures: pd.DataFrame | None,
+) -> FixtureLoadForRun:
     if config.fixture_mode == "none":
-        return ResolvedFixtures(fixtures=None, source_directory=None, warnings=[])
+        return FixtureLoadForRun(
+            fixtures=None,
+            source_directory=None,
+            manifest_paths=[],
+            manifest_sha256={},
+            generator_versions=[],
+            warnings=[],
+        )
 
     if config.fixture_mode == "strict":
-        raise NotImplementedError("fixture_mode='strict' is not implemented yet")
+        loaded = load_strict_fixtures(
+            season=config.season,
+            project_root=config.project_root,
+            required_rounds=_strict_required_rounds(season_df),
+        )
+        return FixtureLoadForRun(
+            fixtures=loaded.fixtures,
+            source_directory=f"data/01_raw/fixtures_strict/{config.season}",
+            manifest_paths=loaded.manifest_paths,
+            manifest_sha256=loaded.manifest_sha256,
+            generator_versions=loaded.generator_versions,
+            warnings=[],
+        )
 
     if config.fixture_mode != "exploratory":
         raise ValueError(f"Unknown fixture_mode: {config.fixture_mode!r}")
 
     warnings = ["Exploratory fixture mode uses reconstructed fixture data and is not strict no-leakage."]
     if fixtures is not None:
-        return ResolvedFixtures(fixtures=fixtures.copy(), source_directory=None, warnings=warnings)
+        return FixtureLoadForRun(
+            fixtures=fixtures.copy(),
+            source_directory=None,
+            manifest_paths=[],
+            manifest_sha256={},
+            generator_versions=[],
+            warnings=warnings,
+        )
 
     loaded_fixtures = _load_optional_fixtures(config)
     if loaded_fixtures is None:
-        return ResolvedFixtures(
+        return FixtureLoadForRun(
             fixtures=None,
             source_directory=None,
+            manifest_paths=[],
+            manifest_sha256={},
+            generator_versions=[],
             warnings=[*warnings, "Exploratory fixture files were not found; running with neutral fixture defaults."],
         )
 
-    return ResolvedFixtures(
+    return FixtureLoadForRun(
         fixtures=loaded_fixtures,
-        source_directory=str(config.project_root / "data" / "01_raw" / "fixtures" / str(config.season)),
+        source_directory=f"data/01_raw/fixtures/{config.season}",
+        manifest_paths=[],
+        manifest_sha256={},
+        generator_versions=[],
         warnings=warnings,
     )
 

@@ -6,6 +6,7 @@ from pandas.testing import assert_frame_equal
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
 from cartola.backtesting.runner import run_backtest
+from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
 
 
 def _tiny_round(round_number: int) -> pd.DataFrame:
@@ -123,7 +124,7 @@ def test_run_backtest_uses_fixture_files_when_available(tmp_path):
     club_2 = round_5[round_5["id_clube"] == 2].iloc[0]
 
     assert result.metadata.fixture_mode == "exploratory"
-    assert result.metadata.fixture_source_directory == str(tmp_path / "data" / "01_raw" / "fixtures" / "2025")
+    assert result.metadata.fixture_source_directory == "data/01_raw/fixtures/2025"
     assert result.metadata.warnings
     assert club_1["is_home"] == 1
     assert club_2["is_home"] == 0
@@ -154,6 +155,58 @@ def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
 
     assert club_1["is_home"] == 1
     assert club_2["is_home"] == 0
+
+
+def test_run_backtest_strict_mode_missing_files_raises_for_first_required_round(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="strict")
+
+    with pytest.raises(FileNotFoundError, match="partidas-1"):
+        run_backtest(config, season_df=season_df)
+
+
+def test_run_backtest_strict_mode_loads_required_rounds_and_records_manifest_metadata(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    observed_calls: list[dict[str, object]] = []
+
+    def fake_load_strict_fixtures(**kwargs: object) -> StrictFixturesLoadResult:
+        observed_calls.append(kwargs)
+        return StrictFixturesLoadResult(
+            fixtures=_tiny_fixtures(range(1, 6)),
+            manifest_paths=[
+                "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json",
+                "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json",
+            ],
+            manifest_sha256={
+                "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "sha-1",
+                "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json": "sha-2",
+            },
+            generator_versions=["fixture_snapshot_v1"],
+        )
+
+    monkeypatch.setattr("cartola.backtesting.runner.load_strict_fixtures", fake_load_strict_fixtures)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="strict")
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert observed_calls == [
+        {
+            "season": 2025,
+            "project_root": tmp_path,
+            "required_rounds": [1, 2, 3, 4, 5],
+        }
+    ]
+    assert result.metadata.fixture_mode == "strict"
+    assert result.metadata.fixture_source_directory == "data/01_raw/fixtures_strict/2025"
+    assert result.metadata.fixture_manifest_paths == [
+        "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json",
+        "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json",
+    ]
+    assert result.metadata.fixture_manifest_sha256 == {
+        "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "sha-1",
+        "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json": "sha-2",
+    }
+    assert result.metadata.generator_versions == ["fixture_snapshot_v1"]
 
 
 def test_run_backtest_rejects_fixture_alignment_gaps(tmp_path):

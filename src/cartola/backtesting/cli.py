@@ -30,7 +30,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         strict_alignment_policy=args.strict_alignment_policy,
     )
 
-    run_backtest(config)
+    result = run_backtest(config)
+    for warning in result.metadata.warnings:
+        print(f"WARNING: {warning}")
     print(f"Backtest complete: season={config.season} output={config.output_path}")
     return 0
 
