@@ -1,20 +1,11 @@
 from __future__ import annotations
 
-import argparse
-import json
 import re
 import traceback as traceback_module
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Literal
-
-import pandas as pd
-
-from cartola.backtesting.config import BacktestConfig
-from cartola.backtesting.data import load_season_data
-from cartola.backtesting.features import build_prediction_frame, build_training_frame
-from cartola.backtesting.runner import run_backtest
 
 ROUND_FILE_RE = re.compile(r"^rodada-(\d+)\.csv$")
 EXPECTED_STRATEGIES: tuple[str, ...] = ("baseline", "random_forest", "price")

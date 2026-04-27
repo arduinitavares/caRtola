@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,7 +7,6 @@ import pandas as pd
 import pytest
 
 from cartola.backtesting import compatibility_audit as audit
-from cartola.backtesting.config import BacktestConfig
 
 
 def _touch_round(root: Path, season: int, round_name: str) -> Path:
