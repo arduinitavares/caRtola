@@ -147,6 +147,78 @@ def test_validate_strict_manifest_rejects_tampered_captured_at_even_when_hashes_
         )
 
 
+def test_validate_strict_manifest_rejects_missing_capture_http_date_evidence(tmp_path: Path) -> None:
+    fixture_path, manifest_path = _write_valid_fixture_and_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    capture_path = tmp_path / manifest["capture_metadata_path"]
+    capture = json.loads(capture_path.read_text(encoding="utf-8"))
+    del capture["fixture_http_date_header"]
+    _write_json(capture_path, capture)
+    manifest["capture_metadata_sha256"] = sha256_file(capture_path)
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fixture_http_date_header"):
+        validate_strict_manifest(
+            project_root=tmp_path,
+            fixture_path=fixture_path,
+            season=2026,
+            round_number=12,
+            source="cartola_api",
+        )
+
+
+def test_validate_strict_manifest_rejects_capture_status_not_ok(tmp_path: Path) -> None:
+    fixture_path, manifest_path = _write_valid_fixture_and_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    capture_path = tmp_path / manifest["capture_metadata_path"]
+    capture = json.loads(capture_path.read_text(encoding="utf-8"))
+    capture["fixture_http_status"] = 500
+    _write_json(capture_path, capture)
+    manifest["capture_metadata_sha256"] = sha256_file(capture_path)
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fixture_http_status"):
+        validate_strict_manifest(
+            project_root=tmp_path,
+            fixture_path=fixture_path,
+            season=2026,
+            round_number=12,
+            source="cartola_api",
+        )
+
+
+def test_validate_strict_manifest_rejects_manifest_final_url_mismatch(tmp_path: Path) -> None:
+    fixture_path, manifest_path = _write_valid_fixture_and_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["fixture_final_url"] = "https://example.invalid/wrong"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fixture_final_url"):
+        validate_strict_manifest(
+            project_root=tmp_path,
+            fixture_path=fixture_path,
+            season=2026,
+            round_number=12,
+            source="cartola_api",
+        )
+
+
+def test_validate_strict_manifest_rejects_manifest_endpoint_mismatch(tmp_path: Path) -> None:
+    fixture_path, manifest_path = _write_valid_fixture_and_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["fixture_endpoint"] = "https://example.invalid/partidas/12"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fixture_endpoint"):
+        validate_strict_manifest(
+            project_root=tmp_path,
+            fixture_path=fixture_path,
+            season=2026,
+            round_number=12,
+            source="cartola_api",
+        )
+
+
 def test_validate_strict_manifest_rejects_tampered_deadline_at_even_when_hashes_match(tmp_path: Path) -> None:
     fixture_path, manifest_path = _write_valid_fixture_and_manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -237,6 +309,23 @@ def test_generate_strict_fixture_rejects_explicit_post_deadline_snapshot(tmp_pat
             round_number=12,
             source="cartola_api",
             captured_at=datetime(2026, 6, 1, 19, 0, tzinfo=UTC),
+        )
+
+
+def test_generate_strict_fixture_rejects_explicit_snapshot_missing_capture_evidence(tmp_path: Path) -> None:
+    snapshot_dir = _write_snapshot(tmp_path, captured_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC))
+    capture_path = snapshot_dir / "capture.json"
+    capture = json.loads(capture_path.read_text(encoding="utf-8"))
+    del capture["deadline_http_date_header"]
+    _write_json(capture_path, capture)
+
+    with pytest.raises(ValueError, match="deadline_http_date_header"):
+        generate_strict_fixture(
+            project_root=tmp_path,
+            season=2026,
+            round_number=12,
+            source="cartola_api",
+            captured_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),
         )
 
 
@@ -416,12 +505,22 @@ def _write_valid_fixture_and_manifest(tmp_path: Path) -> tuple[Path, Path]:
     _write_json(
         capture_path,
         {
+            "capture_started_at_utc": "2026-06-01T17:59:58Z",
             "captured_at_utc": "2026-06-01T18:00:00Z",
+            "fixture_http_date_header": "Mon, 01 Jun 2026 18:00:00 GMT",
+            "fixture_http_date_utc": "2026-06-01T18:00:00Z",
+            "fixture_http_status": 200,
             "fixture_final_url": "https://api.cartola.globo.com/partidas/12",
+            "deadline_http_date_header": "Mon, 01 Jun 2026 18:00:00 GMT",
+            "deadline_http_date_utc": "2026-06-01T18:00:00Z",
+            "deadline_http_status": 200,
             "deadline_final_url": "https://api.cartola.globo.com/mercado/status",
+            "clock_skew_tolerance_seconds": 300,
+            "max_observed_clock_skew_seconds": 0.0,
             "source": "cartola_api",
             "season": 2026,
             "rodada": 12,
+            "capture_version": "fixture_capture_v1",
         },
     )
     _write_json(fixture_snapshot_path, FROZEN_FIXTURE_PAYLOAD)
@@ -493,23 +592,25 @@ def _write_snapshot(
             "timestamp": int(deadline_at.timestamp()),
         },
     }
+    http_date_header = captured_at.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    http_date_utc = captured_at.isoformat().replace("+00:00", "Z")
     _write_json(snapshot_dir / "fixtures.json", fixture_payload)
     _write_json(snapshot_dir / "deadline.json", deadline_payload)
     _write_json(
         snapshot_dir / "capture.json",
         {
-            "capture_started_at_utc": "2026-06-01T17:59:58Z",
+            "capture_started_at_utc": http_date_utc,
             "captured_at_utc": captured_at.isoformat().replace("+00:00", "Z"),
-            "fixture_http_date_header": "Mon, 01 Jun 2026 18:00:00 GMT",
-            "fixture_http_date_utc": "2026-06-01T18:00:00Z",
+            "fixture_http_date_header": http_date_header,
+            "fixture_http_date_utc": http_date_utc,
             "fixture_http_status": 200,
             "fixture_final_url": "https://api.cartola.globo.com/partidas/12",
-            "deadline_http_date_header": "Mon, 01 Jun 2026 18:00:00 GMT",
-            "deadline_http_date_utc": "2026-06-01T18:00:00Z",
+            "deadline_http_date_header": http_date_header,
+            "deadline_http_date_utc": http_date_utc,
             "deadline_http_status": 200,
             "deadline_final_url": "https://api.cartola.globo.com/mercado/status",
             "clock_skew_tolerance_seconds": 300,
-            "max_observed_clock_skew_seconds": 1.2,
+            "max_observed_clock_skew_seconds": 0.0,
             "source": "cartola_api",
             "season": 2026,
             "rodada": 12,

@@ -35,6 +35,13 @@ class CaptureResult:
     fixture_rows: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class CaptureMetadataEvidence:
+    captured_at_utc: datetime
+    fixture_final_url: str
+    deadline_final_url: str
+
+
 def parse_http_date_utc(value: str) -> datetime:
     if not value.endswith(" GMT"):
         raise ValueError(f"HTTP Date must be an RFC 7231 GMT value: {value!r}")
@@ -45,6 +52,83 @@ def parse_http_date_utc(value: str) -> datetime:
         raise ValueError(f"HTTP Date must be an RFC 7231 GMT value: {value!r}") from exc
 
     return parsed.replace(tzinfo=UTC)
+
+
+def parse_iso_utc_z(value: Any, *, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError(f"{field_name} must be an ISO-8601 UTC timestamp ending in Z")
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an ISO-8601 UTC timestamp ending in Z") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != datetime.min.replace(tzinfo=UTC).utcoffset():
+        raise ValueError(f"{field_name} must have UTC offset zero")
+    return parsed.astimezone(UTC)
+
+
+def validate_capture_metadata(
+    capture: dict[str, Any],
+    *,
+    source: str,
+    season: int,
+    round_number: int,
+) -> CaptureMetadataEvidence:
+    if capture.get("source") != source:
+        raise ValueError(f"Snapshot source {capture.get('source')!r} does not match {source!r}")
+    if capture.get("season") != season:
+        raise ValueError(f"Snapshot season {capture.get('season')!r} does not match {season}")
+    if capture.get("rodada") != round_number:
+        raise ValueError(f"Snapshot rodada {capture.get('rodada')!r} does not match {round_number}")
+    if capture.get("capture_version") != CAPTURE_VERSION:
+        raise ValueError(f"Snapshot capture_version {capture.get('capture_version')!r} does not match {CAPTURE_VERSION!r}")
+
+    capture_started_at = parse_iso_utc_z(
+        capture.get("capture_started_at_utc"), field_name="capture_started_at_utc"
+    )
+    captured_at = parse_iso_utc_z(capture.get("captured_at_utc"), field_name="captured_at_utc")
+    if capture_started_at > captured_at:
+        raise ValueError("capture_started_at_utc must be before or equal to captured_at_utc")
+
+    fixture_http_date = _validated_http_date(capture, "fixture")
+    deadline_http_date = _validated_http_date(capture, "deadline")
+    _validated_http_status(capture, "fixture")
+    _validated_http_status(capture, "deadline")
+    fixture_final_url = _string_field(capture, "fixture_final_url", context="fixture_final_url")
+    deadline_final_url = _string_field(capture, "deadline_final_url", context="deadline_final_url")
+
+    tolerance = _integer_field(
+        capture,
+        "clock_skew_tolerance_seconds",
+        context="clock_skew_tolerance_seconds",
+    )
+    if tolerance != FROZEN_CLOCK_SKEW_TOLERANCE_SECONDS:
+        raise ValueError(
+            "clock_skew_tolerance_seconds must match "
+            f"{FROZEN_CLOCK_SKEW_TOLERANCE_SECONDS}"
+        )
+    observed_skews = [
+        abs((captured_at - fixture_http_date).total_seconds()),
+        abs((captured_at - deadline_http_date).total_seconds()),
+    ]
+    recomputed_max_skew = max(observed_skews)
+    recorded_max_skew = _number_field(
+        capture,
+        "max_observed_clock_skew_seconds",
+        context="max_observed_clock_skew_seconds",
+    )
+    if abs(recorded_max_skew - recomputed_max_skew) > 0.000001:
+        raise ValueError("max_observed_clock_skew_seconds does not match HTTP Date evidence")
+    if recomputed_max_skew > FROZEN_CLOCK_SKEW_TOLERANCE_SECONDS:
+        raise ValueError(
+            "HTTP Date clock skew exceeds "
+            f"{FROZEN_CLOCK_SKEW_TOLERANCE_SECONDS} seconds: {recomputed_max_skew:.3f}"
+        )
+
+    return CaptureMetadataEvidence(
+        captured_at_utc=captured_at,
+        fixture_final_url=fixture_final_url,
+        deadline_final_url=deadline_final_url,
+    )
 
 
 def cartola_fixture_rows(payload: dict[str, Any], *, round_number: int) -> list[dict[str, Any]]:
@@ -198,6 +282,46 @@ def _integer_field(payload: dict[str, Any], field: str, *, context: str) -> int:
         if stripped and stripped.lstrip("-").isdigit():
             return int(stripped)
     raise ValueError(f"{context} must be an integer")
+
+
+def _number_field(payload: dict[str, Any], field: str, *, context: str) -> float:
+    value = payload.get(field)
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{context} must be a number")
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            try:
+                return float(stripped)
+            except ValueError:
+                pass
+    raise ValueError(f"{context} must be a number")
+
+
+def _string_field(payload: dict[str, Any], field: str, *, context: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{context} must be a non-empty string")
+    return value
+
+
+def _validated_http_date(capture: dict[str, Any], response_name: str) -> datetime:
+    header_field = f"{response_name}_http_date_header"
+    utc_field = f"{response_name}_http_date_utc"
+    parsed_header = parse_http_date_utc(_string_field(capture, header_field, context=header_field))
+    stored_utc = parse_iso_utc_z(capture.get(utc_field), field_name=utc_field)
+    if parsed_header != stored_utc:
+        raise ValueError(f"{utc_field} does not match {header_field}")
+    return stored_utc
+
+
+def _validated_http_status(capture: dict[str, Any], response_name: str) -> None:
+    field = f"{response_name}_http_status"
+    status = _integer_field(capture, field, context=field)
+    if status != 200:
+        raise ValueError(f"{field} must be 200")
 
 
 def _fixture_date(value: Any) -> str:

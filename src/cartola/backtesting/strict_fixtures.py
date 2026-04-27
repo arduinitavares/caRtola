@@ -18,6 +18,8 @@ from cartola.backtesting.fixture_snapshots import (
     CARTOLA_FIXTURE_ENDPOINT,
     cartola_deadline_at,
     cartola_fixture_rows,
+    parse_iso_utc_z,
+    validate_capture_metadata,
 )
 
 GENERATOR_VERSION = "fixture_snapshot_v1"
@@ -159,7 +161,13 @@ def validate_strict_manifest(
 
     captured_at = _parse_manifest_utc(manifest["captured_at_utc"], field_name="captured_at_utc")
     capture = _read_json(capture_path)
-    source_captured_at = _parse_manifest_utc(capture.get("captured_at_utc"), field_name="capture.json captured_at_utc")
+    capture_evidence = validate_capture_metadata(
+        capture,
+        source=source,
+        season=season,
+        round_number=round_number,
+    )
+    source_captured_at = capture_evidence.captured_at_utc
     if captured_at != source_captured_at:
         raise ValueError("captured_at_utc does not match hashed capture metadata")
 
@@ -170,6 +178,15 @@ def validate_strict_manifest(
         raise ValueError("deadline_at_utc does not match hashed deadline snapshot")
     if captured_at >= deadline_at:
         raise ValueError("captured_at_utc must be strictly before deadline_at_utc")
+    expected_fixture_endpoint = CARTOLA_FIXTURE_ENDPOINT.format(round_number=round_number)
+    if manifest["fixture_endpoint"] != expected_fixture_endpoint:
+        raise ValueError("fixture_endpoint does not match requested Cartola fixture endpoint")
+    if manifest["deadline_endpoint"] != CARTOLA_DEADLINE_ENDPOINT:
+        raise ValueError("deadline_endpoint does not match Cartola market status endpoint")
+    if manifest["fixture_final_url"] != capture_evidence.fixture_final_url:
+        raise ValueError("fixture_final_url does not match hashed capture metadata")
+    if manifest["deadline_final_url"] != capture_evidence.deadline_final_url:
+        raise ValueError("deadline_final_url does not match hashed capture metadata")
 
     return StrictFixtureLoadResult(
         fixture_path=canonical_path,
@@ -375,14 +392,13 @@ def _snapshot_candidate(
     capture = _read_json(capture_path)
     fixture_payload = _read_json(fixture_path)
     deadline_payload = _read_json(deadline_path)
-    if capture.get("source") != source:
-        raise ValueError(f"Snapshot source {capture.get('source')!r} does not match {source!r}")
-    if capture.get("season") != season:
-        raise ValueError(f"Snapshot season {capture.get('season')!r} does not match {season}")
-    if capture.get("rodada") != round_number:
-        raise ValueError(f"Snapshot rodada {capture.get('rodada')!r} does not match {round_number}")
-
-    captured_at = _parse_manifest_utc(capture.get("captured_at_utc"), field_name="captured_at_utc")
+    capture_evidence = validate_capture_metadata(
+        capture,
+        source=source,
+        season=season,
+        round_number=round_number,
+    )
+    captured_at = capture_evidence.captured_at_utc
     deadline_at = cartola_deadline_at(deadline_payload, season=season, round_number=round_number)
     if captured_at >= deadline_at:
         raise ValueError("captured_at_utc must be strictly before deadline_at_utc")
@@ -414,15 +430,7 @@ def _resolve_under_root(project_root: Path, path_value: str | Path) -> Path:
 
 
 def _parse_manifest_utc(value: Any, *, field_name: str) -> datetime:
-    if not isinstance(value, str) or not value.endswith("Z"):
-        raise ValueError(f"{field_name} must be an ISO-8601 UTC timestamp ending in Z")
-    try:
-        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
-    except ValueError as exc:
-        raise ValueError(f"{field_name} must be an ISO-8601 UTC timestamp ending in Z") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != datetime.min.replace(tzinfo=UTC).utcoffset():
-        raise ValueError(f"{field_name} must have UTC offset zero")
-    return parsed.astimezone(UTC)
+    return parse_iso_utc_z(value, field_name=field_name)
 
 
 def _verify_hash(path: Path, expected_hash: Any, *, field_name: str) -> None:
