@@ -17,7 +17,7 @@ In scope:
 - Add strict fixture snapshot storage.
 - Add strict canonical fixture storage with sidecar manifests.
 - Capture Cartola API fixture and deadline payload snapshots before lock.
-- Generate strict canonical `partidas-{round}.csv` files only from raw snapshots and club mapping.
+- Generate strict canonical `partidas-{round}.csv` files only from raw snapshots and source-specific Cartola club ID extraction.
 - Add manifest validation that proves source, hashes, identity, and pre-deadline timing.
 - Add backtest modes: `none`, `exploratory`, and `strict`.
 - Make `fixture_mode="none"` the safe default.
@@ -56,7 +56,7 @@ A canonical fixture file is strict-valid only when it has a sidecar manifest tha
 - the raw fixture snapshot exists and its hash matches
 - the raw deadline snapshot exists and its hash matches
 - the capture metadata exists and its hash matches
-- the club mapping exists and its hash matches
+- any required club mapping or allowlist exists and its hash matches
 - the canonical fixture CSV hash matches
 - timestamps parse as timezone-aware datetimes with UTC offset `+00:00` or `Z`; naive datetimes and non-UTC offsets are invalid
 - `captured_at_utc < deadline_at_utc`
@@ -87,8 +87,10 @@ Required manifest schema:
   "deadline_endpoint": "https://api.cartola.globo.com/mercado/status",
   "deadline_final_url": "https://api.cartola.globo.com/mercado/status",
   "generator_version": "fixture_snapshot_v1",
-  "club_mapping_path": "data/01_raw/fixtures/club_mapping.csv",
-  "club_mapping_sha256": "...",
+  "club_mapping_path": null,
+  "club_mapping_sha256": null,
+  "club_id_allowlist_path": "data/01_raw/fixtures/club_ids/2026.csv",
+  "club_id_allowlist_sha256": "...",
   "canonical_fixture_path": "data/01_raw/fixtures_strict/2026/partidas-12.csv",
   "canonical_fixture_sha256": "..."
 }
@@ -140,8 +142,14 @@ A failed capture must not leave a `captured_at=...` directory. Stale `.tmp-*` di
 {
   "capture_started_at_utc": "2026-06-01T17:59:58Z",
   "captured_at_utc": "2026-06-01T18:00:00Z",
+  "fixture_http_date_header": "Mon, 01 Jun 2026 18:00:00 GMT",
   "fixture_http_date_utc": "2026-06-01T18:00:00Z",
+  "fixture_http_status": 200,
+  "fixture_final_url": "https://api.cartola.globo.com/partidas/12",
+  "deadline_http_date_header": "Mon, 01 Jun 2026 18:00:00 GMT",
   "deadline_http_date_utc": "2026-06-01T18:00:00Z",
+  "deadline_http_status": 200,
+  "deadline_final_url": "https://api.cartola.globo.com/mercado/status",
   "clock_skew_tolerance_seconds": 300,
   "max_observed_clock_skew_seconds": 1.2,
   "source": "cartola_api",
@@ -160,7 +168,7 @@ For v1, `cartola_api` is the only supported strict source.
 1. Capture command fetches the fixture payload and deadline payload before lock.
 2. Capture command writes `capture.json`, `fixtures.json`, and `deadline.json` atomically.
 3. Generator selects the latest strict-valid snapshot before deadline, unless an explicit `captured_at` is provided.
-4. Generator reads only snapshot files plus club mapping.
+4. Generator reads only snapshot files plus any source-specific allowlist or mapping.
 5. Generator writes canonical `partidas-{round}.csv` and `partidas-{round}.manifest.json` atomically.
 6. Strict loader validates manifest fields, hashes, identity, and timing before returning fixtures.
 7. Backtest uses strict loader only when `fixture_mode="strict"`.
@@ -176,13 +184,15 @@ Strict-valid snapshot means:
 - `capture.json`, `fixtures.json`, and `deadline.json` exist in the same capture directory
 - timestamps parse as timezone-aware datetimes with UTC offset `+00:00` or `Z`
 - `captured_at_utc < deadline_at_utc`
-- source payload can be mapped to Cartola club IDs
+- source payload can be converted to Cartola club IDs without outcome data
 
 If multiple snapshot directories parse to the same `captured_at_utc`, snapshot discovery fails and the user must provide an explicit capture path or delete the duplicate. A capture command must fail if its target `captured_at=...` directory already exists.
 
 ## Cartola API Source Contract
 
 V1 strict capture supports only `source="cartola_api"`.
+
+Strict capture is only valid for the active Cartola market round. The deadline endpoint describes `rodada_atual`; it cannot prove deadlines for arbitrary historical or future rounds. Therefore capture must fail unless the requested `round_number` equals `mercado/status.rodada_atual` and the requested `season` equals `mercado/status.temporada`.
 
 Fixture endpoint:
 
@@ -206,10 +216,13 @@ Fixture extraction rule:
 
 - top-level `rodada` must equal requested `round_number`
 - each canonical fixture row is generated from one `partidas[]` item where `valida is true`
+- `clube_casa_id` and `clube_visitante_id` are Cartola club IDs directly and must parse as integers
 - `id_clube_home = clube_casa_id`
 - `id_clube_away = clube_visitante_id`
 - `data = date(partida_data)`
 - score/result fields such as `placar_oficial_mandante` and `placar_oficial_visitante` must be ignored
+
+`cartola_api` does not require `club_mapping.csv`, because the fixture payload already contains Cartola club IDs. If an optional season-specific club ID allowlist is present, it is used only to catch unexpected club IDs and its hash is recorded in the manifest. Non-Cartola sources may introduce `club_mapping_path` in a future milestone, but v1 must not require it for `cartola_api`.
 
 Deadline endpoint:
 
@@ -247,7 +260,7 @@ Tests must use frozen Cartola fixture and deadline payloads so endpoint parsing 
 
 Strict capture relies on local system time plus HTTP response evidence.
 
-The HTTP `Date` header from both Cartola responses is required for strict capture. Header timestamps must parse as timezone-aware datetimes with UTC offset `+00:00` or `Z`; naive datetimes and non-UTC offsets are invalid.
+The HTTP `Date` header from both Cartola responses is required for strict capture. HTTP `Date` headers must parse as RFC 7231 HTTP-date values ending in `GMT`; parsed values are normalized to UTC. JSON manifest timestamps must be ISO-8601 UTC strings ending in `Z`.
 
 Strict capture fails when:
 
@@ -294,6 +307,8 @@ The generator must not read:
 - any same-round outcome columns
 
 This is the core code boundary that prevents recreating the current 2025 leakage pattern.
+
+For `source="cartola_api"`, the generator uses `clube_casa_id` and `clube_visitante_id` directly. It must not perform name-based mapping through the exploratory TheSportsDB `club_mapping.csv`.
 
 ## CLI
 
@@ -435,6 +450,8 @@ Example exploratory metadata:
 - Capture fails if fixture payload or deadline payload cannot be fetched.
 - Capture fails if either Cartola payload is missing required response fields.
 - Capture fails if the deadline payload `temporada` or `rodada_atual` does not match the requested season and round.
+- Capture fails if the fixture payload top-level `rodada` does not match the requested round.
+- Capture fails if any `cartola_api` `clube_casa_id` or `clube_visitante_id` cannot be parsed as an integer.
 - Capture fails if `deadline_at_utc` cannot be extracted from the Cartola deadline payload.
 - Capture fails if the HTTP `Date` header is missing, non-UTC, or outside the clock-skew tolerance for either response.
 - Capture fails if local `captured_at_utc` is not before `deadline_at_utc`.
@@ -442,7 +459,7 @@ Example exploratory metadata:
 - Generation fails if no strict-valid snapshot exists before deadline.
 - Generation fails if multiple snapshot directories have the same parsed `captured_at_utc`.
 - Generation fails if `fixtures.json`, `deadline.json`, and `capture.json` do not come from the same capture directory.
-- Generation fails if source teams cannot be mapped to Cartola IDs.
+- Generation fails if source teams cannot be converted to Cartola IDs. For `cartola_api`, conversion means integer parsing of `clube_casa_id` and `clube_visitante_id`, not name mapping.
 - Generation refuses overwrite unless `--force` is passed.
 - Strict loading fails if any required manifest field is missing.
 - Strict loading fails if any manifest hash mismatches the file content.
@@ -466,39 +483,42 @@ Required tests:
 5. Frozen Cartola deadline payload parsing extracts `deadline_at_utc` from `fechamento.timestamp`.
 6. Capture rejects fixture payloads whose top-level `rodada` does not match `round_number`.
 7. Capture rejects deadline payloads whose `temporada` or `rodada_atual` does not match the request.
-8. Capture rejects missing HTTP `Date` headers.
-9. Capture rejects HTTP `Date` headers with clock skew above tolerance.
-10. Manifest validation rejects missing fields.
-11. Manifest validation rejects bad fixture snapshot hash.
-12. Manifest validation rejects bad deadline snapshot hash.
-13. Manifest validation rejects bad capture metadata hash.
-14. Manifest validation rejects non-UTC timestamps.
-15. Manifest validation rejects equality at deadline.
-16. Manifest validation rejects post-deadline capture.
-17. Manifest validation rejects `mode != "strict"`.
-18. Manifest validation rejects season mismatch.
-19. Manifest validation rejects rodada mismatch.
-20. Manifest validation rejects source mismatch.
-21. Manifest validation rejects `canonical_fixture_path` pointing somewhere other than the loaded file.
-22. Manifest validation rejects paths outside `project_root`, including symlink traversal.
-23. Generator chooses latest strict-valid snapshot before deadline.
-24. Generator rejects duplicate parsed `captured_at_utc` snapshot ties unless an explicit capture is provided.
-25. Generator supports explicit `captured_at`.
-26. Generator refuses if `capture.json`, `fixtures.json`, and `deadline.json` are not from the same capture directory.
-27. Generator refuses overwrite unless `--force`.
-28. Generator module import and signature checks confirm it does not depend on season data or backtest outcome modules.
-29. Strict loader rejects canonical fixtures without manifest.
-30. Strict loader rejects edited canonical CSV after manifest hash mismatch.
-31. Strict loader rejects missing strict fixture files or manifests in the required validation range.
-32. Runner default `fixture_mode="none"` does not load exploratory files accidentally and emits schema-compatible neutral fixture columns.
-33. `fixture_mode="exploratory"` loads current 2025 fixtures only when explicitly requested and writes warning to stdout or stderr and `run_metadata.json`.
-34. `run_metadata.json` for `none` uses empty fixture provenance fields.
-35. `fixture_mode="strict"` validates all fixture-feature target rounds used by training and prediction.
-36. Strict backtest metadata records exact fixture manifest paths used for every validated round.
-37. `strict_alignment_policy="fail"` raises on misalignment.
-38. `strict_alignment_policy="exclude_round"` removes invalid rounds from the season dataframe before training and prediction and records them in metadata.
-39. Existing 2025 exploratory backtest remains runnable only when explicitly requested.
-40. Full quality gate remains `uv run --frozen scripts/pyrepo-check --all`.
+8. Capture rejects `cartola_api` fixture payloads with non-integer `clube_casa_id` or `clube_visitante_id`.
+9. Capture rejects missing HTTP `Date` headers.
+10. Capture parses HTTP `Date` headers as RFC 7231 `GMT` values and normalizes them to UTC.
+11. Capture rejects HTTP `Date` headers with clock skew above tolerance.
+12. Manifest validation rejects missing fields.
+13. Manifest validation rejects bad fixture snapshot hash.
+14. Manifest validation rejects bad deadline snapshot hash.
+15. Manifest validation rejects bad capture metadata hash.
+16. Manifest validation rejects non-UTC JSON timestamps.
+17. Manifest validation rejects equality at deadline.
+18. Manifest validation rejects post-deadline capture.
+19. Manifest validation rejects `mode != "strict"`.
+20. Manifest validation rejects season mismatch.
+21. Manifest validation rejects rodada mismatch.
+22. Manifest validation rejects source mismatch.
+23. Manifest validation rejects `canonical_fixture_path` pointing somewhere other than the loaded file.
+24. Manifest validation rejects paths outside `project_root`, including symlink traversal.
+25. Generator chooses latest strict-valid snapshot before deadline.
+26. Generator rejects duplicate parsed `captured_at_utc` snapshot ties unless an explicit capture is provided.
+27. Generator supports explicit `captured_at`.
+28. Generator refuses if `capture.json`, `fixtures.json`, and `deadline.json` are not from the same capture directory.
+29. Generator refuses overwrite unless `--force`.
+30. Generator module import and signature checks confirm it does not depend on season data or backtest outcome modules.
+31. Generator tests confirm `cartola_api` uses `clube_casa_id` and `clube_visitante_id` directly and does not require `club_mapping.csv`.
+32. Strict loader rejects canonical fixtures without manifest.
+33. Strict loader rejects edited canonical CSV after manifest hash mismatch.
+34. Strict loader rejects missing strict fixture files or manifests in the required validation range.
+35. Runner default `fixture_mode="none"` does not load exploratory files accidentally and emits schema-compatible neutral fixture columns.
+36. `fixture_mode="exploratory"` loads current 2025 fixtures only when explicitly requested and writes warning to stdout or stderr and `run_metadata.json`.
+37. `run_metadata.json` for `none` uses empty fixture provenance fields.
+38. `fixture_mode="strict"` validates all fixture-feature target rounds used by training and prediction.
+39. Strict backtest metadata records exact fixture manifest paths used for every validated round.
+40. `strict_alignment_policy="fail"` raises on misalignment.
+41. `strict_alignment_policy="exclude_round"` removes invalid rounds from the season dataframe before training and prediction and records them in metadata.
+42. Existing 2025 exploratory backtest remains runnable only when explicitly requested.
+43. Full quality gate remains `uv run --frozen scripts/pyrepo-check --all`.
 
 ## Follow-Up Milestone B: Historical 2025 Audit
 
