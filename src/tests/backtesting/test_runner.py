@@ -1,4 +1,7 @@
+from pathlib import Path
+
 import pandas as pd
+import pytest
 from pandas.testing import assert_frame_equal
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
@@ -34,6 +37,29 @@ def _tiny_round(round_number: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _tiny_fixtures(rounds: range) -> pd.DataFrame:
+    rows = []
+    for round_number in rounds:
+        for home_id in range(1, 18, 2):
+            rows.append(
+                {
+                    "rodada": round_number,
+                    "id_clube_home": home_id,
+                    "id_clube_away": home_id + 1,
+                    "data": "2025-04-26",
+                }
+            )
+    return pd.DataFrame(rows, columns=["rodada", "id_clube_home", "id_clube_away", "data"])
+
+
+def _write_tiny_fixture_files(root: Path, rounds: range) -> None:
+    fixture_dir = root / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_dir.mkdir(parents=True)
+    fixtures = _tiny_fixtures(rounds)
+    for round_number, round_fixtures in fixtures.groupby("rodada", sort=True):
+        round_fixtures.to_csv(fixture_dir / f"partidas-{round_number}.csv", index=False)
+
+
 def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
@@ -50,14 +76,7 @@ def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
 
 def test_run_backtest_uses_fixture_files_when_available(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
-    fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
-    fixture_dir.mkdir(parents=True)
-    pd.DataFrame(
-        [
-            {"rodada": 5, "id_clube_home": 1, "id_clube_away": 2, "data": "2025-04-26"},
-        ],
-        columns=["rodada", "id_clube_home", "id_clube_away", "data"],
-    ).to_csv(fixture_dir / "partidas-5.csv", index=False)
+    _write_tiny_fixture_files(tmp_path, range(1, 6))
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 
     result = run_backtest(config, season_df=season_df)
@@ -72,12 +91,7 @@ def test_run_backtest_uses_fixture_files_when_available(tmp_path):
 
 def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
-    fixtures = pd.DataFrame(
-        [
-            {"rodada": 5, "id_clube_home": 1, "id_clube_away": 2, "data": "2025-04-26"},
-        ],
-        columns=["rodada", "id_clube_home", "id_clube_away", "data"],
-    )
+    fixtures = _tiny_fixtures(range(1, 6))
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 
     result = run_backtest(config, season_df=season_df, fixtures=fixtures)
@@ -87,6 +101,20 @@ def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
 
     assert club_1["is_home"] == 1
     assert club_2["is_home"] == 0
+
+
+def test_run_backtest_rejects_fixture_alignment_gaps(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = pd.DataFrame(
+        [
+            {"rodada": 5, "id_clube_home": 1, "id_clube_away": 2, "data": "2025-04-26"},
+        ],
+        columns=["rodada", "id_clube_home", "id_clube_away", "data"],
+    )
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    with pytest.raises(ValueError, match="Fixture alignment failed"):
+        run_backtest(config, season_df=season_df, fixtures=fixtures)
 
 
 def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_path):

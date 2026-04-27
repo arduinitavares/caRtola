@@ -34,6 +34,8 @@ uv run --frozen python scripts/import_fixture_schedule.py --season 2025
 
 O backtest carrega automaticamente `data/01_raw/fixtures/{season}/partidas-*.csv` quando esses arquivos existem. Sem esses arquivos, ele roda com os mesmos defaults sem contexto de partidas.
 
+Os arquivos de partidas de 2025 são uma reconstrução histórica das partidas elegíveis no Cartola, gerada a partir da rodada oficial do TheSportsDB e alinhada com os clubes que efetivamente tiveram atletas em campo nos CSVs do Cartola. Isso é suficiente para medir o valor de features de contexto, mas não substitui snapshots pré-fechamento do mercado para uma simulação live perfeita. O arquivo `partidas-1.csv` fica vazio de propósito porque a rodada 1 de 2025 não tem clubes com `entrou_em_campo=True` nos dados históricos.
+
 Os resultados são gravados em `data/08_reporting/backtests/2025/`:
 
 ```bash

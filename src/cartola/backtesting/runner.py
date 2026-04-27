@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
-from cartola.backtesting.data import load_fixtures, load_season_data
+from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
 from cartola.backtesting.features import build_prediction_frame, build_training_frame
 from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
@@ -55,6 +55,7 @@ def run_backtest(
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
     fixture_data = fixtures.copy() if fixtures is not None else _load_optional_fixtures(config)
+    _validate_fixture_alignment(fixture_data, data)
 
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
@@ -146,6 +147,19 @@ def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:
         return load_fixtures(config.season, project_root=config.project_root)
     except FileNotFoundError:
         return None
+
+
+def _validate_fixture_alignment(fixtures: pd.DataFrame | None, season_df: pd.DataFrame) -> None:
+    if fixtures is None:
+        return
+
+    report = build_round_alignment_report(fixtures, season_df)
+    invalid = report[~report["is_valid"].astype(bool)]
+    if invalid.empty:
+        return
+
+    details = invalid[["rodada", "missing_from_fixtures", "extra_in_fixtures"]].to_dict("records")
+    raise ValueError(f"Fixture alignment failed: {details}")
 
 
 def _strategies() -> dict[str, str]:

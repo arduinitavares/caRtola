@@ -231,6 +231,8 @@ def _add_prior_features(
     frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame[MARKET_OPEN_PRICE_COLUMN])
     frame["prior_variation_mean"] = frame["prior_variation_mean"].fillna(0)
     frame["club_points_roll3"] = frame["club_points_roll3"].fillna(global_club_points_prior)
+    # Missing fixture context is encoded as the neutral away-like default; runner
+    # alignment validation requires fixture coverage for clubs that actually played.
     frame["is_home"] = frame["is_home"].fillna(0).astype(int)
     frame["opponent_club_points_roll3"] = frame["opponent_club_points_roll3"].fillna(global_club_points_prior)
     frame["prior_media"] = frame["prior_media"].fillna(frame["prior_points_mean"])
