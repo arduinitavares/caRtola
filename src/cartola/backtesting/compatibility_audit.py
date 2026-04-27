@@ -238,4 +238,4 @@ def _short_error_message(message: str) -> str:
     one_line = " ".join(str(message).split())
     if len(one_line) <= CSV_ERROR_MESSAGE_LIMIT:
         return one_line
-    return one_line[: CSV_ERROR_MESSAGE_LIMIT - 1] + "..."
+    return one_line[: CSV_ERROR_MESSAGE_LIMIT - 3] + "..."

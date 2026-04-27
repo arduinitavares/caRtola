@@ -88,3 +88,9 @@ def test_classify_season_requires_contiguous_complete_rounds() -> None:
         False,
         ["partial current season; metrics are smoke-test only"],
     )
+
+
+def test_short_error_message_caps_to_configured_limit() -> None:
+    message = audit._short_error_message("x" * 350)
+
+    assert len(message) == audit.CSV_ERROR_MESSAGE_LIMIT
