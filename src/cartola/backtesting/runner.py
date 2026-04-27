@@ -111,6 +111,9 @@ def run_backtest(
         warnings=resolved_fixtures.warnings,
     )
     for round_number in range(config.start_round, max_round + 1):
+        if round_number in excluded_rounds:
+            continue
+
         training = build_training_frame(
             data,
             round_number,

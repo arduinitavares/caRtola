@@ -253,6 +253,7 @@ def test_strict_alignment_policy_exclude_round_removes_invalid_round_before_trai
         "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "abc"
     }
     assert 3 not in set(result.player_predictions["rodada"].dropna().astype(int).tolist())
+    assert 3 not in set(result.round_results["rodada"].dropna().astype(int).tolist())
 
 
 def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_path):
