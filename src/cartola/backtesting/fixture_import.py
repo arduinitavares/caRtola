@@ -162,4 +162,6 @@ def _event_date(event: dict[str, Any], *, round_number: int) -> str:
         parsed = pd.to_datetime(str(value), errors="raise")
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Invalid dateEvent in round {round_number}: {value!r}") from exc
+    if pd.isna(parsed):
+        raise ValueError(f"Invalid dateEvent in round {round_number}: {value!r}")
     return parsed.date().isoformat()

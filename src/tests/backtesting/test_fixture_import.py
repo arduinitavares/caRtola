@@ -76,12 +76,13 @@ def test_events_to_fixture_frame_rejects_unmapped_teams():
         )
 
 
-def test_events_to_fixture_frame_rejects_invalid_event_dates():
+@pytest.mark.parametrize("date_event", [None, "NaT", "nan"])
+def test_events_to_fixture_frame_rejects_invalid_event_dates(date_event):
     events = [
         {
             "strHomeTeam": "Flamengo",
             "strAwayTeam": "Santos",
-            "dateEvent": None,
+            "dateEvent": date_event,
         }
     ]
 
