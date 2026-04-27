@@ -80,23 +80,26 @@ Additional columns are out of scope for this milestone; fixture features must us
 
 ## Source Strategy
 
-The preferred source for 2025 match data is Football-Data's Brazil Série A CSV:
+The verified source for 2025 match data is TheSportsDB's Brazilian Serie A round endpoint:
 
 ```text
-https://www.football-data.co.uk/new/BRA.csv
+https://www.thesportsdb.com/api/v1/json/{api_key}/eventsround.php?id=4351&r={round}&s=2025
 ```
 
-Local verification showed this file includes 2025 rows with `Season`, `Date`, `Home`, `Away`, and score columns. It does not include a round/matchday column, so round assignment cannot be accepted blindly.
+Local verification showed that this endpoint returns one official Brasileirão round at a time with `intRound`, `dateEvent`, `strHomeTeam`, and `strAwayTeam`. The public test key `3` is enough for this import, and the script also supports `THESPORTSDB_API_KEY`.
+
+Football-Data's `https://www.football-data.co.uk/new/BRA.csv` remains useful for match results, but it is not used for this milestone because it lacks an explicit round column.
 
 The import step must:
 
-1. Read Football-Data rows where `Season == 2025`.
-2. Map `Home` and `Away` through committed `club_mapping.csv`.
-3. Assign each match to a Cartola `rodada`.
-4. Write one canonical `partidas-{round}.csv` per round.
-5. Produce a validation report comparing fixture club sets with clubs that actually entered the field in each Cartola round.
+1. Fetch TheSportsDB events for rounds 1 through 38.
+2. Map `strHomeTeam` and `strAwayTeam` through committed `club_mapping.csv`.
+3. Load normalized Cartola player data for the season.
+4. Keep only official-round matches where both clubs are in the Cartola `entrou_em_campo == True` club set for that same round.
+5. Write one canonical `partidas-{round}.csv` per round.
+6. Produce a validation report comparing fixture club sets with clubs that actually entered the field in each Cartola round.
 
-If round assignment cannot be validated, the import must fail rather than silently creating unreliable fixture files.
+If any club that entered the field in Cartola is missing from the generated fixture file for that round, the import must fail rather than silently creating unreliable fixture files.
 
 ## Round Alignment Validation
 

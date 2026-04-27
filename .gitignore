@@ -186,6 +186,10 @@ conf/**/*credentials*
 !**/data/01_raw/iris.csv
 !**/data/01_raw/boston.csv
 
+# keep curated Cartola backtesting fixture inputs
+!**/data/01_raw/fixtures/
+!**/data/01_raw/fixtures/**
+
 # also keep all .gitkeep files
 !.gitkeep
 
