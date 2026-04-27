@@ -37,6 +37,19 @@ FEATURE_COLUMNS: list[str] = [
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
 ]
 
+NUMERIC_PRIOR_COLUMNS: list[str] = [
+    "position_points_prior",
+    "prior_appearances",
+    "prior_points_mean",
+    "prior_points_roll3",
+    "prior_points_roll5",
+    "prior_price_mean",
+    "prior_variation_mean",
+    "prior_media",
+    "prior_num_jogos",
+    *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
+]
+
 
 def build_prediction_frame(season_df: pd.DataFrame, target_round: int) -> pd.DataFrame:
     candidates = season_df[season_df["rodada"] == target_round].copy()
@@ -56,7 +69,11 @@ def build_training_frame(season_df: pd.DataFrame, target_round: int) -> pd.DataF
         frames.append(round_frame)
 
     if not frames:
-        return pd.DataFrame(columns=list(dict.fromkeys([*MARKET_COLUMNS, *FEATURE_COLUMNS, "target"])))
+        return pd.DataFrame(
+            columns=pd.Index(
+                list(dict.fromkeys([*MARKET_COLUMNS, *FEATURE_COLUMNS, "target"]))
+            )
+        )
     return pd.concat(frames, ignore_index=True)
 
 
@@ -71,13 +88,17 @@ def _add_prior_features(candidates: pd.DataFrame, history: pd.DataFrame) -> pd.D
     frame = candidates.merge(_player_history_features(history), on="id_atleta", how="left")
     frame = frame.merge(_position_priors(history), on="posicao", how="left")
 
+    for column in NUMERIC_PRIOR_COLUMNS:
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+
     global_points_prior = float(history["pontuacao"].mean()) if not history.empty else 0.0
     frame["position_points_prior"] = frame["position_points_prior"].fillna(global_points_prior)
     frame["prior_points_mean"] = frame["prior_points_mean"].fillna(frame["position_points_prior"])
     frame["prior_points_roll3"] = frame["prior_points_roll3"].fillna(frame["prior_points_mean"])
     frame["prior_points_roll5"] = frame["prior_points_roll5"].fillna(frame["prior_points_mean"])
     frame["prior_appearances"] = frame["prior_appearances"].fillna(0)
-    frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame.get("preco"))
+    frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame["preco"])
     frame["prior_variation_mean"] = frame["prior_variation_mean"].fillna(0)
     frame["prior_media"] = frame["prior_media"].fillna(frame["prior_points_mean"])
     frame["prior_num_jogos"] = frame["prior_num_jogos"].fillna(0)
@@ -93,7 +114,7 @@ def _add_prior_features(candidates: pd.DataFrame, history: pd.DataFrame) -> pd.D
 
 def _player_history_features(history: pd.DataFrame) -> pd.DataFrame:
     if history.empty:
-        return pd.DataFrame(columns=_player_feature_columns())
+        return pd.DataFrame(columns=pd.Index(_player_feature_columns()))
 
     ordered = history.sort_values(["id_atleta", "rodada"])
     features = (
@@ -141,5 +162,5 @@ def _player_feature_columns() -> list[str]:
 
 def _position_priors(history: pd.DataFrame) -> pd.DataFrame:
     if history.empty:
-        return pd.DataFrame(columns=["posicao", "position_points_prior"])
+        return pd.DataFrame(columns=pd.Index(["posicao", "position_points_prior"]))
     return history.groupby("posicao", as_index=False).agg(position_points_prior=("pontuacao", "mean"))

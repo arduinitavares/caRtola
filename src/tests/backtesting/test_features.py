@@ -1,3 +1,5 @@
+import warnings
+
 import pandas as pd
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
@@ -150,6 +152,18 @@ def test_training_frame_excludes_target_round_from_feature_history() -> None:
 
     assert player_round_2["prior_points_mean"] == 2
     assert player_round_2["target"] == 8
+
+
+def test_feature_fill_does_not_emit_pandas_downcast_future_warning() -> None:
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", FutureWarning)
+        build_training_frame(_season_df(), target_round=3)
+
+    assert not [
+        warning
+        for warning in captured
+        if "Downcasting object dtype arrays" in str(warning.message)
+    ]
 
 
 def test_feature_columns_exist_in_prediction_frame() -> None:

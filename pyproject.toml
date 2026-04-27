@@ -1,42 +1,50 @@
-[tool.poetry]
+[project]
 name = "cartola"
 version = "0.1.0"
 description = "Extração de dados da API do CartolaFC, análise exploratória dos dados e modelos preditivos em R e Python - 2014-22. [EN] Data munging, analysis and modeling of CartolaFC - the most popular fantasy football game in Brazil and maybe in the world. Data cover years 2014-22"
-authors = ["Henrique Gomide <henriquepgomide@gmail.com>"]
-license = "MIT"
+authors = [{ name = "Henrique Gomide", email = "henriquepgomide@gmail.com" }]
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "kedro==0.18.2",
+    "numpy>=2,<3",
+    "pandas>=2.2,<3",
+    "pulp>=2.9,<3",
+    "requests>=2.31,<3",
+    "scikit-learn>=1.6.1,<2",
+    "Unidecode>=1.3.6,<2",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.11"
-kedro = "0.18.2"
-mypy = "^0.982"
-Unidecode = "^1.3.6"
-numpy = ">=1.23,<2"
-pandas = "^1.5.0"
-scikit-learn = "^1.6.1"
-pulp = "^2.9.0"
-
-[tool.poetry.dev-dependencies]
-kedro-docker = "^0.3.0"
-kedro-telemetry = "^0.2.1"
-kedro-viz = "^5.1.1"
-pytest = "^7.1.3"
-pytest-cov = "^4.0.0"
-pytest-mock = "^3.10.0"
-pre-commit = "^2.20.0"
-jupyterlab = "^3.4.8"
-black = "^22.10.0"
-flake8 = "^5.0.4"
-isort = "^5.10.1"
-ruff = "^0.15.12"
-ty = "^0.0.32"
-bandit = "^1.9.4"
-jupyter = "^1.0.0"
-nbstripout = "^0.6.1"
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4,<2",
+    "black>=25.0,<26",
+    "flake8>=7.0,<8",
+    "isort>=6.0,<7",
+    "mypy>=1.18,<2",
+    "pre-commit>=4.0,<5",
+    "pytest>=7.4,<8",
+    "pytest-cov>=4.1,<5",
+    "pytest-mock>=3.10,<4",
+    "ruff>=0.15.12,<1",
+    "ty>=0.0.32,<0.1",
+]
+kedro-tools = [
+    "kedro-docker>=0.3,<0.4",
+    "kedro-telemetry>=0.2,<0.3",
+    "kedro-viz>=5.1,<6",
+]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cartola"]
+
+[tool.uv]
+default-groups = ["dev"]
 
 [tool.kedro]
 package_name = "cartola"
@@ -79,7 +87,7 @@ sort_by_size = true
 verbose = true
 
 [tool.ty.environment]
-python-version = "3.10"
+python-version = "3.13"
 python-platform = "linux"
 root = ["./src"]
 

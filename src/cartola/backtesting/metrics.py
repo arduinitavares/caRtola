@@ -16,11 +16,11 @@ def build_summary(round_results: pd.DataFrame, benchmark_strategy: str = "price"
     columns = [*SUMMARY_COLUMNS, delta_column]
 
     if round_results.empty:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=pd.Index(columns))
 
     optimal_results = round_results[round_results["solver_status"] == "Optimal"]
     if optimal_results.empty:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=pd.Index(columns))
 
     summary = (
         optimal_results.groupby("strategy", as_index=False)

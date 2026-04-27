@@ -14,16 +14,22 @@ Você encontra os dados raw do *Cartola FC* desde 2014 na pasta [data/01_raw][fo
 
 ## 🧪 Backtesting
 
-Para executar o backtest offline de 2025 com o ambiente virtual local:
+Para instalar as dependências antes de executar comandos locais:
 
 ```bash
-.venv/bin/python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100
+uv sync --dev
 ```
 
-Se estiver usando Poetry, o comando equivalente é:
+Para executar o backtest offline de 2025:
 
 ```bash
-poetry run python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100
+uv run python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100
+```
+
+Os resultados são gravados em `data/08_reporting/backtests/2025/`:
+
+```bash
+sed -n '1,20p' data/08_reporting/backtests/2025/summary.csv
 ```
 
 ## ✅ Qualidade
@@ -31,7 +37,7 @@ poetry run python -m cartola.backtesting.cli --season 2025 --start-round 5 --bud
 O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:
 
 ```bash
-poetry run scripts/pyrepo-check --all
+uv run scripts/pyrepo-check --all
 ```
 
 Esse comando roda Ruff, ty, Bandit e pytest usando a configuração versionada neste repositório.

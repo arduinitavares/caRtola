@@ -95,7 +95,7 @@ def run_backtest(config: BacktestConfig, season_df: pd.DataFrame | None = None) 
                 selected["strategy"] = strategy
                 selected_frames.append(selected)
 
-    round_results = pd.DataFrame(round_rows, columns=ROUND_RESULT_COLUMNS)
+    round_results = pd.DataFrame(round_rows, columns=pd.Index(ROUND_RESULT_COLUMNS))
     selected_players = _concat_or_empty(selected_frames)
     player_predictions = _concat_or_empty(prediction_frames)
     summary = build_summary(round_results, benchmark_strategy="price")
