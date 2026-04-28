@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, cast
+
+from cartola.backtesting.config import BacktestConfig, FootyStatsMode
 
 DEFAULT_SEASONS = (2023, 2024, 2025)
 DEFAULT_OUTPUT_ROOT = Path("data/08_reporting/backtests/footystats_ablation")
@@ -81,6 +84,77 @@ def config_from_args(args: argparse.Namespace) -> FootyStatsPPGAblationConfig:
         current_year=args.current_year,
         force=args.force,
     )
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def resolve_output_root(config: FootyStatsPPGAblationConfig) -> Path:
+    project_root = config.project_root.resolve()
+    output_root = config.output_root
+    resolved_output_root = (output_root if output_root.is_absolute() else project_root / output_root).resolve()
+
+    if not _is_relative_to(resolved_output_root, project_root):
+        raise ValueError(f"output_root must resolve inside project_root: {project_root}")
+
+    normal_backtests_root = project_root / "data" / "08_reporting" / "backtests"
+    protected_paths = {
+        project_root,
+        project_root / "data",
+        project_root / "data" / "08_reporting",
+        normal_backtests_root,
+        *(normal_backtests_root / str(season) for season in config.seasons),
+    }
+    if resolved_output_root in protected_paths:
+        raise ValueError(f"output_root resolves to a protected path: {resolved_output_root}")
+
+    if resolved_output_root.name != "footystats_ablation":
+        raise ValueError("output_root final directory name must be exactly 'footystats_ablation'")
+
+    return resolved_output_root
+
+
+def build_backtest_config(
+    config: FootyStatsPPGAblationConfig,
+    season: int,
+    mode: str,
+    resolved_output_root: Path,
+) -> BacktestConfig:
+    if mode not in ("none", "ppg"):
+        raise ValueError(f"Unsupported footystats mode: {mode!r}")
+    footystats_mode = cast(FootyStatsMode, mode)
+
+    backtest_config = BacktestConfig(
+        season=season,
+        start_round=config.start_round,
+        budget=config.budget,
+        project_root=config.project_root.resolve(),
+        output_root=resolved_output_root / "runs" / str(season) / f"footystats_mode={footystats_mode}",
+        fixture_mode="none",
+        footystats_mode=footystats_mode,
+        footystats_evaluation_scope="historical_candidate",
+        footystats_league_slug=config.footystats_league_slug,
+        current_year=config.resolved_current_year,
+    )
+
+    normal_backtest_output_path = backtest_config.project_root / "data" / "08_reporting" / "backtests" / str(season)
+    if backtest_config.output_path.resolve() == normal_backtest_output_path.resolve():
+        raise ValueError(f"Refusing to use normal backtest output path: {normal_backtest_output_path}")
+
+    return backtest_config
+
+
+def prepare_output_root(config: FootyStatsPPGAblationConfig, resolved_output_root: Path) -> None:
+    if resolved_output_root.exists():
+        if not config.force:
+            raise FileExistsError(f"output_root already exists: {resolved_output_root}")
+        shutil.rmtree(resolved_output_root)
+    resolved_output_root.mkdir(parents=True, exist_ok=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
