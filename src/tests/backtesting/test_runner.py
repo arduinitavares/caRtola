@@ -107,6 +107,27 @@ def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):
     assert metadata["footystats_extra_club_rows_by_round"] == {}
 
 
+def test_run_backtest_rejects_inactive_footystats_mode(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, footystats_mode="ppg")
+
+    with pytest.raises(ValueError, match="footystats_mode='ppg'.*not.*implemented"):
+        run_backtest(config, season_df=season_df)
+
+
+def test_run_backtest_rejects_inactive_footystats_evaluation_scope(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        footystats_evaluation_scope="live_current",
+    )
+
+    with pytest.raises(ValueError, match="footystats_evaluation_scope='live_current'.*not.*implemented"):
+        run_backtest(config, season_df=season_df)
+
+
 def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     _write_tiny_fixture_files(tmp_path, range(1, 6))

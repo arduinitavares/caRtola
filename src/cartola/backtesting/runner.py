@@ -89,6 +89,7 @@ def run_backtest(
     season_df: pd.DataFrame | None = None,
     fixtures: pd.DataFrame | None = None,
 ) -> BacktestResult:
+    _validate_footystats_config(config)
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
@@ -206,6 +207,18 @@ def run_backtest(
         diagnostics=diagnostics,
         metadata=metadata,
     )
+
+
+def _validate_footystats_config(config: BacktestConfig) -> None:
+    if config.footystats_mode != "none":
+        raise ValueError(
+            f"footystats_mode={config.footystats_mode!r} is not implemented by the current backtest runner."
+        )
+    if config.footystats_evaluation_scope != "historical_candidate":
+        raise ValueError(
+            "footystats_evaluation_scope="
+            f"{config.footystats_evaluation_scope!r} is not implemented by the current backtest runner."
+        )
 
 
 def _max_round(data: pd.DataFrame) -> int:
