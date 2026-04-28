@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 import pandas as pd
 import pytest
 
 from cartola.backtesting.footystats_features import (
+    FOOTYSTATS_XG_SOURCE_COLUMNS,
     REQUIRED_MATCH_COLUMNS,
     build_footystats_join_diagnostics,
+    load_footystats_feature_rows,
     load_footystats_ppg_rows,
     merge_footystats_ppg,
 )
@@ -81,12 +81,93 @@ def test_load_footystats_ppg_rows_reads_only_required_safe_columns(tmp_path: Pat
 
     _load_historical(tmp_path)
 
-    assert len(footystats_usecols) == 1
-    usecols = footystats_usecols[0]
-    assert callable(usecols)
-    usecols_predicate = cast(Callable[[str], bool], usecols)
-    candidate_columns = [*REQUIRED_MATCH_COLUMNS, "home_team_goal_count", "Home Team Pre-Match xG"]
-    assert [column for column in candidate_columns if usecols_predicate(column)] == list(REQUIRED_MATCH_COLUMNS)
+    assert footystats_usecols == [None, list(REQUIRED_MATCH_COLUMNS)]
+
+
+def test_load_footystats_feature_rows_ppg_xg_builds_xg_features(tmp_path: Path) -> None:
+    _write_matches_csv(
+        tmp_path,
+        [
+            _match_row(
+                week=week,
+                home_xg=1.8 if week == 1 else 2.1,
+                away_xg=0.7 if week == 1 else 1.0,
+            )
+            for week in range(1, 39)
+        ],
+    )
+    _write_cartola_round(tmp_path)
+
+    result = _load_historical(tmp_path, footystats_mode="ppg_xg")
+
+    assert result.footystats_mode == "ppg_xg"
+    assert "team_a_xg" not in result.rows.columns
+    assert "team_b_xg" not in result.rows.columns
+    home_row = result.rows[(result.rows["rodada"] == 1) & (result.rows["id_clube"] == 262)].iloc[0]
+    away_row = result.rows[(result.rows["rodada"] == 1) & (result.rows["id_clube"] == 275)].iloc[0]
+    assert home_row["footystats_team_pre_match_xg"] == 1.8
+    assert home_row["footystats_opponent_pre_match_xg"] == 0.7
+    assert home_row["footystats_xg_diff"] == pytest.approx(1.1)
+    assert away_row["footystats_team_pre_match_xg"] == 0.7
+    assert away_row["footystats_opponent_pre_match_xg"] == 1.8
+    assert away_row["footystats_xg_diff"] == pytest.approx(-1.1)
+
+
+def test_load_footystats_feature_rows_ppg_xg_reads_only_required_safe_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = _write_matches_csv(tmp_path, [_match_row(week=week) for week in range(1, 39)])
+    _write_cartola_round(tmp_path)
+    original_read_csv = pd.read_csv
+    footystats_usecols: list[object] = []
+
+    def capture_read_csv(*args, **kwargs):
+        if args and Path(args[0]) == source_path:
+            footystats_usecols.append(kwargs.get("usecols"))
+        return original_read_csv(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_csv", capture_read_csv)
+
+    _load_historical(tmp_path, footystats_mode="ppg_xg")
+
+    assert footystats_usecols == [None, [*REQUIRED_MATCH_COLUMNS, *FOOTYSTATS_XG_SOURCE_COLUMNS]]
+
+
+def test_load_footystats_feature_rows_ppg_does_not_require_xg_columns(tmp_path: Path) -> None:
+    _write_matches_csv(
+        tmp_path,
+        [_match_row(week=week) for week in range(1, 39)],
+        drop_columns=list(FOOTYSTATS_XG_SOURCE_COLUMNS),
+    )
+    _write_cartola_round(tmp_path)
+
+    result = _load_historical(tmp_path, footystats_mode="ppg")
+
+    assert result.footystats_mode == "ppg"
+    assert "footystats_team_pre_match_xg" not in result.rows.columns
+
+
+def test_load_footystats_feature_rows_ppg_xg_rejects_missing_xg_column(tmp_path: Path) -> None:
+    _write_matches_csv(
+        tmp_path,
+        [_match_row(week=week) for week in range(1, 39)],
+        drop_columns=["Away Team Pre-Match xG"],
+    )
+    _write_cartola_round(tmp_path)
+
+    with pytest.raises(ValueError, match="missing required columns.*Away Team Pre-Match xG"):
+        _load_historical(tmp_path, footystats_mode="ppg_xg")
+
+
+def test_load_footystats_feature_rows_ppg_xg_rejects_missing_xg_value(tmp_path: Path) -> None:
+    rows = [_match_row(week=week) for week in range(1, 39)]
+    rows[0]["Home Team Pre-Match xG"] = None
+    _write_matches_csv(tmp_path, rows)
+    _write_cartola_round(tmp_path)
+
+    with pytest.raises(ValueError, match="missing or non-numeric xG values.*Home Team Pre-Match xG"):
+        _load_historical(tmp_path, footystats_mode="ppg_xg")
 
 
 def test_load_footystats_ppg_rows_rejects_missing_required_ppg_column(tmp_path: Path) -> None:
@@ -261,14 +342,24 @@ def test_build_footystats_join_diagnostics_reports_extra_club_rows() -> None:
     assert diagnostics.extra_club_rows_by_round == {"3": [{"rodada": 3, "id_clube": 20}]}
 
 
-def _load_historical(project_root: Path):
-    return load_footystats_ppg_rows(
+def _load_historical(project_root: Path, *, footystats_mode: str = "ppg"):
+    if footystats_mode == "ppg":
+        return load_footystats_ppg_rows(
+            season=SEASON,
+            project_root=project_root,
+            footystats_dir=Path("data/footystats"),
+            league_slug=LEAGUE_SLUG,
+            evaluation_scope="historical_candidate",
+            current_year=None,
+        )
+    return load_footystats_feature_rows(
         season=SEASON,
         project_root=project_root,
         footystats_dir=Path("data/footystats"),
         league_slug=LEAGUE_SLUG,
         evaluation_scope="historical_candidate",
         current_year=None,
+        footystats_mode=footystats_mode,
     )
 
 
@@ -279,6 +370,8 @@ def _match_row(
     away: str = "Palmeiras",
     home_ppg: float = 1.0,
     away_ppg: float = 2.0,
+    home_xg: float = 1.4,
+    away_xg: float = 0.8,
     status: str = "complete",
 ) -> dict[str, object]:
     return {
@@ -287,8 +380,12 @@ def _match_row(
         "away_team_name": away,
         "Pre-Match PPG (Home)": home_ppg,
         "Pre-Match PPG (Away)": away_ppg,
+        "Home Team Pre-Match xG": home_xg,
+        "Away Team Pre-Match xG": away_xg,
         "status": status,
         "home_team_goal_count": 3,
+        "team_a_xg": 2.4,
+        "team_b_xg": 0.6,
     }
 
 

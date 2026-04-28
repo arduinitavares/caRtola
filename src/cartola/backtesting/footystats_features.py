@@ -18,6 +18,11 @@ REQUIRED_MATCH_COLUMNS: tuple[str, ...] = (
     "status",
 )
 PPG_COLUMNS: tuple[str, ...] = ("Pre-Match PPG (Home)", "Pre-Match PPG (Away)")
+FOOTYSTATS_XG_SOURCE_COLUMNS: tuple[str, ...] = ("Home Team Pre-Match xG", "Away Team Pre-Match xG")
+SOURCE_COLUMNS_BY_MODE: dict[str, tuple[str, ...]] = {
+    "ppg": REQUIRED_MATCH_COLUMNS,
+    "ppg_xg": (*REQUIRED_MATCH_COLUMNS, *FOOTYSTATS_XG_SOURCE_COLUMNS),
+}
 RESULT_COLUMNS: tuple[str, ...] = (
     "rodada",
     "id_clube",
@@ -27,11 +32,25 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "footystats_opponent_pre_match_ppg",
     "footystats_ppg_diff",
 )
+XG_RESULT_COLUMNS: tuple[str, ...] = (
+    "footystats_team_pre_match_xg",
+    "footystats_opponent_pre_match_xg",
+    "footystats_xg_diff",
+)
 PPG_FEATURE_COLUMNS: tuple[str, ...] = (
     "footystats_team_pre_match_ppg",
     "footystats_opponent_pre_match_ppg",
     "footystats_ppg_diff",
 )
+XG_FEATURE_COLUMNS: tuple[str, ...] = XG_RESULT_COLUMNS
+FEATURE_COLUMNS_BY_MODE: dict[str, tuple[str, ...]] = {
+    "ppg": PPG_FEATURE_COLUMNS,
+    "ppg_xg": (*PPG_FEATURE_COLUMNS, *XG_FEATURE_COLUMNS),
+}
+RESULT_COLUMNS_BY_MODE: dict[str, tuple[str, ...]] = {
+    "ppg": RESULT_COLUMNS,
+    "ppg_xg": (*RESULT_COLUMNS, *XG_RESULT_COLUMNS),
+}
 
 
 @dataclass(frozen=True)
@@ -47,6 +66,8 @@ class FootyStatsPPGLoadResult:
     source_path: Path
     source_sha256: str
     diagnostics: FootyStatsJoinDiagnostics
+    footystats_mode: str = "ppg"
+    feature_columns: tuple[str, ...] = PPG_FEATURE_COLUMNS
 
 
 def merge_footystats_ppg(
@@ -72,7 +93,8 @@ def merge_footystats_ppg(
     if missing_clubs:
         raise ValueError(f"missing FootyStats PPG rows for round {target_round} clubs: {missing_clubs}")
 
-    feature_rows = round_rows[["id_clube", *PPG_FEATURE_COLUMNS]]
+    feature_columns = [column for column in FEATURE_COLUMNS_BY_MODE["ppg_xg"] if column in round_rows.columns]
+    feature_rows = round_rows[["id_clube", *feature_columns]]
     return frame.merge(feature_rows, on="id_clube", how="left", validate="many_to_one")
 
 
@@ -111,6 +133,30 @@ def load_footystats_ppg_rows(
     evaluation_scope: str,
     current_year: int | None,
 ) -> FootyStatsPPGLoadResult:
+    return load_footystats_feature_rows(
+        season=season,
+        project_root=project_root,
+        footystats_dir=footystats_dir,
+        league_slug=league_slug,
+        evaluation_scope=evaluation_scope,
+        current_year=current_year,
+        footystats_mode="ppg",
+    )
+
+
+def load_footystats_feature_rows(
+    *,
+    season: int,
+    project_root: Path,
+    footystats_dir: Path,
+    league_slug: str,
+    evaluation_scope: str,
+    current_year: int | None,
+    footystats_mode: str,
+) -> FootyStatsPPGLoadResult:
+    if footystats_mode not in SOURCE_COLUMNS_BY_MODE:
+        raise ValueError(f"Unsupported footystats_mode: {footystats_mode}")
+
     source_path = _source_path(
         project_root=project_root,
         footystats_dir=footystats_dir,
@@ -126,13 +172,14 @@ def load_footystats_ppg_rows(
         if season != resolved_current_year:
             raise ValueError(f"live_current requires season {season} to equal current_year {resolved_current_year}")
 
-    required_columns = set(REQUIRED_MATCH_COLUMNS)
-    df = pd.read_csv(source_path, usecols=lambda column: column in required_columns)
-    _require_columns(df)
+    required_columns = SOURCE_COLUMNS_BY_MODE[footystats_mode]
+    df = _read_source_frame(source_path, required_columns)
 
     game_weeks = _validated_game_weeks(df)
     home_ppg = _validated_ppg(df, "Pre-Match PPG (Home)")
     away_ppg = _validated_ppg(df, "Pre-Match PPG (Away)")
+    home_xg = _validated_xg(df, "Home Team Pre-Match xG") if footystats_mode == "ppg_xg" else None
+    away_xg = _validated_xg(df, "Away Team Pre-Match xG") if footystats_mode == "ppg_xg" else None
     statuses = _validated_statuses(df, evaluation_scope)
     _validate_team_names_present(df)
 
@@ -146,7 +193,16 @@ def load_footystats_ppg_rows(
     comparison = compare_teams_to_cartola(season=season, footystats_team_names=team_names, project_root=project_root)
     _validate_team_mapping(comparison)
 
-    rows = _build_feature_rows(df, game_weeks, home_ppg, away_ppg, comparison.mapped_teams)
+    rows = _build_feature_rows(
+        df,
+        game_weeks,
+        home_ppg,
+        away_ppg,
+        comparison.mapped_teams,
+        footystats_mode=footystats_mode,
+        home_xg=home_xg,
+        away_xg=away_xg,
+    )
     _reject_duplicate_join_keys(rows)
 
     return FootyStatsPPGLoadResult(
@@ -154,6 +210,8 @@ def load_footystats_ppg_rows(
         source_path=source_path,
         source_sha256=_sha256_file(source_path),
         diagnostics=FootyStatsJoinDiagnostics(),
+        footystats_mode=footystats_mode,
+        feature_columns=FEATURE_COLUMNS_BY_MODE[footystats_mode],
     )
 
 
@@ -175,8 +233,14 @@ def _validate_source_filename(source_path: Path, *, season: int, league_slug: st
         raise ValueError(f"FootyStats filename table type {parsed.table_type!r} does not match required 'matches'")
 
 
-def _require_columns(df: pd.DataFrame) -> None:
-    missing_columns = [column for column in REQUIRED_MATCH_COLUMNS if column not in df.columns]
+def _read_source_frame(source_path: Path, required_columns: tuple[str, ...]) -> pd.DataFrame:
+    header = pd.read_csv(source_path, nrows=0)
+    _require_columns(header, required_columns)
+    return pd.read_csv(source_path, usecols=list(required_columns))
+
+
+def _require_columns(df: pd.DataFrame, required_columns: tuple[str, ...]) -> None:
+    missing_columns = [column for column in required_columns if column not in df.columns]
     if missing_columns:
         raise ValueError(f"FootyStats matches file missing required columns: {', '.join(missing_columns)}")
 
@@ -193,6 +257,13 @@ def _validated_ppg(df: pd.DataFrame, column: str) -> pd.Series:
     values = pd.to_numeric(df[column], errors="coerce")
     if bool(values.isna().any()):
         raise ValueError(f"FootyStats matches file has missing or non-numeric PPG values in {column}")
+    return values.astype(float)
+
+
+def _validated_xg(df: pd.DataFrame, column: str) -> pd.Series:
+    values = pd.to_numeric(df[column], errors="coerce")
+    if bool(values.isna().any()):
+        raise ValueError(f"FootyStats matches file has missing or non-numeric xG values in {column}")
     return values.astype(float)
 
 
@@ -239,6 +310,10 @@ def _build_feature_rows(
     home_ppg: pd.Series,
     away_ppg: pd.Series,
     mapped_teams: dict[str, int],
+    *,
+    footystats_mode: str,
+    home_xg: pd.Series | None,
+    away_xg: pd.Series | None,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for index, match in df.iterrows():
@@ -249,31 +324,48 @@ def _build_feature_rows(
         rodada = int(game_weeks.loc[index])
         home_value = float(home_ppg.loc[index])
         away_value = float(away_ppg.loc[index])
+        home_row = {
+            "rodada": rodada,
+            "id_clube": home_id,
+            "opponent_id_clube": away_id,
+            "is_home_footystats": 1,
+            "footystats_team_pre_match_ppg": home_value,
+            "footystats_opponent_pre_match_ppg": away_value,
+            "footystats_ppg_diff": home_value - away_value,
+        }
+        away_row = {
+            "rodada": rodada,
+            "id_clube": away_id,
+            "opponent_id_clube": home_id,
+            "is_home_footystats": 0,
+            "footystats_team_pre_match_ppg": away_value,
+            "footystats_opponent_pre_match_ppg": home_value,
+            "footystats_ppg_diff": away_value - home_value,
+        }
+        if footystats_mode == "ppg_xg":
+            if home_xg is None or away_xg is None:
+                raise ValueError("ppg_xg mode requires pre-match xG values")
+            home_xg_value = float(home_xg.loc[index])
+            away_xg_value = float(away_xg.loc[index])
+            home_row.update(
+                {
+                    "footystats_team_pre_match_xg": home_xg_value,
+                    "footystats_opponent_pre_match_xg": away_xg_value,
+                    "footystats_xg_diff": home_xg_value - away_xg_value,
+                }
+            )
+            away_row.update(
+                {
+                    "footystats_team_pre_match_xg": away_xg_value,
+                    "footystats_opponent_pre_match_xg": home_xg_value,
+                    "footystats_xg_diff": away_xg_value - home_xg_value,
+                }
+            )
 
-        rows.append(
-            {
-                "rodada": rodada,
-                "id_clube": home_id,
-                "opponent_id_clube": away_id,
-                "is_home_footystats": 1,
-                "footystats_team_pre_match_ppg": home_value,
-                "footystats_opponent_pre_match_ppg": away_value,
-                "footystats_ppg_diff": home_value - away_value,
-            }
-        )
-        rows.append(
-            {
-                "rodada": rodada,
-                "id_clube": away_id,
-                "opponent_id_clube": home_id,
-                "is_home_footystats": 0,
-                "footystats_team_pre_match_ppg": away_value,
-                "footystats_opponent_pre_match_ppg": home_value,
-                "footystats_ppg_diff": away_value - home_value,
-            }
-        )
+        rows.append(home_row)
+        rows.append(away_row)
 
-    result = pd.DataFrame(rows, columns=pd.Index(RESULT_COLUMNS))
+    result = pd.DataFrame(rows, columns=pd.Index(RESULT_COLUMNS_BY_MODE[footystats_mode]))
     return result
 
 
