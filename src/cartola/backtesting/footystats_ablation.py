@@ -392,7 +392,10 @@ def _diagnostic_value(diagnostics: pd.DataFrame, metric: str) -> float:
 
 
 def _finite_float(value: object, *, context: str) -> float:
-    numeric_value = float(value)
+    try:
+        numeric_value = float(cast(Any, value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"non-numeric {context}: {value!r}") from exc
     if not math.isfinite(numeric_value):
         raise ValueError(f"non-finite {context}: {numeric_value!r}")
     return numeric_value
@@ -585,7 +588,7 @@ def write_reports(result: FootyStatsPPGAblationResult) -> None:
     }
 
     try:
-        pd.DataFrame(rows, columns=CSV_COLUMNS).to_csv(csv_tmp, index=False, na_rep="")
+        pd.DataFrame(rows, columns=pd.Index(CSV_COLUMNS)).to_csv(csv_tmp, index=False, na_rep="")
         json_tmp.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         csv_backup.unlink(missing_ok=True)
         json_backup.unlink(missing_ok=True)
