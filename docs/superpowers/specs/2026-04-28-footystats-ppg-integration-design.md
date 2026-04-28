@@ -113,7 +113,10 @@ Add an explicit evaluation scope:
 
 ```python
 footystats_evaluation_scope: Literal["historical_candidate", "live_current"] = "historical_candidate"
+current_year: int | None = None
 ```
+
+`current_year` resolves to the runtime UTC year when `None`, but tests and reproducible CLI examples must pass it explicitly.
 
 Behavior:
 
@@ -122,7 +125,7 @@ Behavior:
 
 When `ppg` mode is enabled for comparable historical evaluation:
 
-- The selected season's FootyStats audit classification must be `candidate`.
+- The loader must compute candidate validity from the selected source file at runtime using audit-equivalent validation. It must not read or trust stale compatibility report files.
 - A partial/current season such as `2026` must fail in `historical_candidate` scope, even if the loader can technically join rows.
 - For a single-season 2025 benchmark, use the 2025 FootyStats match file and current Cartola season data as an exploratory feature ablation.
 - If a target-round club has no FootyStats row, fail the run with a clear error. Do not silently fill with neutral values; missing context would make the ablation misleading.
@@ -141,14 +144,32 @@ The backtest output path must isolate ablation runs. The measurement commands mu
 - Duplicate join keys by round
 - Extra FootyStats club rows by round
 
+Join diagnostics should be JSON objects grouped by round:
+
+```json
+{
+  "missing_join_keys_by_round": {
+    "12": [{"rodada": 12, "id_clube": 262}]
+  },
+  "duplicate_join_keys_by_round": {
+    "12": [{"rodada": 12, "id_clube": 262, "count": 2}]
+  },
+  "extra_footystats_club_rows_by_round": {
+    "12": [{"rodada": 12, "id_clube": 999}]
+  }
+}
+```
+
 ## Live Behavior
 
 Live/current season use is allowed for `2026` because the goal is actual squad selection, not complete-season metric comparison.
 
+This milestone does not add a live prediction entrypoint. `live_current` is validation groundwork for that later workflow. The existing backtest CLI must reject `footystats_evaluation_scope="live_current"` with a clear error, because a normal backtest output is an evaluation artifact.
+
 For live prediction:
 
 - Use target-round FootyStats rows even if fixture `status` is `incomplete`, because that means the match is not finished yet.
-- `live_current` scope must be explicit.
+- `live_current` scope must be explicit and requires `footystats_mode="ppg"`.
 - `live_current` scope is only valid when `season` equals the configured current year.
 - `live_current` must reject target-round rows whose `status` is neither `complete` nor `incomplete`.
 - Do not use rows with missing required PPG values.
@@ -212,14 +233,16 @@ Tests must cover:
 - Opponent PPG assignment.
 - PPG diff sign.
 - Team-name mapping reuse.
+- Post-match columns present in the source CSV do not appear in the FootyStats feature frame.
 - Rejection of missing required PPG columns.
 - Rejection of duplicate club rows for one `season + rodada + id_clube`.
+- Rejection of historical `status != "complete"` in `historical_candidate` scope for any season, not only `2026`.
 - Prediction-frame merge for a target round.
 - Training-frame merge through walk-forward frame construction.
 - `footystats_mode="none"` preserves current behavior.
 - `footystats_mode="ppg"` fails when required target-round rows are missing.
 - `footystats_mode="ppg"` fails in `historical_candidate` scope for a partial/current season.
-- `footystats_mode="ppg"` can load current-year rows only under explicit `live_current` scope.
+- The existing backtest CLI rejects `live_current` scope until a live prediction entrypoint exists.
 - Missing PPG values fail before model fitting.
 - Duplicate `(rodada, id_clube)` joins fail before model fitting.
 - Run metadata records FootyStats mode, source path, source hash, and feature columns.
@@ -263,7 +286,9 @@ data/08_reporting/backtests/footystats_ppg/2025/
 Success signal:
 
 - RF average squad points improves over the current fixture-context RF.
-- Player-level `r2` and correlation do not regress materially.
+- Player-level `r2` and correlation are reported for both runs.
+
+This milestone does not gate merge on automatic model-quality thresholds. The ablation result decides whether to keep using PPG features in later modeling work.
 
 Failure signal:
 
