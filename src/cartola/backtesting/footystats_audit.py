@@ -77,7 +77,7 @@ CARTOLA_ABBREVIATIONS = {
     "PAL": "palmeiras",
     "SAO": "sao paulo",
     "SAN": "santos",
-    "RBB": "red bull bragantino",
+    "RBB": "bragantino",
     "CAM": "atletico mineiro",
     "CRU": "cruzeiro",
     "GRE": "gremio",
@@ -114,8 +114,8 @@ TEAM_ALIASES = {
     "vasco da gama": "vasco da gama",
     "sport": "sport recife",
     "sport recife": "sport recife",
-    "rb bragantino": "red bull bragantino",
-    "red bull bragantino": "red bull bragantino",
+    "rb bragantino": "bragantino",
+    "red bull bragantino": "bragantino",
     "sao paulo": "sao paulo",
 }
 

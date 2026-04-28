@@ -165,3 +165,24 @@ def test_compare_footystats_teams_to_cartola_clubs_reports_unmapped(tmp_path: Pa
     assert comparison.cartola_clubs_by_normalized_name == {"flamengo": 262, "palmeiras": 275}
     assert comparison.mapped_teams == {"Flamengo": 262, "Palmeiras": 275}
     assert comparison.unmapped_footystats_teams == ["Mirassol"]
+
+
+def test_compare_footystats_bragantino_to_cartola_rbb(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [280],
+            "atletas.clube.id.full.name": ["RBB"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    comparison = audit.compare_teams_to_cartola(
+        season=2025,
+        footystats_team_names=["Bragantino"],
+        project_root=tmp_path,
+    )
+
+    assert comparison.cartola_clubs_by_normalized_name == {"bragantino": 280}
+    assert comparison.mapped_teams == {"Bragantino": 280}
+    assert comparison.unmapped_footystats_teams == []
