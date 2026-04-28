@@ -86,6 +86,10 @@ class SeasonAblationRecord:
     metric_status: str = "skipped"
     control_output_path: str | None = None
     treatment_output_path: str | None = None
+    control_summary_path: str | None = None
+    treatment_summary_path: str | None = None
+    control_diagnostics_path: str | None = None
+    treatment_diagnostics_path: str | None = None
     control_baseline_avg_points: float | None = None
     treatment_baseline_avg_points: float | None = None
     baseline_avg_points: float | None = None
@@ -297,6 +301,10 @@ def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootySta
             season=season,
             control_output_path=str(control_config.output_path),
             treatment_output_path=str(treatment_config.output_path),
+            control_summary_path=str(control_config.output_path / "summary.csv"),
+            treatment_summary_path=str(treatment_config.output_path / "summary.csv"),
+            control_diagnostics_path=str(control_config.output_path / "diagnostics.csv"),
+            treatment_diagnostics_path=str(treatment_config.output_path / "diagnostics.csv"),
             control_config=_config_dict(control_config),
             treatment_config=_config_dict(treatment_config),
         )
@@ -543,7 +551,7 @@ def _aggregate_json(records: list[SeasonAblationRecord], aggregate: SeasonAblati
             for record in records
             if record not in included
         ],
-        "aggregation_method": "mean",
+        "aggregation_method": "unweighted_mean_across_successful_comparable_seasons",
         "metrics": metrics,
     }
 

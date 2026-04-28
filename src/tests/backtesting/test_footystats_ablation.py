@@ -306,6 +306,26 @@ def test_orchestration_runs_control_then_treatment_for_eligible_season(
     assert first.control_status == "ok"
     assert first.treatment_status == "ok"
     assert first.treatment_source_sha256 == "abc123"
+    assert first.control_summary_path == str(
+        tmp_path
+        / "reports"
+        / "footystats_ablation"
+        / "runs"
+        / "2025"
+        / "footystats_mode=none"
+        / "2025"
+        / "summary.csv"
+    )
+    assert first.treatment_summary_path == str(
+        tmp_path
+        / "reports"
+        / "footystats_ablation"
+        / "runs"
+        / "2025"
+        / "footystats_mode=ppg"
+        / "2025"
+        / "summary.csv"
+    )
 
 
 def test_metric_extraction_failure_marks_paired_comparison_failed(
@@ -684,6 +704,14 @@ def _report_result(tmp_path: Path) -> ablation.FootyStatsPPGAblationResult:
         metric_status="ok",
         control_output_path=str(output_root / "runs" / "2024" / "footystats_mode=none" / "2024"),
         treatment_output_path=str(output_root / "runs" / "2024" / "footystats_mode=ppg" / "2024"),
+        control_summary_path=str(output_root / "runs" / "2024" / "footystats_mode=none" / "2024" / "summary.csv"),
+        treatment_summary_path=str(output_root / "runs" / "2024" / "footystats_mode=ppg" / "2024" / "summary.csv"),
+        control_diagnostics_path=str(
+            output_root / "runs" / "2024" / "footystats_mode=none" / "2024" / "diagnostics.csv"
+        ),
+        treatment_diagnostics_path=str(
+            output_root / "runs" / "2024" / "footystats_mode=ppg" / "2024" / "diagnostics.csv"
+        ),
         control_baseline_avg_points=45.0,
         treatment_baseline_avg_points=45.0,
         baseline_avg_points=45.0,
@@ -711,6 +739,14 @@ def _report_result(tmp_path: Path) -> ablation.FootyStatsPPGAblationResult:
         metric_status="failed",
         control_output_path=str(output_root / "runs" / "2025" / "footystats_mode=none" / "2025"),
         treatment_output_path=str(output_root / "runs" / "2025" / "footystats_mode=ppg" / "2025"),
+        control_summary_path=str(output_root / "runs" / "2025" / "footystats_mode=none" / "2025" / "summary.csv"),
+        treatment_summary_path=str(output_root / "runs" / "2025" / "footystats_mode=ppg" / "2025" / "summary.csv"),
+        control_diagnostics_path=str(
+            output_root / "runs" / "2025" / "footystats_mode=none" / "2025" / "diagnostics.csv"
+        ),
+        treatment_diagnostics_path=str(
+            output_root / "runs" / "2025" / "footystats_mode=ppg" / "2025" / "diagnostics.csv"
+        ),
         error_stage="metric_extraction",
         error_message="x" * 600,
         treatment_source_sha256="sha-2025",
@@ -762,6 +798,18 @@ def test_write_reports_creates_csv_and_json_report_artifacts(tmp_path: Path) -> 
     assert report["config"]["treatment_footystats_mode"] == "ppg"
     assert report["config"]["footystats_evaluation_scope"] == "historical_candidate"
     assert report["seasons"][0]["treatment_source_sha256"] == "sha-2024"
+    assert report["seasons"][0]["control_summary_path"].endswith(
+        "runs/2024/footystats_mode=none/2024/summary.csv"
+    )
+    assert report["seasons"][0]["treatment_summary_path"].endswith(
+        "runs/2024/footystats_mode=ppg/2024/summary.csv"
+    )
+    assert report["seasons"][0]["control_diagnostics_path"].endswith(
+        "runs/2024/footystats_mode=none/2024/diagnostics.csv"
+    )
+    assert report["seasons"][0]["treatment_diagnostics_path"].endswith(
+        "runs/2024/footystats_mode=ppg/2024/diagnostics.csv"
+    )
     assert report["aggregate"]["included_seasons"] == [2024]
     assert report["generated_at_utc"].endswith("Z")
 
@@ -809,7 +857,7 @@ def test_write_reports_json_includes_config_and_aggregate_exclusions(tmp_path: P
             "reason": "metric_extraction: " + ("x" * 600),
         }
     ]
-    assert report["aggregate"]["aggregation_method"] == "mean"
+    assert report["aggregate"]["aggregation_method"] == "unweighted_mean_across_successful_comparable_seasons"
     assert report["aggregate"]["metrics"]["rf_avg_points_delta"] == 5.0
 
 
