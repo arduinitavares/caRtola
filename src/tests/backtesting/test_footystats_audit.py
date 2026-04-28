@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from cartola.backtesting import footystats_audit as audit
 
 
@@ -36,3 +38,52 @@ def test_discover_footystats_files_ignores_non_csv_and_groups_by_season(tmp_path
     assert len(discoveries) == 1
     assert discoveries[0].season == 2025
     assert sorted(discoveries[0].files) == ["matches", "teams"]
+
+
+def test_profile_match_file_classifies_pre_match_and_outcome_columns(tmp_path: Path) -> None:
+    path = tmp_path / "brazil-serie-a-matches-2025-to-2025-stats.csv"
+    pd.DataFrame(
+        [
+            {
+                "status": "complete",
+                "Game Week": 1,
+                "home_team_name": "Flamengo",
+                "away_team_name": "Palmeiras",
+                "Pre-Match PPG (Home)": 0.0,
+                "Pre-Match PPG (Away)": 0.0,
+                "Home Team Pre-Match xG": 0.0,
+                "Away Team Pre-Match xG": 0.0,
+                "odds_ft_home_team_win": 1.8,
+                "home_team_goal_count": 2,
+                "away_team_goal_count": 1,
+                "team_a_xg": 1.4,
+            },
+            {
+                "status": "complete",
+                "Game Week": 2,
+                "home_team_name": "Palmeiras",
+                "away_team_name": "Flamengo",
+                "Pre-Match PPG (Home)": 3.0,
+                "Pre-Match PPG (Away)": 0.0,
+                "Home Team Pre-Match xG": 1.2,
+                "Away Team Pre-Match xG": 0.8,
+                "odds_ft_home_team_win": 2.2,
+                "home_team_goal_count": 0,
+                "away_team_goal_count": 0,
+                "team_a_xg": 0.7,
+            },
+        ]
+    ).to_csv(path, index=False)
+
+    profile = audit.profile_match_file(path)
+
+    assert profile.row_count == 2
+    assert profile.min_game_week == 1
+    assert profile.max_game_week == 2
+    assert profile.status_counts == {"complete": 2}
+    assert "Pre-Match PPG (Home)" in profile.pre_match_safe_columns
+    assert "Home Team Pre-Match xG" in profile.pre_match_safe_columns
+    assert "odds_ft_home_team_win" in profile.pre_match_safe_columns
+    assert "home_team_goal_count" in profile.post_match_outcome_columns
+    assert "team_a_xg" in profile.post_match_outcome_columns
+    assert profile.team_names == ["Flamengo", "Palmeiras"]
