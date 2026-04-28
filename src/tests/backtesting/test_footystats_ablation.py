@@ -67,6 +67,8 @@ def test_config_from_default_args() -> None:
     assert config.budget == 100.0
     assert config.project_root == Path(".")
     assert config.output_root == Path("data/08_reporting/backtests/footystats_ablation")
+    assert config.control_footystats_mode == "none"
+    assert config.treatment_footystats_mode == "ppg"
     assert config.footystats_league_slug == "brazil-serie-a"
     assert config.force is False
 
@@ -79,7 +81,41 @@ def test_parse_args_preserves_duplicate_season_error_message(capsys: pytest.Capt
     assert "duplicate season" in captured.err
 
 
+def test_parse_args_accepts_generic_control_and_treatment_modes() -> None:
+    args = ablation.parse_args(
+        [
+            "--control-footystats-mode",
+            "ppg",
+            "--treatment-footystats-mode",
+            "ppg_xg",
+        ]
+    )
+
+    assert args.control_footystats_mode == "ppg"
+    assert args.treatment_footystats_mode == "ppg_xg"
+
+
+def test_parse_args_rejects_equal_control_and_treatment_modes(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        ablation.parse_args(["--control-footystats-mode", "ppg", "--treatment-footystats-mode", "ppg"])
+
+    captured = capsys.readouterr()
+    assert "must differ" in captured.err
+
+
 def test_script_imports_main_from_footystats_ablation() -> None:
+    script_path = Path(__file__).resolve().parents[3] / "scripts" / "run_footystats_ablation.py"
+    spec = importlib.util.spec_from_file_location("run_footystats_ablation", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+
+    spec.loader.exec_module(script)
+
+    assert script.main is ablation.main
+
+
+def test_ppg_script_imports_main_from_footystats_ablation_for_invocation_compatibility() -> None:
     script_path = Path(__file__).resolve().parents[3] / "scripts" / "run_footystats_ppg_ablation.py"
     spec = importlib.util.spec_from_file_location("run_footystats_ppg_ablation", script_path)
     assert spec is not None
@@ -106,10 +142,20 @@ def test_resolve_output_root_rejects_paths_outside_project_root(tmp_path: Path, 
 
 
 def test_resolve_output_root_allows_absolute_paths_inside_project_root(tmp_path: Path) -> None:
-    output_root = tmp_path / "reports" / "footystats_ablation"
+    output_root = tmp_path / "data" / "08_reporting" / "backtests" / "footystats_xg_ablation"
     config = ablation.FootyStatsPPGAblationConfig(project_root=tmp_path, output_root=output_root)
 
     assert ablation.resolve_output_root(config) == output_root.resolve()
+
+
+def test_resolve_output_root_rejects_ablation_name_outside_backtest_reports(tmp_path: Path) -> None:
+    config = ablation.FootyStatsPPGAblationConfig(
+        project_root=tmp_path,
+        output_root=Path("reports/footystats_ablation"),
+    )
+
+    with pytest.raises(ValueError, match="data.*/08_reporting.*/backtests"):
+        ablation.resolve_output_root(config)
 
 
 @pytest.mark.parametrize(
@@ -129,14 +175,14 @@ def test_resolve_output_root_rejects_protected_backtest_paths(tmp_path: Path, ou
         seasons=(2025,),
     )
 
-    with pytest.raises(ValueError, match="protected"):
+    with pytest.raises(ValueError, match="under|protected"):
         ablation.resolve_output_root(config)
 
 
 def test_resolve_output_root_requires_footystats_ablation_directory_name(tmp_path: Path) -> None:
     config = ablation.FootyStatsPPGAblationConfig(project_root=tmp_path, output_root=Path("data/08_reporting/backtests/other"))
 
-    with pytest.raises(ValueError, match="footystats_ablation"):
+    with pytest.raises(ValueError, match="footystats.*_ablation"):
         ablation.resolve_output_root(config)
 
 
@@ -178,20 +224,35 @@ def test_build_backtest_config_uses_mode_specific_output_roots(tmp_path: Path) -
     assert treatment.footystats_league_slug == "custom-league"
 
 
+def test_build_backtest_config_supports_ppg_xg_treatment_mode(tmp_path: Path) -> None:
+    resolved_output_root = tmp_path / "data" / "08_reporting" / "backtests" / "footystats_xg_ablation"
+    config = ablation.FootyStatsPPGAblationConfig(
+        project_root=tmp_path,
+        control_footystats_mode="ppg",
+        treatment_footystats_mode="ppg_xg",
+    )
+
+    treatment = ablation.build_backtest_config(config, 2025, "ppg_xg", resolved_output_root)
+
+    assert treatment.output_root == resolved_output_root / "runs" / "2025" / "footystats_mode=ppg_xg"
+    assert treatment.footystats_mode == "ppg_xg"
+
+
 def test_build_backtest_config_rejects_unsupported_mode(tmp_path: Path) -> None:
     config = ablation.FootyStatsPPGAblationConfig(project_root=tmp_path)
+    output_root = tmp_path / "data" / "08_reporting" / "backtests" / "footystats_ablation"
 
     with pytest.raises(ValueError, match="Unsupported footystats mode"):
-        ablation.build_backtest_config(config, 2025, "live", tmp_path / "footystats_ablation")
+        ablation.build_backtest_config(config, 2025, "live", output_root)
 
 
 def test_build_backtest_config_rejects_normal_backtest_output_path(tmp_path: Path) -> None:
     config = ablation.FootyStatsPPGAblationConfig(project_root=tmp_path)
-    resolved_output_root = tmp_path / "footystats_ablation"
+    resolved_output_root = tmp_path / "data" / "08_reporting" / "backtests" / "footystats_ablation"
     mode_root = resolved_output_root / "runs" / "2025" / "footystats_mode=none"
     mode_root.parent.mkdir(parents=True)
     normal_backtests_root = tmp_path / "data" / "08_reporting" / "backtests"
-    normal_backtests_root.mkdir(parents=True)
+    normal_backtests_root.mkdir(parents=True, exist_ok=True)
     mode_root.symlink_to(normal_backtests_root)
 
     with pytest.raises(ValueError, match="normal backtest"):
@@ -244,6 +305,17 @@ def test_prepare_output_root_revalidates_output_root_before_force_delete(tmp_pat
     assert sentinel.read_text() == "keep"
 
 
+def test_run_footystats_ablation_rejects_equal_modes_programmatically(tmp_path: Path) -> None:
+    config = ablation.FootyStatsPPGAblationConfig(
+        project_root=tmp_path,
+        control_footystats_mode="ppg",
+        treatment_footystats_mode="ppg",
+    )
+
+    with pytest.raises(ValueError, match="must differ"):
+        ablation.run_footystats_ablation(config)
+
+
 def test_eligibility_failure_skips_control_and_treatment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[object] = []
 
@@ -254,12 +326,12 @@ def test_eligibility_failure_skips_control_and_treatment(tmp_path: Path, monkeyp
         calls.append(config)
         raise AssertionError("run_backtest should not be called")
 
-    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", fail_eligibility)
+    monkeypatch.setattr(ablation, "load_footystats_feature_rows", fail_eligibility)
     monkeypatch.setattr(ablation, "run_backtest", fail_run_backtest)
 
     config = ablation.FootyStatsPPGAblationConfig(
         project_root=tmp_path,
-        output_root=Path("reports/footystats_ablation"),
+        output_root=Path("data/08_reporting/backtests/footystats_ablation"),
     )
 
     result = ablation.run_footystats_ppg_ablation(config)
@@ -269,7 +341,7 @@ def test_eligibility_failure_skips_control_and_treatment(tmp_path: Path, monkeyp
     first = result.seasons[0]
     assert first.control_status == "skipped"
     assert first.treatment_status == "skipped"
-    assert first.error_stage == "eligibility"
+    assert first.error_stage == "treatment_eligibility"
     assert first.metrics_comparable is False
 
 
@@ -290,13 +362,13 @@ def test_orchestration_runs_control_then_treatment_for_eligible_season(
         _write_backtest_outputs(config.output_path)
         return SimpleNamespace()
 
-    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", load_eligible)
+    monkeypatch.setattr(ablation, "load_footystats_feature_rows", load_eligible)
     monkeypatch.setattr(ablation, "run_backtest", fake_run_backtest)
 
     config = ablation.FootyStatsPPGAblationConfig(
         seasons=(2025,),
         project_root=tmp_path,
-        output_root=Path("reports/footystats_ablation"),
+        output_root=Path("data/08_reporting/backtests/footystats_ablation"),
     )
 
     result = ablation.run_footystats_ppg_ablation(config)
@@ -308,7 +380,9 @@ def test_orchestration_runs_control_then_treatment_for_eligible_season(
     assert first.treatment_source_sha256 == "abc123"
     assert first.control_summary_path == str(
         tmp_path
-        / "reports"
+        / "data"
+        / "08_reporting"
+        / "backtests"
         / "footystats_ablation"
         / "runs"
         / "2025"
@@ -318,7 +392,9 @@ def test_orchestration_runs_control_then_treatment_for_eligible_season(
     )
     assert first.treatment_summary_path == str(
         tmp_path
-        / "reports"
+        / "data"
+        / "08_reporting"
+        / "backtests"
         / "footystats_ablation"
         / "runs"
         / "2025"
@@ -326,6 +402,49 @@ def test_orchestration_runs_control_then_treatment_for_eligible_season(
         / "2025"
         / "summary.csv"
     )
+
+
+def test_orchestration_supports_ppg_to_ppg_xg_and_records_both_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, str, str]] = []
+    eligibility_calls: list[str] = []
+
+    def load_eligible(**kwargs: object) -> object:
+        eligibility_calls.append(str(kwargs["footystats_mode"]))
+        return SimpleNamespace(
+            source_path=Path(f"data/footystats/{kwargs['footystats_mode']}.csv"),
+            source_sha256=f"sha-{kwargs['footystats_mode']}",
+        )
+
+    def fake_run_backtest(config: object) -> object:
+        calls.append((config.season, config.fixture_mode, config.footystats_mode))
+        _write_backtest_outputs(config.output_path)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(ablation, "load_footystats_feature_rows", load_eligible)
+    monkeypatch.setattr(ablation, "run_backtest", fake_run_backtest)
+
+    config = ablation.FootyStatsPPGAblationConfig(
+        seasons=(2025,),
+        project_root=tmp_path,
+        output_root=Path("data/08_reporting/backtests/footystats_xg_ablation"),
+        control_footystats_mode="ppg",
+        treatment_footystats_mode="ppg_xg",
+    )
+
+    result = ablation.run_footystats_ablation(config)
+
+    assert eligibility_calls == ["ppg", "ppg_xg"]
+    assert calls == [(2025, "none", "ppg"), (2025, "none", "ppg_xg")]
+    first = result.seasons[0]
+    assert first.control_source_sha256 == "sha-ppg"
+    assert first.treatment_source_sha256 == "sha-ppg_xg"
+    assert first.control_config is not None
+    assert first.treatment_config is not None
+    assert first.control_config["footystats_mode"] == "ppg"
+    assert first.treatment_config["footystats_mode"] == "ppg_xg"
 
 
 def test_metric_extraction_failure_marks_paired_comparison_failed(
@@ -367,13 +486,13 @@ def test_metric_extraction_failure_marks_paired_comparison_failed(
             ).to_csv(config.output_path / "diagnostics.csv", index=False)
         return SimpleNamespace()
 
-    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", load_eligible)
+    monkeypatch.setattr(ablation, "load_footystats_feature_rows", load_eligible)
     monkeypatch.setattr(ablation, "run_backtest", fake_run_backtest)
 
     config = ablation.FootyStatsPPGAblationConfig(
         seasons=(2025,),
         project_root=tmp_path,
-        output_root=Path("reports/footystats_ablation"),
+        output_root=Path("data/08_reporting/backtests/footystats_ablation"),
     )
 
     result = ablation.run_footystats_ppg_ablation(config)
@@ -694,7 +813,7 @@ def test_build_aggregate_record_rejects_non_finite_required_metric_on_comparable
 
 
 def _report_result(tmp_path: Path) -> ablation.FootyStatsPPGAblationResult:
-    output_root = tmp_path / "reports" / "footystats_ablation"
+    output_root = tmp_path / "data" / "08_reporting" / "backtests" / "footystats_ablation"
     included = ablation.SeasonAblationRecord(
         season=2024,
         season_status="candidate",
@@ -765,7 +884,7 @@ def _report_result(tmp_path: Path) -> ablation.FootyStatsPPGAblationResult:
         start_round=7,
         budget=90.5,
         project_root=tmp_path,
-        output_root=Path("reports/footystats_ablation"),
+        output_root=Path("data/08_reporting/backtests/footystats_ablation"),
         current_year=2026,
         force=True,
     )
@@ -783,8 +902,8 @@ def test_write_reports_creates_csv_and_json_report_artifacts(tmp_path: Path) -> 
 
     ablation.write_reports(result)
 
-    csv_path = result.resolved_output_root / "ppg_ablation.csv"
-    json_path = result.resolved_output_root / "ppg_ablation.json"
+    csv_path = result.resolved_output_root / "footystats_ablation.csv"
+    json_path = result.resolved_output_root / "footystats_ablation.json"
     assert csv_path.is_file()
     assert json_path.is_file()
 
@@ -820,7 +939,7 @@ def test_write_reports_truncates_csv_error_message_and_keeps_null_metric_cells_e
 
     ablation.write_reports(result)
 
-    csv = pd.read_csv(result.resolved_output_root / "ppg_ablation.csv", keep_default_na=False)
+    csv = pd.read_csv(result.resolved_output_root / "footystats_ablation.csv", keep_default_na=False)
     failed = csv[csv["season"].astype(str).eq("2025")].iloc[0]
     assert failed["error_message"] == "x" * 500
     assert failed["baseline_avg_points"] == ""
@@ -833,11 +952,11 @@ def test_write_reports_json_includes_config_and_aggregate_exclusions(tmp_path: P
 
     ablation.write_reports(result)
 
-    report = json.loads((result.resolved_output_root / "ppg_ablation.json").read_text())
+    report = json.loads((result.resolved_output_root / "footystats_ablation.json").read_text())
     assert report["config"] == {
         "project_root": str(tmp_path),
         "resolved_project_root": str(tmp_path.resolve()),
-        "output_root": "reports/footystats_ablation",
+        "output_root": "data/08_reporting/backtests/footystats_ablation",
         "resolved_output_root": str(result.resolved_output_root.resolve()),
         "seasons": [2024, 2025],
         "start_round": 7,
@@ -875,8 +994,8 @@ def test_write_reports_uses_atomic_replace_without_final_files_on_replace_failur
     with pytest.raises(OSError, match="replace failed"):
         ablation.write_reports(result)
 
-    assert not (result.resolved_output_root / "ppg_ablation.csv").exists()
-    assert not (result.resolved_output_root / "ppg_ablation.json").exists()
+    assert not (result.resolved_output_root / "footystats_ablation.csv").exists()
+    assert not (result.resolved_output_root / "footystats_ablation.json").exists()
 
 
 def test_write_reports_restores_old_final_pair_when_json_replace_fails_after_csv_replace(
@@ -884,14 +1003,14 @@ def test_write_reports_restores_old_final_pair_when_json_replace_fails_after_csv
 ) -> None:
     result = _report_result(tmp_path)
     result.resolved_output_root.mkdir(parents=True)
-    csv_path = result.resolved_output_root / "ppg_ablation.csv"
-    json_path = result.resolved_output_root / "ppg_ablation.json"
+    csv_path = result.resolved_output_root / "footystats_ablation.csv"
+    json_path = result.resolved_output_root / "footystats_ablation.json"
     csv_path.write_text("old csv\n")
     json_path.write_text('{"old": "json"}\n')
     original_replace = Path.replace
 
     def fail_json_final_replace(self: Path, target: Path) -> Path:
-        if self.name == ".ppg_ablation.json.tmp" and target == json_path:
+        if self.name == ".footystats_ablation.json.tmp" and target == json_path:
             raise OSError("json replace failed")
         return original_replace(self, target)
 
@@ -918,7 +1037,7 @@ def test_main_writes_reports_and_returns_zero_when_at_least_one_season_is_compar
         _write_backtest_outputs(config.output_path)
         return SimpleNamespace()
 
-    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", load_eligible)
+    monkeypatch.setattr(ablation, "load_footystats_feature_rows", load_eligible)
     monkeypatch.setattr(ablation, "run_backtest", fake_run_backtest)
 
     output_root = Path("data/08_reporting/backtests/footystats_ablation")
@@ -938,7 +1057,7 @@ def test_main_writes_reports_and_returns_zero_when_at_least_one_season_is_compar
     resolved_output_root = tmp_path / output_root
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert (resolved_output_root / "ppg_ablation.csv").is_file()
+    assert (resolved_output_root / "footystats_ablation.csv").is_file()
     assert str(resolved_output_root) in captured.out
     assert "comparable seasons: 1" in captured.out
 
@@ -949,7 +1068,7 @@ def test_main_writes_reports_and_returns_one_when_no_season_is_comparable(
     def fail_eligibility(**kwargs: object) -> object:
         raise ValueError("not comparable")
 
-    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", fail_eligibility)
+    monkeypatch.setattr(ablation, "load_footystats_feature_rows", fail_eligibility)
 
     output_root = Path("data/08_reporting/backtests/footystats_ablation")
     exit_code = ablation.main(
@@ -968,6 +1087,6 @@ def test_main_writes_reports_and_returns_one_when_no_season_is_comparable(
     resolved_output_root = tmp_path / output_root
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert (resolved_output_root / "ppg_ablation.json").is_file()
+    assert (resolved_output_root / "footystats_ablation.json").is_file()
     assert str(resolved_output_root) in captured.out
     assert "comparable seasons: 0" in captured.out

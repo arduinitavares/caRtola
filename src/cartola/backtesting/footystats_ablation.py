@@ -13,7 +13,7 @@ from typing import Any, Sequence, cast
 import pandas as pd
 
 from cartola.backtesting.config import BacktestConfig, FootyStatsMode
-from cartola.backtesting.footystats_features import FootyStatsPPGLoadResult, load_footystats_ppg_rows
+from cartola.backtesting.footystats_features import FootyStatsPPGLoadResult, load_footystats_feature_rows
 from cartola.backtesting.runner import run_backtest
 
 DEFAULT_SEASONS = (2023, 2024, 2025)
@@ -56,6 +56,8 @@ class FootyStatsPPGAblationConfig:
     budget: float = 100.0
     project_root: Path = Path(".")
     output_root: Path = DEFAULT_OUTPUT_ROOT
+    control_footystats_mode: FootyStatsMode = "none"
+    treatment_footystats_mode: FootyStatsMode = "ppg"
     footystats_league_slug: str = DEFAULT_LEAGUE_SLUG
     current_year: int | None = None
     force: bool = False
@@ -107,6 +109,8 @@ class SeasonAblationRecord:
     rf_minus_baseline_treatment: float | None = None
     error_stage: str | None = None
     error_message: str | None = None
+    control_source_path: str | None = None
+    control_source_sha256: str | None = None
     treatment_source_path: str | None = None
     treatment_source_sha256: str | None = None
     control_config: dict[str, Any] | None = None
@@ -151,16 +155,21 @@ def parse_seasons_arg(value: str) -> tuple[int, ...]:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the FootyStats PPG ablation report.")
+    parser = argparse.ArgumentParser(description="Run a FootyStats feature ablation report.")
     parser.add_argument("--seasons", type=parse_seasons_arg, default=DEFAULT_SEASONS)
     parser.add_argument("--start-round", type=int, default=5)
     parser.add_argument("--budget", type=float, default=100.0)
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--control-footystats-mode", choices=("none", "ppg", "ppg_xg"), default="none")
+    parser.add_argument("--treatment-footystats-mode", choices=("none", "ppg", "ppg_xg"), default="ppg")
     parser.add_argument("--footystats-league-slug", default=DEFAULT_LEAGUE_SLUG)
     parser.add_argument("--current-year", type=int, default=None)
     parser.add_argument("--force", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.control_footystats_mode == args.treatment_footystats_mode:
+        parser.error("control and treatment FootyStats modes must differ")
+    return args
 
 
 def config_from_args(args: argparse.Namespace) -> FootyStatsPPGAblationConfig:
@@ -170,6 +179,8 @@ def config_from_args(args: argparse.Namespace) -> FootyStatsPPGAblationConfig:
         budget=args.budget,
         project_root=args.project_root,
         output_root=args.output_root,
+        control_footystats_mode=args.control_footystats_mode,
+        treatment_footystats_mode=args.treatment_footystats_mode,
         footystats_league_slug=args.footystats_league_slug,
         current_year=args.current_year,
         force=args.force,
@@ -187,11 +198,13 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 def _validate_output_root(config: FootyStatsPPGAblationConfig, output_root: Path) -> Path:
     project_root = config.project_root.resolve()
     resolved_output_root = (output_root if output_root.is_absolute() else project_root / output_root).resolve()
+    normal_backtests_root = project_root / "data" / "08_reporting" / "backtests"
 
     if not _is_relative_to(resolved_output_root, project_root):
         raise ValueError(f"output_root must resolve inside project_root: {project_root}")
+    if not _is_relative_to(resolved_output_root, normal_backtests_root):
+        raise ValueError(f"output_root must resolve under {normal_backtests_root}")
 
-    normal_backtests_root = project_root / "data" / "08_reporting" / "backtests"
     protected_paths = {
         project_root,
         project_root / "data",
@@ -202,8 +215,8 @@ def _validate_output_root(config: FootyStatsPPGAblationConfig, output_root: Path
     if resolved_output_root in protected_paths:
         raise ValueError(f"output_root resolves to a protected path: {resolved_output_root}")
 
-    if resolved_output_root.name != "footystats_ablation":
-        raise ValueError("output_root final directory name must be exactly 'footystats_ablation'")
+    if not (resolved_output_root.name.startswith("footystats") and resolved_output_root.name.endswith("_ablation")):
+        raise ValueError("output_root final directory name must match 'footystats*_ablation'")
 
     return resolved_output_root
 
@@ -220,7 +233,7 @@ def build_backtest_config(
 ) -> BacktestConfig:
     resolved_output_root = _validate_output_root(config, resolved_output_root)
 
-    if mode not in ("none", "ppg"):
+    if mode not in ("none", "ppg", "ppg_xg"):
         raise ValueError(f"Unsupported footystats mode: {mode!r}")
     footystats_mode = cast(FootyStatsMode, mode)
 
@@ -268,18 +281,31 @@ def _config_dict(config: BacktestConfig) -> dict[str, object]:
     return {key: str(value) if isinstance(value, Path) else value for key, value in data.items()}
 
 
-def _load_eligibility(config: FootyStatsPPGAblationConfig, season: int) -> FootyStatsPPGLoadResult:
-    return load_footystats_ppg_rows(
+def validate_ablation_config(config: FootyStatsPPGAblationConfig) -> None:
+    if config.control_footystats_mode == config.treatment_footystats_mode:
+        raise ValueError("control and treatment FootyStats modes must differ")
+
+
+def _load_eligibility(
+    config: FootyStatsPPGAblationConfig,
+    season: int,
+    mode: FootyStatsMode,
+) -> FootyStatsPPGLoadResult | None:
+    if mode == "none":
+        return None
+    return load_footystats_feature_rows(
         season=season,
         project_root=config.project_root.resolve(),
         footystats_dir=Path("data/footystats"),
         league_slug=config.footystats_league_slug,
         evaluation_scope="historical_candidate",
         current_year=config.resolved_current_year,
+        footystats_mode=mode,
     )
 
 
-def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootyStatsPPGAblationResult:
+def run_footystats_ablation(config: FootyStatsPPGAblationConfig) -> FootyStatsPPGAblationResult:
+    validate_ablation_config(config)
     resolved_output_root = resolve_output_root(config)
     prepare_output_root(config, resolved_output_root)
     records: list[SeasonAblationRecord] = []
@@ -288,13 +314,13 @@ def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootySta
         control_config = build_backtest_config(
             config,
             season=season,
-            mode="none",
+            mode=config.control_footystats_mode,
             resolved_output_root=resolved_output_root,
         )
         treatment_config = build_backtest_config(
             config,
             season=season,
-            mode="ppg",
+            mode=config.treatment_footystats_mode,
             resolved_output_root=resolved_output_root,
         )
         record = SeasonAblationRecord(
@@ -310,17 +336,30 @@ def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootySta
         )
 
         try:
-            eligibility = _load_eligibility(config, season)
+            control_eligibility = _load_eligibility(config, season, config.control_footystats_mode)
         except Exception as exc:
-            record.error_stage = "eligibility"
+            record.error_stage = "control_eligibility"
             record.error_message = str(exc)
-            record.errors.append(_error("eligibility", exc))
+            record.errors.append(_error("control_eligibility", exc))
+            records.append(record)
+            continue
+        if control_eligibility is not None:
+            record.control_source_path = str(control_eligibility.source_path)
+            record.control_source_sha256 = control_eligibility.source_sha256
+
+        try:
+            treatment_eligibility = _load_eligibility(config, season, config.treatment_footystats_mode)
+        except Exception as exc:
+            record.error_stage = "treatment_eligibility"
+            record.error_message = str(exc)
+            record.errors.append(_error("treatment_eligibility", exc))
             records.append(record)
             continue
 
         record.season_status = "candidate"
-        record.treatment_source_path = str(eligibility.source_path)
-        record.treatment_source_sha256 = eligibility.source_sha256
+        if treatment_eligibility is not None:
+            record.treatment_source_path = str(treatment_eligibility.source_path)
+            record.treatment_source_sha256 = treatment_eligibility.source_sha256
 
         try:
             run_backtest(control_config)
@@ -361,6 +400,10 @@ def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootySta
         seasons=records,
         aggregate=aggregate,
     )
+
+
+def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootyStatsPPGAblationResult:
+    return run_footystats_ablation(config)
 
 
 def extract_run_metrics(output_path: Path) -> dict[str, float]:
@@ -568,8 +611,8 @@ def _config_json(config: FootyStatsPPGAblationConfig, resolved_output_root: Path
         "current_year": config.current_year,
         "resolved_current_year": config.resolved_current_year,
         "fixture_mode": "none",
-        "control_footystats_mode": "none",
-        "treatment_footystats_mode": "ppg",
+        "control_footystats_mode": config.control_footystats_mode,
+        "treatment_footystats_mode": config.treatment_footystats_mode,
         "footystats_evaluation_scope": "historical_candidate",
         "footystats_league_slug": config.footystats_league_slug,
         "force": config.force,
@@ -579,12 +622,12 @@ def _config_json(config: FootyStatsPPGAblationConfig, resolved_output_root: Path
 def write_reports(result: FootyStatsPPGAblationResult) -> None:
     result.resolved_output_root.mkdir(parents=True, exist_ok=True)
     rows = [_csv_row(record) for record in [*result.seasons, result.aggregate]]
-    csv_path = result.resolved_output_root / "ppg_ablation.csv"
-    json_path = result.resolved_output_root / "ppg_ablation.json"
-    csv_tmp = result.resolved_output_root / ".ppg_ablation.csv.tmp"
-    json_tmp = result.resolved_output_root / ".ppg_ablation.json.tmp"
-    csv_backup = result.resolved_output_root / ".ppg_ablation.csv.bak"
-    json_backup = result.resolved_output_root / ".ppg_ablation.json.bak"
+    csv_path = result.resolved_output_root / "footystats_ablation.csv"
+    json_path = result.resolved_output_root / "footystats_ablation.json"
+    csv_tmp = result.resolved_output_root / ".footystats_ablation.csv.tmp"
+    json_tmp = result.resolved_output_root / ".footystats_ablation.json.tmp"
+    csv_backup = result.resolved_output_root / ".footystats_ablation.csv.bak"
+    json_backup = result.resolved_output_root / ".footystats_ablation.json.bak"
     csv_backed_up = False
     json_backed_up = False
 
@@ -629,7 +672,7 @@ def write_reports(result: FootyStatsPPGAblationResult) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     config = config_from_args(parse_args(argv))
-    result = run_footystats_ppg_ablation(config)
+    result = run_footystats_ablation(config)
     write_reports(result)
     comparable_count = sum(1 for record in result.seasons if _is_included_in_aggregate(record))
     print(f"output_root: {result.resolved_output_root}")
