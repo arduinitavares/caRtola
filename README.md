@@ -112,6 +112,8 @@ Para rodar a ablação multi-temporada de PPG da FootyStats:
 uv run --frozen python scripts/run_footystats_ppg_ablation.py --seasons 2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --force
 ```
 
+Essa ablação multi-temporada fixa `fixture_mode=none`; ela mede somente o efeito marginal de `footystats_mode=ppg` contra `footystats_mode=none`. Se nenhuma temporada for comparável, o comando retorna código `1`, mas ainda grava o CSV/JSON para diagnóstico.
+
 O comando grava:
 
 - `data/08_reporting/backtests/footystats_ablation/ppg_ablation.csv`

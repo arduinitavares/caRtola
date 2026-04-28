@@ -78,7 +78,7 @@ The first leakage-safe FootyStats feature integration is now complete. On the 20
 - `0.054011` to `0.063308` player R²,
 - `0.268741` to `0.277921` player correlation.
 
-That was a useful but still modest one-season lift. The multi-season ablation report is now implemented; the next step is to review the PPG multi-season results and decide whether to keep, revise, or drop PPG before adding xG/odds.
+That was a useful but still modest one-season lift. The multi-season ablation report is now implemented as a no-fixture control-vs-PPG comparison; the next step is to review those results and decide whether to keep, revise, or drop PPG before adding xG/odds.
 
 Important distinction:
 
