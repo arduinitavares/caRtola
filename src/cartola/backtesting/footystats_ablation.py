@@ -94,9 +94,8 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
-def resolve_output_root(config: FootyStatsPPGAblationConfig) -> Path:
+def _validate_output_root(config: FootyStatsPPGAblationConfig, output_root: Path) -> Path:
     project_root = config.project_root.resolve()
-    output_root = config.output_root
     resolved_output_root = (output_root if output_root.is_absolute() else project_root / output_root).resolve()
 
     if not _is_relative_to(resolved_output_root, project_root):
@@ -119,12 +118,18 @@ def resolve_output_root(config: FootyStatsPPGAblationConfig) -> Path:
     return resolved_output_root
 
 
+def resolve_output_root(config: FootyStatsPPGAblationConfig) -> Path:
+    return _validate_output_root(config, config.output_root)
+
+
 def build_backtest_config(
     config: FootyStatsPPGAblationConfig,
     season: int,
     mode: str,
     resolved_output_root: Path,
 ) -> BacktestConfig:
+    resolved_output_root = _validate_output_root(config, resolved_output_root)
+
     if mode not in ("none", "ppg"):
         raise ValueError(f"Unsupported footystats mode: {mode!r}")
     footystats_mode = cast(FootyStatsMode, mode)
@@ -150,6 +155,8 @@ def build_backtest_config(
 
 
 def prepare_output_root(config: FootyStatsPPGAblationConfig, resolved_output_root: Path) -> None:
+    resolved_output_root = _validate_output_root(config, resolved_output_root)
+
     if resolved_output_root.exists():
         if not config.force:
             raise FileExistsError(f"output_root already exists: {resolved_output_root}")

@@ -160,6 +160,14 @@ def test_build_backtest_config_rejects_normal_backtest_output_path(tmp_path: Pat
         ablation.build_backtest_config(config, 2025, "none", resolved_output_root)
 
 
+def test_build_backtest_config_revalidates_output_root_inside_project_root(tmp_path: Path) -> None:
+    outside_root = tmp_path.parent / f"{tmp_path.name}_outside" / "footystats_ablation"
+    config = ablation.FootyStatsPPGAblationConfig(project_root=tmp_path)
+
+    with pytest.raises(ValueError, match="inside project_root"):
+        ablation.build_backtest_config(config, 2025, "none", outside_root)
+
+
 def test_prepare_output_root_raises_for_existing_root_without_force(tmp_path: Path) -> None:
     output_root = tmp_path / "data" / "08_reporting" / "backtests" / "footystats_ablation"
     output_root.mkdir(parents=True)
@@ -183,3 +191,16 @@ def test_prepare_output_root_with_force_removes_only_safe_ablation_root(tmp_path
     assert output_root.is_dir()
     assert not (output_root / "stale.csv").exists()
     assert (sibling / "summary.csv").read_text() == "keep"
+
+
+def test_prepare_output_root_revalidates_output_root_before_force_delete(tmp_path: Path) -> None:
+    outside_root = tmp_path.parent / f"{tmp_path.name}_outside" / "footystats_ablation"
+    outside_root.mkdir(parents=True)
+    sentinel = outside_root / "sentinel.txt"
+    sentinel.write_text("keep")
+    config = ablation.FootyStatsPPGAblationConfig(project_root=tmp_path, force=True)
+
+    with pytest.raises(ValueError, match="inside project_root"):
+        ablation.prepare_output_root(config, outside_root)
+
+    assert sentinel.read_text() == "keep"
