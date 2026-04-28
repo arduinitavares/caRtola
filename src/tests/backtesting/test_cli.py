@@ -42,6 +42,32 @@ def test_cli_parses_fixture_mode_and_alignment_policy() -> None:
     assert args.strict_alignment_policy == "exclude_round"
 
 
+def test_parse_args_accepts_footystats_and_output_options() -> None:
+    args = parse_args(
+        [
+            "--output-root",
+            "custom/backtests",
+            "--footystats-mode",
+            "ppg",
+            "--footystats-evaluation-scope",
+            "live_current",
+            "--footystats-league-slug",
+            "england-premier-league",
+            "--footystats-dir",
+            "custom/footystats",
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    assert args.output_root == Path("custom/backtests")
+    assert args.footystats_mode == "ppg"
+    assert args.footystats_evaluation_scope == "live_current"
+    assert args.footystats_league_slug == "england-premier-league"
+    assert args.footystats_dir == Path("custom/footystats")
+    assert args.current_year == 2026
+
+
 def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path):
     observed_configs: list[BacktestConfig] = []
 
@@ -65,6 +91,15 @@ def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path)
                 generator_versions=[],
                 excluded_rounds=[],
                 warnings=[],
+                footystats_mode=config.footystats_mode,
+                footystats_evaluation_scope=config.footystats_evaluation_scope,
+                footystats_league_slug=config.footystats_league_slug,
+                footystats_matches_source_path=None,
+                footystats_matches_source_sha256=None,
+                footystats_feature_columns=[],
+                footystats_missing_join_keys_by_round={},
+                footystats_duplicate_join_keys_by_round={},
+                footystats_extra_club_rows_by_round={},
             ),
         )
 
@@ -85,6 +120,13 @@ def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path)
 
     assert exit_code == 0
     assert observed_configs == [BacktestConfig(season=2025, start_round=5, budget=100.0, project_root=tmp_path)]
+    observed_config = observed_configs[0]
+    assert observed_config.output_root == Path("data/08_reporting/backtests")
+    assert observed_config.footystats_mode == "none"
+    assert observed_config.footystats_evaluation_scope == "historical_candidate"
+    assert observed_config.footystats_league_slug == "brazil-serie-a"
+    assert observed_config.footystats_dir == Path("data/footystats")
+    assert observed_config.current_year is None
     assert "Backtest complete" in capsys.readouterr().out
 
 
@@ -108,6 +150,15 @@ def test_main_prints_metadata_warnings(monkeypatch, capsys, tmp_path):
                 generator_versions=[],
                 excluded_rounds=[],
                 warnings=["first warning", "second warning"],
+                footystats_mode=config.footystats_mode,
+                footystats_evaluation_scope=config.footystats_evaluation_scope,
+                footystats_league_slug=config.footystats_league_slug,
+                footystats_matches_source_path=None,
+                footystats_matches_source_sha256=None,
+                footystats_feature_columns=[],
+                footystats_missing_join_keys_by_round={},
+                footystats_duplicate_join_keys_by_round={},
+                footystats_extra_club_rows_by_round={},
             ),
         )
 

@@ -89,6 +89,24 @@ def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
     assert metadata["warnings"] == []
 
 
+def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    run_backtest(config, season_df=season_df)
+
+    metadata = pd.read_json(tmp_path / "data/08_reporting/backtests/2025/run_metadata.json", typ="series").to_dict()
+    assert metadata["footystats_mode"] == "none"
+    assert metadata["footystats_evaluation_scope"] == "historical_candidate"
+    assert metadata["footystats_league_slug"] == "brazil-serie-a"
+    assert metadata["footystats_matches_source_path"] is None
+    assert metadata["footystats_matches_source_sha256"] is None
+    assert metadata["footystats_feature_columns"] == []
+    assert metadata["footystats_missing_join_keys_by_round"] == {}
+    assert metadata["footystats_duplicate_join_keys_by_round"] == {}
+    assert metadata["footystats_extra_club_rows_by_round"] == {}
+
+
 def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     _write_tiny_fixture_files(tmp_path, range(1, 6))

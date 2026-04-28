@@ -31,6 +31,8 @@ MARKET_OPEN_PRICE_COLUMN = "preco_pre_rodada"
 
 FixtureMode = Literal["none", "exploratory", "strict"]
 StrictAlignmentPolicy = Literal["fail", "exclude_round"]
+FootyStatsMode = Literal["none", "ppg"]
+FootyStatsEvaluationScope = Literal["historical_candidate", "live_current"]
 
 STATUS_ID_TO_NAME: Mapping[int, str] = {
     2: "Duvida",
@@ -73,6 +75,11 @@ class BacktestConfig:
     output_root: Path = Path("data/08_reporting/backtests")
     fixture_mode: FixtureMode = "none"
     strict_alignment_policy: StrictAlignmentPolicy = "fail"
+    footystats_mode: FootyStatsMode = "none"
+    footystats_evaluation_scope: FootyStatsEvaluationScope = "historical_candidate"
+    footystats_league_slug: str = "brazil-serie-a"
+    footystats_dir: Path = Path("data/footystats")
+    current_year: int | None = None
     scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS
     formations: Mapping[str, Mapping[str, int]] = field(default_factory=lambda: DEFAULT_FORMATIONS)
 

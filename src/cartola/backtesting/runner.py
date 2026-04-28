@@ -52,6 +52,15 @@ class BacktestMetadata:
     generator_versions: list[str]
     excluded_rounds: list[int]
     warnings: list[str]
+    footystats_mode: str
+    footystats_evaluation_scope: str
+    footystats_league_slug: str
+    footystats_matches_source_path: str | None
+    footystats_matches_source_sha256: str | None
+    footystats_feature_columns: list[str]
+    footystats_missing_join_keys_by_round: dict[str, list[dict[str, int]]]
+    footystats_duplicate_join_keys_by_round: dict[str, list[dict[str, int]]]
+    footystats_extra_club_rows_by_round: dict[str, list[dict[str, int]]]
 
 
 @dataclass(frozen=True)
@@ -111,6 +120,15 @@ def run_backtest(
         generator_versions=resolved_fixtures.generator_versions,
         excluded_rounds=excluded_rounds,
         warnings=resolved_fixtures.warnings,
+        footystats_mode=config.footystats_mode,
+        footystats_evaluation_scope=config.footystats_evaluation_scope,
+        footystats_league_slug=config.footystats_league_slug,
+        footystats_matches_source_path=None,
+        footystats_matches_source_sha256=None,
+        footystats_feature_columns=[],
+        footystats_missing_join_keys_by_round={},
+        footystats_duplicate_join_keys_by_round={},
+        footystats_extra_club_rows_by_round={},
     )
     for round_number in range(config.start_round, max_round + 1):
         if round_number in excluded_rounds:
