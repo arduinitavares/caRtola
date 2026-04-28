@@ -46,6 +46,7 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - dynamic feature-column resolver so FootyStats columns do not affect default runs,
   - leakage-safe pre-match PPG loader,
   - many-to-one join validation by `(rodada, id_clube)`,
+  - ignores malformed Cartola rows without a real club identity when validating FootyStats join keys,
   - source file path/hash and join diagnostics in `run_metadata.json`,
   - `live_current` scope rejected by the historical backtest runner until a live workflow exists.
 - Multi-season FootyStats PPG ablation report:
@@ -78,17 +79,26 @@ The first leakage-safe FootyStats feature integration is now complete. On the 20
 - `0.054011` to `0.063308` player R²,
 - `0.268741` to `0.277921` player correlation.
 
-That was a useful but still modest one-season lift. The multi-season ablation report is now implemented as a no-fixture control-vs-PPG comparison. The first run is promising but not fully resolved:
+That was a useful but still modest one-season lift. The multi-season ablation report is now implemented as a no-fixture control-vs-PPG comparison.
 
-- `2024` and `2025` are comparable and positive in aggregate:
-  - RF average points delta: `+2.0501`,
-  - player R² delta: `+0.0234`,
-  - player correlation delta: `+0.0309`.
-- `2023` is not comparable yet because the treatment run exposes a missing FootyStats join key:
-  - round `18`,
-  - club `id_clube=1`.
+The 2023 join gap has been investigated. Root cause: two Cartola 2023 round-18 coach rows have `status=Nulo`, missing `nome_clube`, and placeholder `id_clube=1`. They are not real club identities and should not require FootyStats match rows. The join validation now ignores rows without a real club identity.
 
-Interpretation: keep PPG as promising, but do not move to xG/odds until the 2023 join gap is investigated and the multi-season ablation is rerun.
+After the fix, the no-fixture multi-season ablation is comparable for `2023`, `2024`, and `2025`:
+
+- included seasons: `2023`, `2024`, `2025`;
+- aggregate RF average points delta: `+3.3427`;
+- aggregate player R² delta: `+0.0209`;
+- aggregate player correlation delta: `+0.0271`;
+- control RF minus baseline: `+0.7601`;
+- treatment RF minus baseline: `+4.1028`.
+
+Per-season RF average points deltas:
+
+- `2023`: `+5.9279`;
+- `2024`: `+1.5612`;
+- `2025`: `+2.5391`.
+
+Interpretation: keep FootyStats pre-match PPG. It generalizes across the currently comparable candidate seasons and is now the strongest no-fixture feature addition.
 
 Important distinction:
 
@@ -108,31 +118,19 @@ Exploratory 2025 fixture context:
 uv run --frozen python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100 --fixture-mode exploratory
 ```
 
-FootyStats PPG ablation, isolated control:
+Single-season no-fixture FootyStats PPG backtest:
 
 ```bash
 uv run --frozen python -m cartola.backtesting.cli \
   --season 2025 \
   --start-round 5 \
   --budget 100 \
-  --fixture-mode exploratory \
-  --footystats-mode none \
-  --output-root data/08_reporting/backtests/footystats_none
-```
-
-FootyStats PPG ablation, isolated treatment:
-
-```bash
-uv run --frozen python -m cartola.backtesting.cli \
-  --season 2025 \
-  --start-round 5 \
-  --budget 100 \
-  --fixture-mode exploratory \
+  --fixture-mode none \
   --footystats-mode ppg \
   --footystats-evaluation-scope historical_candidate \
   --footystats-league-slug brazil-serie-a \
   --current-year 2026 \
-  --output-root data/08_reporting/backtests/footystats_ppg
+  --output-root data/08_reporting/backtests/footystats_ppg_single
 ```
 
 Strict mode only works once strict fixture snapshots/manifests exist:
@@ -166,21 +164,19 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Investigate the 2023 FootyStats PPG join gap:
-   - inspect Cartola round `18` candidates for club `id_clube=1`,
-   - inspect the 2023 FootyStats round/game-week `18` rows,
-   - determine whether this is a postponed-match, mapping, missing-source-row, or Cartola round-alignment issue,
-   - fix the data/normalization path only if it is leakage-safe.
-2. Rerun the multi-season PPG ablation after the 2023 join-gap decision:
-   - keep PPG if it remains positive across comparable seasons,
-   - revise or drop PPG if the lift does not generalize.
-3. Add broader FootyStats match-context features after the PPG decision:
+1. Add broader FootyStats match-context features now that PPG has generalized:
+   - inspect the audited FootyStats columns across `2023`, `2024`, `2025`, and partial `2026`,
+   - select the next leakage-safe feature group,
+   - keep feature groups narrow enough for clean ablation.
+2. First next candidate: pre-match xG strength features:
    - pre-match xG where available,
+   - team vs opponent xG difference,
+   - only source columns that are explicitly pre-match.
+3. Then evaluate odds/goal-environment features if xG adds signal:
    - odds-derived win/draw/loss probabilities where available,
-   - pre-match goal environment features.
+   - over/under or expected-goals environment fields where available.
 4. Run broader FootyStats ablation backtests:
-   - baseline fixture context only,
-   - PPG-only FootyStats features,
+   - PPG only,
    - PPG + xG,
    - PPG + xG + odds/goal environment.
 5. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.

@@ -11,6 +11,7 @@ from cartola.backtesting.footystats_features import (
     REQUIRED_MATCH_COLUMNS,
     build_footystats_join_diagnostics,
     load_footystats_ppg_rows,
+    merge_footystats_ppg,
 )
 
 SEASON = 2025
@@ -183,6 +184,49 @@ def test_build_footystats_join_diagnostics_reports_missing_keys() -> None:
     assert diagnostics.missing_join_keys_by_round == {"1": [{"rodada": 1, "id_clube": 20}]}
     assert diagnostics.duplicate_join_keys_by_round == {}
     assert diagnostics.extra_club_rows_by_round == {}
+
+
+def test_build_footystats_join_diagnostics_ignores_rows_without_club_identity() -> None:
+    season_df = pd.DataFrame(
+        [
+            {"rodada": 18, "id_clube": 10, "nome_clube": "Club 10"},
+            {"rodada": 18, "id_clube": 1, "nome_clube": None},
+        ]
+    )
+    footystats_rows = pd.DataFrame([{"rodada": 18, "id_clube": 10}])
+
+    diagnostics = build_footystats_join_diagnostics(season_df, footystats_rows)
+
+    assert diagnostics.missing_join_keys_by_round == {}
+    assert diagnostics.duplicate_join_keys_by_round == {}
+    assert diagnostics.extra_club_rows_by_round == {}
+
+
+def test_merge_footystats_ppg_ignores_rows_without_club_identity() -> None:
+    frame = pd.DataFrame(
+        [
+            {"rodada": 18, "id_clube": 10, "nome_clube": "Club 10"},
+            {"rodada": 18, "id_clube": 1, "nome_clube": None},
+        ]
+    )
+    footystats_rows = pd.DataFrame(
+        [
+            {
+                "rodada": 18,
+                "id_clube": 10,
+                "footystats_team_pre_match_ppg": 1.5,
+                "footystats_opponent_pre_match_ppg": 1.0,
+                "footystats_ppg_diff": 0.5,
+            }
+        ]
+    )
+
+    result = merge_footystats_ppg(frame, footystats_rows, target_round=18)
+
+    real_club = result.loc[result["id_clube"].eq(10)].iloc[0]
+    missing_club = result.loc[result["id_clube"].eq(1)].iloc[0]
+    assert real_club["footystats_team_pre_match_ppg"] == 1.5
+    assert pd.isna(missing_club["footystats_team_pre_match_ppg"])
 
 
 def test_build_footystats_join_diagnostics_reports_duplicate_keys() -> None:

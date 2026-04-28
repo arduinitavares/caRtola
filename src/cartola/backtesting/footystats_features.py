@@ -64,7 +64,9 @@ def merge_footystats_ppg(
         duplicates = _duplicate_key_records(round_rows[duplicate_mask])
         raise ValueError(f"Duplicate FootyStats PPG rows for round {target_round}: {duplicates}")
 
-    candidate_clubs = sorted(int(club_id) for club_id in frame["id_clube"].dropna().unique())
+    candidate_clubs = sorted(
+        int(club_id) for club_id in _rows_with_club_identity(frame)["id_clube"].dropna().unique()
+    )
     matched_clubs = {int(club_id) for club_id in round_rows["id_clube"].dropna().unique()}
     missing_clubs = [club_id for club_id in candidate_clubs if club_id not in matched_clubs]
     if missing_clubs:
@@ -78,7 +80,7 @@ def build_footystats_join_diagnostics(
     season_df: pd.DataFrame,
     footystats_rows: pd.DataFrame | None,
 ) -> FootyStatsJoinDiagnostics:
-    candidate_keys = _unique_key_frame(season_df)
+    candidate_keys = _unique_key_frame(season_df, require_club_identity=True)
     footystats_key_source = pd.DataFrame(columns=pd.Index(["rodada", "id_clube"]))
     if footystats_rows is not None:
         footystats_key_source = footystats_rows[["rodada", "id_clube"]].copy()
@@ -281,13 +283,23 @@ def _reject_duplicate_join_keys(rows: pd.DataFrame) -> None:
         raise ValueError("FootyStats PPG rows contain duplicate normalized (rodada, id_clube) rows")
 
 
-def _unique_key_frame(df: pd.DataFrame) -> pd.DataFrame:
+def _unique_key_frame(df: pd.DataFrame, *, require_club_identity: bool = False) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=pd.Index(["rodada", "id_clube"]))
-    keys = df[["rodada", "id_clube"]].dropna().drop_duplicates().copy()
+    source = _rows_with_club_identity(df) if require_club_identity else df
+    keys = source[["rodada", "id_clube"]].dropna().drop_duplicates().copy()
     keys["rodada"] = keys["rodada"].astype(int)
     keys["id_clube"] = keys["id_clube"].astype(int)
     return keys.sort_values(["rodada", "id_clube"]).reset_index(drop=True)
+
+
+def _rows_with_club_identity(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "nome_clube" not in df.columns:
+        return df
+
+    club_names = df["nome_clube"]
+    has_name = club_names.notna() & club_names.map(lambda value: str(value).strip() != "")
+    return df.loc[has_name]
 
 
 def _duplicate_key_records(df: pd.DataFrame) -> list[dict[str, int]]:
