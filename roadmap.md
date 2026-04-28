@@ -47,7 +47,15 @@ The multi-season audit shows the current pipeline is compatible with recent seas
 
 The next prediction-quality bet is **FootyStats-style match context**, not forcing older Cartola seasons to load first. This is tabular modeling, so more old rows are not automatically better if the historical schema is degraded or partially reconstructed. FootyStats data is more likely to add independent signal if we can source Brasileirão seasons with pre-match-safe match/team fields.
 
-The current `data/footystats/` files appear to be England Premier League 2018-2019 examples, useful for schema inspection but not joinable to Cartola. The next step is an audit that determines whether we have or can add Brazil Serie A / Brasileirão FootyStats files and which columns are safe for walk-forward modeling.
+The FootyStats compatibility audit is now implemented and the current `data/footystats/` files are Brazil Serie A seasons, not sample EPL data. The audit result is:
+
+- `2023`, `2024`, `2025`: `integration_status=candidate`.
+- `2026`: `integration_status=partial_current` because the file contains incomplete/suspended fixtures.
+- Team mapping is clean for all audited seasons.
+- Required safe columns are present: `Pre-Match PPG (Home)` and `Pre-Match PPG (Away)`.
+- Optional safe columns include pre-match xG, odds, goal environment, corners, and cards fields.
+
+That means the next step is no longer discovery. It is designing the first leakage-safe FootyStats feature integration for candidate seasons.
 
 **How To Run Now**
 No fixture context:
@@ -74,6 +82,12 @@ Multi-season compatibility audit:
 uv run --frozen python scripts/audit_backtest_compatibility.py --current-year 2026
 ```
 
+FootyStats compatibility audit:
+
+```bash
+uv run --frozen python scripts/audit_footystats_compatibility.py
+```
+
 Quality gate:
 
 ```bash
@@ -81,22 +95,22 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Audit FootyStats data for Cartola usefulness:
-   - discover all files under `data/footystats/`,
-   - classify league/season coverage and identify whether Brazil Serie A / Brasileirão data exists,
-   - inspect match, team, and player schemas,
-   - classify columns as `pre_match_safe`, `post_match_outcome`, or `unsafe_unknown`,
-   - report whether each season can be joined to Cartola by round and club.
-2. If Brasileirão FootyStats data is available, design the integration:
+1. Design the FootyStats integration:
    - map FootyStats team names to Cartola `id_clube`,
    - align FootyStats game weeks to Cartola `rodada`,
    - define leakage-safe feature columns,
-   - validate that only pre-match-safe fields enter the model.
-3. Add the first FootyStats match-context features:
+   - validate that only pre-match-safe fields enter the model,
+   - define how partial/current seasons are excluded from comparable historical evaluation.
+2. Add the first FootyStats match-context features:
    - home and away pre-match PPG,
    - pre-match xG where available,
    - odds-derived win/draw/loss probabilities where available,
    - pre-match goal environment features.
+3. Run ablation backtests:
+   - baseline fixture context only,
+   - PPG-only FootyStats features,
+   - PPG + xG,
+   - PPG + xG + odds/goal environment.
 4. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
 5. Generate strict fixtures from those snapshots and run strict backtests as data accumulates.
 6. Add higher-signal Cartola fixture features:
