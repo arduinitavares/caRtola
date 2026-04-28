@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 FootyStatsTableType = Literal["league", "matches", "players", "teams", "teams2"]
 
@@ -48,6 +48,7 @@ def parse_footystats_filename(path: Path) -> ParsedFootyStatsFilename:
     table_type = match.group("table_type")
     if table_type not in SUPPORTED_TABLE_TYPES:
         raise ValueError(f"Unsupported FootyStats table type: {table_type}")
+    table_type = cast(FootyStatsTableType, table_type)
 
     start_year = int(match.group("start_year"))
     end_year = int(match.group("end_year"))
