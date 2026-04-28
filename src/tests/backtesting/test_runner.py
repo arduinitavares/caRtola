@@ -144,6 +144,20 @@ def test_run_backtest_rejects_live_current_scope(tmp_path):
         run_backtest(config, season_df=season_df)
 
 
+def test_run_backtest_rejects_live_current_scope_with_footystats_none(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        footystats_mode="none",
+        footystats_evaluation_scope="live_current",
+    )
+
+    with pytest.raises(ValueError, match="live_current is not supported"):
+        run_backtest(config, season_df=season_df)
+
+
 def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path, monkeypatch):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     observed_calls: list[dict[str, object]] = []

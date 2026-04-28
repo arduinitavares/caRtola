@@ -240,12 +240,12 @@ def run_backtest(
 
 
 def _resolve_footystats(config: BacktestConfig) -> FootyStatsPPGLoadResult | None:
+    if config.footystats_evaluation_scope == "live_current":
+        raise ValueError("live_current is not supported by the backtest runner")
     if config.footystats_mode == "none":
         return None
     if config.footystats_mode != "ppg":
         raise ValueError(f"Unsupported footystats_mode: {config.footystats_mode!r}")
-    if config.footystats_evaluation_scope == "live_current":
-        raise ValueError("live_current is not supported by the backtest runner")
 
     return load_footystats_ppg_rows(
         season=config.season,
