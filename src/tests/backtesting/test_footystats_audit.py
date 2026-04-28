@@ -235,3 +235,51 @@ def test_compare_teams_to_cartola_ignores_non_round_and_malformed_round_files(tm
     assert comparison.cartola_clubs_by_normalized_name == {"palmeiras": 275}
     assert comparison.mapped_teams == {"Palmeiras": 275}
     assert comparison.unmapped_footystats_teams == ["Flamengo"]
+
+
+def test_audit_one_footystats_season_marks_joinable_safe_complete_season(tmp_path: Path) -> None:
+    footystats_dir = tmp_path / "data" / "footystats"
+    footystats_dir.mkdir(parents=True)
+    matches_path = footystats_dir / "brazil-serie-a-matches-2025-to-2025-stats.csv"
+    pd.DataFrame(
+        [
+            {
+                "status": "complete",
+                "Game Week": week,
+                "home_team_name": "Flamengo" if week == 1 else "Palmeiras",
+                "away_team_name": "Palmeiras" if week == 1 else "Flamengo",
+                "Pre-Match PPG (Home)": 0.0,
+                "Pre-Match PPG (Away)": 0.0,
+                "home_team_goal_count": 1,
+                "away_team_goal_count": 0,
+            }
+            for week in range(1, 39)
+        ]
+    ).to_csv(matches_path, index=False)
+    (footystats_dir / "brazil-serie-a-league-2025-to-2025-stats.csv").write_text(
+        "name,season,status,total_matches,matches_completed,game_week,total_game_week,progress\n"
+        "Serie A,2025,Completed,380,380,38,38,100\n",
+        encoding="utf-8",
+    )
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [262, 275],
+            "atletas.clube.id.full.name": ["FLA", "PAL"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    discovery = audit.discover_footystats_files(audit.FootyStatsAuditConfig(project_root=tmp_path))[0]
+    record = audit.audit_one_footystats_season(discovery, audit.FootyStatsAuditConfig(project_root=tmp_path))
+
+    assert record.season == 2025
+    assert record.league_slug == "brazil-serie-a"
+    assert record.match_status == "ok"
+    assert record.team_mapping_status == "ok"
+    assert record.integration_status == "candidate"
+    assert record.match_row_count == 38
+    assert record.min_game_week == 1
+    assert record.max_game_week == 38
+    assert record.unmapped_footystats_teams == []
+    assert "Pre-Match PPG (Home)" in record.pre_match_safe_columns
