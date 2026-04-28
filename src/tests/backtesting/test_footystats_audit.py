@@ -136,3 +136,32 @@ def test_profile_match_file_excludes_extra_pre_match_fields_and_includes_half_ti
 
     assert not set(extra_pre_match_columns).intersection(profile.pre_match_safe_columns)
     assert set(half_time_goal_columns).issubset(profile.post_match_outcome_columns)
+
+
+def test_normalize_team_name_handles_accents_suffixes_and_cartola_abbreviations() -> None:
+    assert audit.normalize_team_name("São Paulo") == "sao paulo"
+    assert audit.normalize_team_name("São Paulo FC") == "sao paulo"
+    assert audit.normalize_team_name("Vasco da Gama") == "vasco da gama"
+    assert audit.normalize_team_name("FLA") == "flamengo"
+    assert audit.normalize_team_name("CAM") == "atletico mineiro"
+
+
+def test_compare_footystats_teams_to_cartola_clubs_reports_unmapped(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [262, 275],
+            "atletas.clube.id.full.name": ["FLA", "PAL"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    comparison = audit.compare_teams_to_cartola(
+        season=2025,
+        footystats_team_names=["Flamengo", "Palmeiras", "Mirassol"],
+        project_root=tmp_path,
+    )
+
+    assert comparison.cartola_clubs_by_normalized_name == {"flamengo": 262, "palmeiras": 275}
+    assert comparison.mapped_teams == {"Flamengo": 262, "Palmeiras": 275}
+    assert comparison.unmapped_footystats_teams == ["Mirassol"]

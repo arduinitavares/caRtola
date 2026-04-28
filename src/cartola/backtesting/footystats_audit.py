@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -66,6 +67,57 @@ POST_MATCH_OUTCOME_COLUMNS = (
     "team_a_xg",
     "team_b_xg",
 )
+CARTOLA_ABBREVIATIONS = {
+    "FLA": "flamengo",
+    "BOT": "botafogo",
+    "COR": "corinthians",
+    "BAH": "bahia",
+    "FLU": "fluminense",
+    "VAS": "vasco da gama",
+    "PAL": "palmeiras",
+    "SAO": "sao paulo",
+    "SAN": "santos",
+    "RBB": "red bull bragantino",
+    "CAM": "atletico mineiro",
+    "CRU": "cruzeiro",
+    "GRE": "gremio",
+    "INT": "internacional",
+    "JUV": "juventude",
+    "VIT": "vitoria",
+    "SPT": "sport recife",
+    "CEA": "ceara",
+    "FOR": "fortaleza",
+    "MIR": "mirassol",
+    "CAP": "atletico pr",
+    "CFC": "coritiba",
+    "CHA": "chapecoense",
+    "REM": "remo",
+}
+TEAM_SUFFIXES = (
+    " futebol clube",
+    " football club",
+    " esporte clube",
+    " sport club",
+    " club de regatas",
+    " clube de regatas",
+    " fc",
+    " clube",
+)
+TEAM_ALIASES = {
+    "athletico paranaense": "atletico pr",
+    "athletico pr": "atletico pr",
+    "atletico paranaense": "atletico pr",
+    "atletico pr": "atletico pr",
+    "atletico mg": "atletico mineiro",
+    "atletico mineiro": "atletico mineiro",
+    "vasco": "vasco da gama",
+    "vasco da gama": "vasco da gama",
+    "sport": "sport recife",
+    "sport recife": "sport recife",
+    "rb bragantino": "red bull bragantino",
+    "red bull bragantino": "red bull bragantino",
+    "sao paulo": "sao paulo",
+}
 
 
 @dataclass(frozen=True)
@@ -107,6 +159,13 @@ class MatchFileProfile:
     post_match_outcome_columns: tuple[str, ...]
     pre_match_missing_counts: dict[str, int]
     pre_match_zero_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class TeamComparison:
+    cartola_clubs_by_normalized_name: dict[str, int]
+    mapped_teams: dict[str, int]
+    unmapped_footystats_teams: list[str]
 
 
 def parse_footystats_filename(path: Path) -> ParsedFootyStatsFilename:
@@ -167,6 +226,53 @@ def profile_match_file(path: Path) -> MatchFileProfile:
         post_match_outcome_columns=post_match_outcome_columns,
         pre_match_missing_counts=_numeric_missing_counts(df, pre_match_safe_columns),
         pre_match_zero_counts=_numeric_zero_counts(df, pre_match_safe_columns),
+    )
+
+
+def normalize_team_name(value: str) -> str:
+    abbreviation = value.strip().upper()
+    if abbreviation in CARTOLA_ABBREVIATIONS:
+        return CARTOLA_ABBREVIATIONS[abbreviation]
+
+    normalized = unicodedata.normalize("NFKD", value)
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = normalized.lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    for suffix in TEAM_SUFFIXES:
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)].strip()
+            break
+
+    return TEAM_ALIASES.get(normalized, normalized)
+
+
+def compare_teams_to_cartola(season: int, footystats_team_names: list[str], project_root: Path) -> TeamComparison:
+    season_dir = project_root / "data" / "01_raw" / str(season)
+    cartola_clubs_by_normalized_name: dict[str, int] = {}
+
+    for path in sorted(season_dir.glob("*.csv")):
+        df = pd.read_csv(path)
+        for club_id, club_name in zip(df["atletas.clube_id"], df["atletas.clube.id.full.name"], strict=False):
+            if pd.isna(club_id) or pd.isna(club_name):
+                continue
+            normalized_name = normalize_team_name(str(club_name))
+            cartola_clubs_by_normalized_name.setdefault(normalized_name, int(club_id))
+
+    mapped_teams: dict[str, int] = {}
+    unmapped_footystats_teams: list[str] = []
+    for team_name in footystats_team_names:
+        club_id = cartola_clubs_by_normalized_name.get(normalize_team_name(team_name))
+        if club_id is None:
+            unmapped_footystats_teams.append(team_name)
+        else:
+            mapped_teams[team_name] = club_id
+
+    return TeamComparison(
+        cartola_clubs_by_normalized_name=cartola_clubs_by_normalized_name,
+        mapped_teams=mapped_teams,
+        unmapped_footystats_teams=sorted(unmapped_footystats_teams),
     )
 
 
