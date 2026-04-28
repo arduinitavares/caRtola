@@ -574,8 +574,30 @@ def test_build_aggregate_record_averages_only_successful_comparable_records() ->
         treatment_player_corr=1000.0,
         player_corr_delta=1000.0,
     )
+    metric_failed = ablation.SeasonAblationRecord(
+        season=2027,
+        metrics_comparable=True,
+        control_status="ok",
+        treatment_status="ok",
+        metric_status="failed",
+        control_baseline_avg_points=1000.0,
+        treatment_baseline_avg_points=1000.0,
+        baseline_avg_points=1000.0,
+        baseline_avg_points_equal=True,
+        control_rf_avg_points=1000.0,
+        treatment_rf_avg_points=1000.0,
+        rf_avg_points_delta=1000.0,
+        control_player_r2=1000.0,
+        treatment_player_r2=1000.0,
+        player_r2_delta=1000.0,
+        control_player_corr=1000.0,
+        treatment_player_corr=1000.0,
+        player_corr_delta=1000.0,
+        rf_minus_baseline_control=1000.0,
+        rf_minus_baseline_treatment=1000.0,
+    )
 
-    aggregate = ablation.build_aggregate_record([included_a, failed, included_b, non_comparable])
+    aggregate = ablation.build_aggregate_record([included_a, failed, included_b, non_comparable, metric_failed])
 
     assert aggregate.metrics_comparable is True
     assert aggregate.control_baseline_avg_points == 55.0
@@ -807,3 +829,28 @@ def test_write_reports_uses_atomic_replace_without_final_files_on_replace_failur
 
     assert not (result.resolved_output_root / "ppg_ablation.csv").exists()
     assert not (result.resolved_output_root / "ppg_ablation.json").exists()
+
+
+def test_write_reports_restores_old_final_pair_when_json_replace_fails_after_csv_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _report_result(tmp_path)
+    result.resolved_output_root.mkdir(parents=True)
+    csv_path = result.resolved_output_root / "ppg_ablation.csv"
+    json_path = result.resolved_output_root / "ppg_ablation.json"
+    csv_path.write_text("old csv\n")
+    json_path.write_text('{"old": "json"}\n')
+    original_replace = Path.replace
+
+    def fail_json_final_replace(self: Path, target: Path) -> Path:
+        if self.name == ".ppg_ablation.json.tmp" and target == json_path:
+            raise OSError("json replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_json_final_replace)
+
+    with pytest.raises(OSError, match="json replace failed"):
+        ablation.write_reports(result)
+
+    assert csv_path.read_text() == "old csv\n"
+    assert json_path.read_text() == '{"old": "json"}\n'

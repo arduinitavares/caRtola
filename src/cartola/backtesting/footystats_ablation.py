@@ -426,11 +426,7 @@ def populate_metrics(record: SeasonAblationRecord, control_path: Path, treatment
 
 
 def build_aggregate_record(records: list[SeasonAblationRecord]) -> SeasonAblationRecord:
-    included = [
-        record
-        for record in records
-        if record.metrics_comparable and record.control_status == "ok" and record.treatment_status == "ok"
-    ]
+    included = [record for record in records if _is_included_in_aggregate(record)]
     aggregate = SeasonAblationRecord(
         season="aggregate",
         row_type="aggregate",
@@ -576,6 +572,10 @@ def write_reports(result: FootyStatsPPGAblationResult) -> None:
     json_path = result.resolved_output_root / "ppg_ablation.json"
     csv_tmp = result.resolved_output_root / ".ppg_ablation.csv.tmp"
     json_tmp = result.resolved_output_root / ".ppg_ablation.json.tmp"
+    csv_backup = result.resolved_output_root / ".ppg_ablation.csv.bak"
+    json_backup = result.resolved_output_root / ".ppg_ablation.json.bak"
+    csv_backed_up = False
+    json_backed_up = False
 
     report = {
         "generated_at_utc": _generated_at_utc(),
@@ -587,8 +587,30 @@ def write_reports(result: FootyStatsPPGAblationResult) -> None:
     try:
         pd.DataFrame(rows, columns=CSV_COLUMNS).to_csv(csv_tmp, index=False, na_rep="")
         json_tmp.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-        csv_tmp.replace(csv_path)
-        json_tmp.replace(json_path)
+        csv_backup.unlink(missing_ok=True)
+        json_backup.unlink(missing_ok=True)
+
+        try:
+            if csv_path.exists():
+                csv_path.replace(csv_backup)
+                csv_backed_up = True
+            if json_path.exists():
+                json_path.replace(json_backup)
+                json_backed_up = True
+
+            csv_tmp.replace(csv_path)
+            json_tmp.replace(json_path)
+        except BaseException:
+            csv_path.unlink(missing_ok=True)
+            json_path.unlink(missing_ok=True)
+            if csv_backed_up:
+                csv_backup.replace(csv_path)
+            if json_backed_up:
+                json_backup.replace(json_path)
+            raise
+        else:
+            csv_backup.unlink(missing_ok=True)
+            json_backup.unlink(missing_ok=True)
     finally:
         csv_tmp.unlink(missing_ok=True)
         json_tmp.unlink(missing_ok=True)
