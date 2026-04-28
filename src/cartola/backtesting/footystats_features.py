@@ -124,7 +124,8 @@ def load_footystats_ppg_rows(
         if season != resolved_current_year:
             raise ValueError(f"live_current requires season {season} to equal current_year {resolved_current_year}")
 
-    df = pd.read_csv(source_path)
+    required_columns = set(REQUIRED_MATCH_COLUMNS)
+    df = pd.read_csv(source_path, usecols=lambda column: column in required_columns)
     _require_columns(df)
 
     game_weeks = _validated_game_weeks(df)

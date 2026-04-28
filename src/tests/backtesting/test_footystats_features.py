@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pytest
 
-from cartola.backtesting.footystats_features import build_footystats_join_diagnostics, load_footystats_ppg_rows
+from cartola.backtesting.footystats_features import (
+    REQUIRED_MATCH_COLUMNS,
+    build_footystats_join_diagnostics,
+    load_footystats_ppg_rows,
+)
 
 SEASON = 2025
 LEAGUE_SLUG = "brazil-serie-a"
@@ -57,6 +63,29 @@ def test_load_footystats_ppg_rows_builds_home_away_rows_without_outcomes(tmp_pat
     assert away_row["footystats_team_pre_match_ppg"] == 0.75
     assert away_row["footystats_opponent_pre_match_ppg"] == 1.25
     assert away_row["footystats_ppg_diff"] == -0.5
+
+
+def test_load_footystats_ppg_rows_reads_only_required_safe_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_path = _write_matches_csv(tmp_path, [_match_row(week=week) for week in range(1, 39)])
+    _write_cartola_round(tmp_path)
+    original_read_csv = pd.read_csv
+    footystats_usecols: list[object] = []
+
+    def capture_read_csv(*args, **kwargs):
+        if args and Path(args[0]) == source_path:
+            footystats_usecols.append(kwargs.get("usecols"))
+        return original_read_csv(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_csv", capture_read_csv)
+
+    _load_historical(tmp_path)
+
+    assert len(footystats_usecols) == 1
+    usecols = footystats_usecols[0]
+    assert callable(usecols)
+    usecols_predicate = cast(Callable[[str], bool], usecols)
+    candidate_columns = [*REQUIRED_MATCH_COLUMNS, "home_team_goal_count", "Home Team Pre-Match xG"]
+    assert [column for column in candidate_columns if usecols_predicate(column)] == list(REQUIRED_MATCH_COLUMNS)
 
 
 def test_load_footystats_ppg_rows_rejects_missing_required_ppg_column(tmp_path: Path) -> None:
