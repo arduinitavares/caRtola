@@ -303,3 +303,89 @@ def test_audit_one_footystats_season_keeps_missing_match_metrics_nullable(tmp_pa
     assert record.game_week_count is None
     assert record.pre_match_safe_columns == []
     assert record.post_match_outcome_columns == []
+
+
+def test_audit_one_footystats_season_rejects_incomplete_game_week_coverage(tmp_path: Path) -> None:
+    footystats_dir = tmp_path / "data" / "footystats"
+    footystats_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "status": "complete",
+                "Game Week": week,
+                "home_team_name": "Flamengo" if week % 2 else "Palmeiras",
+                "away_team_name": "Palmeiras" if week % 2 else "Flamengo",
+                "Pre-Match PPG (Home)": 1.0,
+            }
+            for week in range(1, 20)
+        ]
+    ).to_csv(footystats_dir / "brazil-serie-a-matches-2025-to-2025-stats.csv", index=False)
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [262, 275],
+            "atletas.clube.id.full.name": ["FLA", "PAL"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    discovery = audit.discover_footystats_files(audit.FootyStatsAuditConfig(project_root=tmp_path))[0]
+    record = audit.audit_one_footystats_season(discovery, audit.FootyStatsAuditConfig(project_root=tmp_path))
+
+    assert record.team_mapping_status == "ok"
+    assert record.integration_status == "partial_current"
+    assert "match file does not cover game weeks 1-38" in record.notes
+
+
+def test_audit_one_footystats_season_rejects_matches_without_team_names(tmp_path: Path) -> None:
+    footystats_dir = tmp_path / "data" / "footystats"
+    footystats_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "status": "complete",
+                "Game Week": week,
+                "Pre-Match PPG (Home)": 1.0,
+            }
+            for week in range(1, 39)
+        ]
+    ).to_csv(footystats_dir / "brazil-serie-a-matches-2025-to-2025-stats.csv", index=False)
+
+    discovery = audit.discover_footystats_files(audit.FootyStatsAuditConfig(project_root=tmp_path))[0]
+    record = audit.audit_one_footystats_season(discovery, audit.FootyStatsAuditConfig(project_root=tmp_path))
+
+    assert record.footystats_team_count == 0
+    assert record.team_mapping_status == "failed"
+    assert record.integration_status == "not_candidate"
+    assert "match file has no team names" in record.notes
+
+
+def test_audit_one_footystats_season_rejects_matches_without_fixture_status(tmp_path: Path) -> None:
+    footystats_dir = tmp_path / "data" / "footystats"
+    footystats_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "Game Week": week,
+                "home_team_name": "Flamengo" if week == 1 else "Palmeiras",
+                "away_team_name": "Palmeiras" if week == 1 else "Flamengo",
+                "Pre-Match PPG (Home)": 1.0,
+            }
+            for week in range(1, 39)
+        ]
+    ).to_csv(footystats_dir / "brazil-serie-a-matches-2025-to-2025-stats.csv", index=False)
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [262, 275],
+            "atletas.clube.id.full.name": ["FLA", "PAL"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    discovery = audit.discover_footystats_files(audit.FootyStatsAuditConfig(project_root=tmp_path))[0]
+    record = audit.audit_one_footystats_season(discovery, audit.FootyStatsAuditConfig(project_root=tmp_path))
+
+    assert record.status_counts == {}
+    assert record.integration_status == "not_candidate"
+    assert "match file has no fixture status data" in record.notes

@@ -327,19 +327,29 @@ def audit_one_footystats_season(
 
     profile = profile_match_file(match_path)
     comparison = compare_teams_to_cartola(discovery.season, profile.team_names, config.project_root)
-    team_mapping_status = "failed" if comparison.unmapped_footystats_teams else "ok"
+    team_mapping_status = "failed" if not profile.team_names or comparison.unmapped_footystats_teams else "ok"
     notes: list[str] = []
 
-    if profile.min_game_week != 1 or profile.max_game_week != 38 or profile.game_week_count != 38:
+    has_complete_game_week_coverage = (
+        profile.min_game_week == 1 and profile.max_game_week == 38 and profile.game_week_count == 38
+    )
+    if not has_complete_game_week_coverage:
         notes.append("match file does not cover game weeks 1-38")
+
+    if not profile.team_names:
+        notes.append("match file has no team names")
+
+    has_fixture_status_data = bool(profile.status_counts)
+    if not has_fixture_status_data:
+        notes.append("match file has no fixture status data")
 
     has_non_complete_fixtures = _has_non_complete_fixtures(profile.status_counts)
     if has_non_complete_fixtures:
         notes.append("match file contains non-complete fixtures")
 
-    if team_mapping_status == "failed" or not profile.pre_match_safe_columns:
+    if team_mapping_status == "failed" or not profile.pre_match_safe_columns or not has_fixture_status_data:
         integration_status = "not_candidate"
-    elif has_non_complete_fixtures:
+    elif has_non_complete_fixtures or not has_complete_game_week_coverage:
         integration_status = "partial_current"
     else:
         integration_status = "candidate"
