@@ -90,11 +90,7 @@ def build_footystats_join_diagnostics(
     extra = footystats_keys.merge(candidate_keys, on=["rodada", "id_clube"], how="left", indicator=True)
     extra = extra[extra["_merge"].eq("left_only")][["rodada", "id_clube"]]
 
-    duplicate_counts = (
-        footystats_key_source.groupby(["rodada", "id_clube"], as_index=False)
-        .size()
-        .rename(columns={"size": "count"})
-    )
+    duplicate_counts = _duplicate_count_frame(footystats_key_source)
     duplicate_counts = duplicate_counts[duplicate_counts["count"].gt(1)]
 
     return FootyStatsJoinDiagnostics(
@@ -282,16 +278,26 @@ def _unique_key_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _duplicate_key_records(df: pd.DataFrame) -> list[dict[str, int]]:
-    duplicate_counts = (
-        df.groupby(["rodada", "id_clube"], as_index=False)
-        .size()
-        .rename(columns={"size": "count"})
-        .sort_values(["rodada", "id_clube"])
-    )
+    duplicate_counts = _duplicate_count_frame(df).sort_values(["rodada", "id_clube"])
     return [
         {"rodada": int(row["rodada"]), "id_clube": int(row["id_clube"]), "count": int(row["count"])}
         for _, row in duplicate_counts.iterrows()
     ]
+
+
+def _duplicate_count_frame(df: pd.DataFrame) -> pd.DataFrame:
+    counts: dict[tuple[int, int], int] = {}
+    if not df.empty:
+        for rodada, id_clube in df[["rodada", "id_clube"]].dropna().itertuples(index=False, name=None):
+            key = (int(rodada), int(id_clube))
+            counts[key] = counts.get(key, 0) + 1
+    return pd.DataFrame(
+        [
+            {"rodada": rodada, "id_clube": id_clube, "count": count}
+            for (rodada, id_clube), count in sorted(counts.items())
+        ],
+        columns=pd.Index(["rodada", "id_clube", "count"]),
+    )
 
 
 def _group_key_records_by_round(
