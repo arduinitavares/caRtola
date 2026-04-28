@@ -186,3 +186,52 @@ def test_compare_footystats_bragantino_to_cartola_rbb(tmp_path: Path) -> None:
     assert comparison.cartola_clubs_by_normalized_name == {"bragantino": 280}
     assert comparison.mapped_teams == {"Bragantino": 280}
     assert comparison.unmapped_footystats_teams == []
+
+
+def test_compare_footystats_america_mineiro_to_cartola_america_mg(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [327],
+            "atletas.clube.id.full.name": ["AmÃ©rica-MG"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    comparison = audit.compare_teams_to_cartola(
+        season=2025,
+        footystats_team_names=["America Mineiro"],
+        project_root=tmp_path,
+    )
+
+    assert comparison.cartola_clubs_by_normalized_name == {"america mineiro": 327}
+    assert comparison.mapped_teams == {"America Mineiro": 327}
+    assert comparison.unmapped_footystats_teams == []
+
+
+def test_compare_teams_to_cartola_ignores_non_round_and_malformed_round_files(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [262],
+            "atletas.clube.id.full.name": ["FLA"],
+        }
+    ).to_csv(season_dir / "clubes.csv", index=False)
+    pd.DataFrame({"unrelated": ["ignored"]}).to_csv(season_dir / "rodada-0.csv", index=False)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [275],
+            "atletas.clube.id.full.name": ["PAL"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    comparison = audit.compare_teams_to_cartola(
+        season=2025,
+        footystats_team_names=["Flamengo", "Palmeiras"],
+        project_root=tmp_path,
+    )
+
+    assert comparison.cartola_clubs_by_normalized_name == {"palmeiras": 275}
+    assert comparison.mapped_teams == {"Palmeiras": 275}
+    assert comparison.unmapped_footystats_teams == ["Flamengo"]

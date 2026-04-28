@@ -110,6 +110,8 @@ TEAM_ALIASES = {
     "atletico pr": "atletico pr",
     "atletico mg": "atletico mineiro",
     "atletico mineiro": "atletico mineiro",
+    "america mg": "america mineiro",
+    "america mineiro": "america mineiro",
     "vasco": "vasco da gama",
     "vasco da gama": "vasco da gama",
     "sport": "sport recife",
@@ -234,6 +236,11 @@ def normalize_team_name(value: str) -> str:
     if abbreviation in CARTOLA_ABBREVIATIONS:
         return CARTOLA_ABBREVIATIONS[abbreviation]
 
+    try:
+        value = value.encode("latin1").decode("utf-8")
+    except UnicodeError:
+        pass
+
     normalized = unicodedata.normalize("NFKD", value)
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
     normalized = normalized.lower()
@@ -251,9 +258,12 @@ def normalize_team_name(value: str) -> str:
 def compare_teams_to_cartola(season: int, footystats_team_names: list[str], project_root: Path) -> TeamComparison:
     season_dir = project_root / "data" / "01_raw" / str(season)
     cartola_clubs_by_normalized_name: dict[str, int] = {}
+    required_columns = {"atletas.clube_id", "atletas.clube.id.full.name"}
 
-    for path in sorted(season_dir.glob("*.csv")):
-        df = pd.read_csv(path)
+    for path in sorted(season_dir.glob("rodada-*.csv")):
+        df = pd.read_csv(path, usecols=lambda column: column in required_columns)
+        if not required_columns.issubset(df.columns):
+            continue
         for club_id, club_name in zip(df["atletas.clube_id"], df["atletas.clube.id.full.name"], strict=False):
             if pd.isna(club_id) or pd.isna(club_name):
                 continue
