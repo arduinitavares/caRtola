@@ -2,10 +2,40 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from cartola.backtesting import footystats_ablation as ablation
+
+
+def _write_backtest_outputs(output_path: Path) -> None:
+    output_path.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"strategy": "baseline", "average_actual_points": 50.0},
+            {"strategy": "random_forest", "average_actual_points": 55.0},
+        ]
+    ).to_csv(output_path / "summary.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "section": "prediction",
+                "strategy": "random_forest",
+                "position": "all",
+                "metric": "player_r2",
+                "value": 0.1,
+            },
+            {
+                "section": "prediction",
+                "strategy": "random_forest",
+                "position": "all",
+                "metric": "player_correlation",
+                "value": 0.2,
+            },
+        ]
+    ).to_csv(output_path / "diagnostics.csv", index=False)
 
 
 def test_parse_seasons_preserves_order_and_rejects_duplicates() -> None:
@@ -204,3 +234,67 @@ def test_prepare_output_root_revalidates_output_root_before_force_delete(tmp_pat
         ablation.prepare_output_root(config, outside_root)
 
     assert sentinel.read_text() == "keep"
+
+
+def test_eligibility_failure_skips_control_and_treatment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+
+    def fail_eligibility(**kwargs: object) -> object:
+        raise ValueError("not a candidate")
+
+    def fail_run_backtest(config: object) -> object:
+        calls.append(config)
+        raise AssertionError("run_backtest should not be called")
+
+    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", fail_eligibility)
+    monkeypatch.setattr(ablation, "run_backtest", fail_run_backtest)
+
+    config = ablation.FootyStatsPPGAblationConfig(
+        project_root=tmp_path,
+        output_root=Path("reports/footystats_ablation"),
+    )
+
+    result = ablation.run_footystats_ppg_ablation(config)
+
+    assert calls == []
+    assert len(result.seasons) == 3
+    first = result.seasons[0]
+    assert first.control_status == "skipped"
+    assert first.treatment_status == "skipped"
+    assert first.error_stage == "eligibility"
+    assert first.metrics_comparable is False
+
+
+def test_orchestration_runs_control_then_treatment_for_eligible_season(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[int, str, str]] = []
+
+    def load_eligible(**kwargs: object) -> object:
+        return SimpleNamespace(
+            source_path=Path("data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv"),
+            source_sha256="abc123",
+        )
+
+    def fake_run_backtest(config: object) -> object:
+        assert hasattr(config, "output_path")
+        calls.append((config.season, config.fixture_mode, config.footystats_mode))
+        _write_backtest_outputs(config.output_path)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", load_eligible)
+    monkeypatch.setattr(ablation, "run_backtest", fake_run_backtest)
+
+    config = ablation.FootyStatsPPGAblationConfig(
+        seasons=(2025,),
+        project_root=tmp_path,
+        output_root=Path("reports/footystats_ablation"),
+    )
+
+    result = ablation.run_footystats_ppg_ablation(config)
+
+    assert calls == [(2025, "none", "none"), (2025, "none", "ppg")]
+    first = result.seasons[0]
+    assert first.control_status == "ok"
+    assert first.treatment_status == "ok"
+    assert first.treatment_source_sha256 == "abc123"
