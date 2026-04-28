@@ -87,3 +87,25 @@ def test_profile_match_file_classifies_pre_match_and_outcome_columns(tmp_path: P
     assert "home_team_goal_count" in profile.post_match_outcome_columns
     assert "team_a_xg" in profile.post_match_outcome_columns
     assert profile.team_names == ["Flamengo", "Palmeiras"]
+
+
+def test_profile_match_file_only_marks_explicit_plan_columns_as_pre_match_safe(tmp_path: Path) -> None:
+    path = tmp_path / "brazil-serie-a-matches-2025-to-2025-stats.csv"
+    expected_plan_columns = [
+        "over_15_HT_FHG_percentage_pre_match",
+        "over_05_HT_FHG_percentage_pre_match",
+        "over_15_2HG_percentage_pre_match",
+        "over_05_2HG_percentage_pre_match",
+        "average_corners_per_match_pre_match",
+        "average_cards_per_match_pre_match",
+        "odds_ft_over15",
+        "odds_ft_over25",
+        "odds_ft_over35",
+        "odds_ft_over45",
+    ]
+    pd.DataFrame([{**dict.fromkeys(expected_plan_columns, 1), "odds_ft_unplanned_live": 2}]).to_csv(path, index=False)
+
+    profile = audit.profile_match_file(path)
+
+    assert set(expected_plan_columns).issubset(profile.pre_match_safe_columns)
+    assert "odds_ft_unplanned_live" not in profile.pre_match_safe_columns

@@ -28,6 +28,12 @@ PRE_MATCH_SAFE_COLUMNS = (
     "over_45_percentage_pre_match",
     "over_55_percentage_pre_match",
     "over_65_percentage_pre_match",
+    "over_15_HT_FHG_percentage_pre_match",
+    "over_05_HT_FHG_percentage_pre_match",
+    "over_15_2HG_percentage_pre_match",
+    "over_05_2HG_percentage_pre_match",
+    "average_corners_per_match_pre_match",
+    "average_cards_per_match_pre_match",
     "home_team_corner_count_pre_match",
     "away_team_corner_count_pre_match",
     "home_team_cards_pre_match",
@@ -35,6 +41,10 @@ PRE_MATCH_SAFE_COLUMNS = (
     "odds_ft_home_team_win",
     "odds_ft_draw",
     "odds_ft_away_team_win",
+    "odds_ft_over15",
+    "odds_ft_over25",
+    "odds_ft_over35",
+    "odds_ft_over45",
     "odds_btts_yes",
     "odds_btts_no",
 )
@@ -60,7 +70,6 @@ POST_MATCH_OUTCOME_COLUMNS = (
     "team_a_xg",
     "team_b_xg",
 )
-PRE_MATCH_SAFE_PREFIXES = ("odds_ft_", "odds_btts_")
 
 
 @dataclass(frozen=True)
@@ -143,11 +152,7 @@ def discover_footystats_files(config: FootyStatsAuditConfig) -> list[FootyStatsS
 
 def profile_match_file(path: Path) -> MatchFileProfile:
     df = pd.read_csv(path)
-    pre_match_safe_columns = tuple(
-        column
-        for column in df.columns
-        if column in PRE_MATCH_SAFE_COLUMNS or column.startswith(PRE_MATCH_SAFE_PREFIXES)
-    )
+    pre_match_safe_columns = tuple(column for column in df.columns if column in PRE_MATCH_SAFE_COLUMNS)
     post_match_outcome_columns = tuple(column for column in df.columns if column in POST_MATCH_OUTCOME_COLUMNS)
 
     game_weeks = pd.to_numeric(df["Game Week"], errors="coerce").dropna() if "Game Week" in df else pd.Series(dtype="float64")
