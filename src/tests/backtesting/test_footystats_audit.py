@@ -282,4 +282,24 @@ def test_audit_one_footystats_season_marks_joinable_safe_complete_season(tmp_pat
     assert record.min_game_week == 1
     assert record.max_game_week == 38
     assert record.unmapped_footystats_teams == []
-    assert "Pre-Match PPG (Home)" in record.pre_match_safe_columns
+    assert record.pre_match_safe_columns == ["Pre-Match PPG (Home)", "Pre-Match PPG (Away)"]
+    assert record.post_match_outcome_columns == ["home_team_goal_count", "away_team_goal_count"]
+
+
+def test_audit_one_footystats_season_keeps_missing_match_metrics_nullable(tmp_path: Path) -> None:
+    footystats_dir = tmp_path / "data" / "footystats"
+    footystats_dir.mkdir(parents=True)
+    (footystats_dir / "brazil-serie-a-league-2025-to-2025-stats.csv").write_text(
+        "name,season,status,total_matches,matches_completed,game_week,total_game_week,progress\n"
+        "Serie A,2025,Completed,380,380,38,38,100\n",
+        encoding="utf-8",
+    )
+
+    discovery = audit.discover_footystats_files(audit.FootyStatsAuditConfig(project_root=tmp_path))[0]
+    record = audit.audit_one_footystats_season(discovery, audit.FootyStatsAuditConfig(project_root=tmp_path))
+
+    assert record.match_status == "missing"
+    assert record.match_row_count is None
+    assert record.game_week_count is None
+    assert record.pre_match_safe_columns == []
+    assert record.post_match_outcome_columns == []

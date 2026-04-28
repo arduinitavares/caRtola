@@ -180,16 +180,16 @@ class FootyStatsSeasonAuditRecord:
     match_status: str
     team_mapping_status: str
     integration_status: str
-    match_row_count: int
+    match_row_count: int | None
     min_game_week: int | None
     max_game_week: int | None
-    game_week_count: int
+    game_week_count: int | None
     status_counts: dict[str, int]
     footystats_team_count: int
     mapped_team_count: int
     unmapped_footystats_teams: list[str]
-    pre_match_safe_columns: tuple[str, ...]
-    post_match_outcome_columns: tuple[str, ...]
+    pre_match_safe_columns: list[str]
+    post_match_outcome_columns: list[str]
     pre_match_missing_counts: dict[str, int]
     pre_match_zero_counts: dict[str, int]
     notes: list[str] = field(default_factory=list)
@@ -310,16 +310,16 @@ def audit_one_footystats_season(
             match_status="missing",
             team_mapping_status="skipped",
             integration_status="not_candidate",
-            match_row_count=0,
+            match_row_count=None,
             min_game_week=None,
             max_game_week=None,
-            game_week_count=0,
+            game_week_count=None,
             status_counts={},
             footystats_team_count=0,
             mapped_team_count=0,
             unmapped_footystats_teams=[],
-            pre_match_safe_columns=(),
-            post_match_outcome_columns=(),
+            pre_match_safe_columns=[],
+            post_match_outcome_columns=[],
             pre_match_missing_counts={},
             pre_match_zero_counts={},
             notes=["missing matches file"],
@@ -360,8 +360,8 @@ def audit_one_footystats_season(
         footystats_team_count=len(profile.team_names),
         mapped_team_count=len(comparison.mapped_teams),
         unmapped_footystats_teams=comparison.unmapped_footystats_teams,
-        pre_match_safe_columns=profile.pre_match_safe_columns,
-        post_match_outcome_columns=profile.post_match_outcome_columns,
+        pre_match_safe_columns=list(profile.pre_match_safe_columns),
+        post_match_outcome_columns=list(profile.post_match_outcome_columns),
         pre_match_missing_counts=profile.pre_match_missing_counts,
         pre_match_zero_counts=profile.pre_match_zero_counts,
         notes=notes,
