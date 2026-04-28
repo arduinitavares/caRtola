@@ -298,3 +298,59 @@ def test_orchestration_runs_control_then_treatment_for_eligible_season(
     assert first.control_status == "ok"
     assert first.treatment_status == "ok"
     assert first.treatment_source_sha256 == "abc123"
+
+
+def test_metric_extraction_failure_marks_paired_comparison_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def load_eligible(**kwargs: object) -> object:
+        return SimpleNamespace(
+            source_path=Path("data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv"),
+            source_sha256="abc123",
+        )
+
+    def fake_run_backtest(config: object) -> object:
+        assert hasattr(config, "output_path")
+        if config.footystats_mode == "none":
+            _write_backtest_outputs(config.output_path)
+        else:
+            config.output_path.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame([{"strategy": "random_forest", "average_actual_points": 55.0}]).to_csv(
+                config.output_path / "summary.csv",
+                index=False,
+            )
+            pd.DataFrame(
+                [
+                    {
+                        "section": "prediction",
+                        "strategy": "random_forest",
+                        "position": "all",
+                        "metric": "player_r2",
+                        "value": 0.1,
+                    },
+                    {
+                        "section": "prediction",
+                        "strategy": "random_forest",
+                        "position": "all",
+                        "metric": "player_correlation",
+                        "value": 0.2,
+                    },
+                ]
+            ).to_csv(config.output_path / "diagnostics.csv", index=False)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", load_eligible)
+    monkeypatch.setattr(ablation, "run_backtest", fake_run_backtest)
+
+    config = ablation.FootyStatsPPGAblationConfig(
+        seasons=(2025,),
+        project_root=tmp_path,
+        output_root=Path("reports/footystats_ablation"),
+    )
+
+    result = ablation.run_footystats_ppg_ablation(config)
+
+    first = result.seasons[0]
+    assert first.error_stage == "metric_extraction"
+    assert first.metrics_comparable is False
+    assert (first.control_status, first.treatment_status) == ("failed", "failed")

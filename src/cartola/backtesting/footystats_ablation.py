@@ -308,6 +308,8 @@ def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootySta
         try:
             populate_metrics(record, control_config.output_path, treatment_config.output_path)
         except Exception as exc:
+            record.control_status = "failed"
+            record.treatment_status = "failed"
             record.error_stage = "metric_extraction"
             record.error_message = str(exc)
             record.errors.append(_error("metric_extraction", exc))
