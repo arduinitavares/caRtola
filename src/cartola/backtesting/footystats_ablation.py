@@ -370,7 +370,7 @@ def populate_metrics(record: SeasonAblationRecord, control_path: Path, treatment
     if not record.baseline_avg_points_equal:
         record.baseline_avg_points = None
         record.metrics_comparable = False
-        raise ValueError("baseline average points differ between control and treatment")
+        raise ValueError("baseline average points differ")
 
     record.baseline_avg_points = control["baseline"]
     record.metrics_comparable = True

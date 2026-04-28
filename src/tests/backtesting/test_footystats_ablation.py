@@ -10,12 +10,19 @@ import pytest
 from cartola.backtesting import footystats_ablation as ablation
 
 
-def _write_backtest_outputs(output_path: Path) -> None:
+def _write_backtest_outputs(
+    output_path: Path,
+    *,
+    baseline: float = 50.0,
+    rf: float = 55.0,
+    r2: float = 0.1,
+    corr: float = 0.2,
+) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
-            {"strategy": "baseline", "average_actual_points": 50.0},
-            {"strategy": "random_forest", "average_actual_points": 55.0},
+            {"strategy": "baseline", "average_actual_points": baseline},
+            {"strategy": "random_forest", "average_actual_points": rf},
         ]
     ).to_csv(output_path / "summary.csv", index=False)
     pd.DataFrame(
@@ -25,14 +32,14 @@ def _write_backtest_outputs(output_path: Path) -> None:
                 "strategy": "random_forest",
                 "position": "all",
                 "metric": "player_r2",
-                "value": 0.1,
+                "value": r2,
             },
             {
                 "section": "prediction",
                 "strategy": "random_forest",
                 "position": "all",
                 "metric": "player_correlation",
-                "value": 0.2,
+                "value": corr,
             },
         ]
     ).to_csv(output_path / "diagnostics.csv", index=False)
@@ -354,3 +361,180 @@ def test_metric_extraction_failure_marks_paired_comparison_failed(
     assert first.error_stage == "metric_extraction"
     assert first.metrics_comparable is False
     assert (first.control_status, first.treatment_status) == ("failed", "failed")
+
+
+def test_extract_run_metrics_uses_prediction_diagnostics_section(tmp_path: Path) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path, r2=0.25)
+    diagnostics = pd.read_csv(output_path / "diagnostics.csv")
+    diagnostics = pd.concat(
+        [
+            diagnostics,
+            pd.DataFrame(
+                [
+                    {
+                        "section": "rounds",
+                        "strategy": "random_forest",
+                        "position": "all",
+                        "metric": "player_r2",
+                        "value": 0.99,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    diagnostics.to_csv(output_path / "diagnostics.csv", index=False)
+
+    assert ablation.extract_run_metrics(output_path)["r2"] == 0.25
+
+
+def test_extract_run_metrics_fails_for_missing_random_forest_summary(tmp_path: Path) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path)
+    pd.DataFrame([{"strategy": "baseline", "average_actual_points": 50.0}]).to_csv(
+        output_path / "summary.csv",
+        index=False,
+    )
+
+    with pytest.raises(ValueError, match="random_forest"):
+        ablation.extract_run_metrics(output_path)
+
+
+def test_extract_run_metrics_fails_for_duplicate_baseline_summary(tmp_path: Path) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path)
+    summary = pd.read_csv(output_path / "summary.csv")
+    summary = pd.concat(
+        [
+            summary,
+            pd.DataFrame([{"strategy": "baseline", "average_actual_points": 50.0}]),
+        ],
+        ignore_index=True,
+    )
+    summary.to_csv(output_path / "summary.csv", index=False)
+
+    with pytest.raises(ValueError, match="baseline"):
+        ablation.extract_run_metrics(output_path)
+
+
+def test_extract_run_metrics_fails_for_missing_prediction_diagnostic(tmp_path: Path) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path)
+    diagnostics = pd.read_csv(output_path / "diagnostics.csv")
+    diagnostics = diagnostics[~diagnostics["metric"].eq("player_correlation")]
+    diagnostics.to_csv(output_path / "diagnostics.csv", index=False)
+
+    with pytest.raises(ValueError, match="player_correlation"):
+        ablation.extract_run_metrics(output_path)
+
+
+def test_extract_run_metrics_fails_for_duplicate_prediction_diagnostic(tmp_path: Path) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path)
+    diagnostics = pd.read_csv(output_path / "diagnostics.csv")
+    diagnostics = pd.concat([diagnostics, diagnostics[diagnostics["metric"].eq("player_r2")]], ignore_index=True)
+    diagnostics.to_csv(output_path / "diagnostics.csv", index=False)
+
+    with pytest.raises(ValueError, match="player_r2"):
+        ablation.extract_run_metrics(output_path)
+
+
+def test_populate_metrics_baseline_mismatch_preserves_metrics_and_marks_not_comparable(tmp_path: Path) -> None:
+    control_path = tmp_path / "control"
+    treatment_path = tmp_path / "treatment"
+    _write_backtest_outputs(control_path, baseline=50.0, rf=55.0, r2=0.1, corr=0.2)
+    _write_backtest_outputs(treatment_path, baseline=51.0, rf=57.0, r2=0.3, corr=0.4)
+    record = ablation.SeasonAblationRecord(season=2025)
+
+    with pytest.raises(ValueError) as exc_info:
+        ablation.populate_metrics(record, control_path, treatment_path)
+
+    assert str(exc_info.value) == "baseline average points differ"
+    assert record.control_baseline_avg_points == 50.0
+    assert record.treatment_baseline_avg_points == 51.0
+    assert record.control_rf_avg_points == 55.0
+    assert record.treatment_rf_avg_points == 57.0
+    assert record.control_player_r2 == 0.1
+    assert record.treatment_player_r2 == 0.3
+    assert record.control_player_corr == 0.2
+    assert record.treatment_player_corr == 0.4
+    assert record.baseline_avg_points is None
+    assert record.baseline_avg_points_equal is False
+    assert record.metrics_comparable is False
+
+
+def test_build_aggregate_record_averages_only_successful_comparable_records() -> None:
+    included_a = ablation.SeasonAblationRecord(
+        season=2023,
+        metrics_comparable=True,
+        control_status="ok",
+        treatment_status="ok",
+        control_rf_avg_points=50.0,
+        treatment_rf_avg_points=55.0,
+        rf_avg_points_delta=5.0,
+        control_player_r2=0.1,
+        treatment_player_r2=0.2,
+        player_r2_delta=0.1,
+        control_player_corr=0.3,
+        treatment_player_corr=0.4,
+        player_corr_delta=0.1,
+    )
+    included_b = ablation.SeasonAblationRecord(
+        season=2024,
+        metrics_comparable=True,
+        control_status="ok",
+        treatment_status="ok",
+        control_rf_avg_points=70.0,
+        treatment_rf_avg_points=73.0,
+        rf_avg_points_delta=3.0,
+        control_player_r2=0.5,
+        treatment_player_r2=0.6,
+        player_r2_delta=0.1,
+        control_player_corr=0.7,
+        treatment_player_corr=0.9,
+        player_corr_delta=0.2,
+    )
+    failed = ablation.SeasonAblationRecord(
+        season=2025,
+        metrics_comparable=True,
+        control_status="failed",
+        treatment_status="ok",
+        control_rf_avg_points=1000.0,
+        treatment_rf_avg_points=1000.0,
+        rf_avg_points_delta=1000.0,
+        control_player_r2=1000.0,
+        treatment_player_r2=1000.0,
+        player_r2_delta=1000.0,
+        control_player_corr=1000.0,
+        treatment_player_corr=1000.0,
+        player_corr_delta=1000.0,
+    )
+    non_comparable = ablation.SeasonAblationRecord(
+        season=2026,
+        metrics_comparable=False,
+        control_status="ok",
+        treatment_status="ok",
+        control_rf_avg_points=1000.0,
+        treatment_rf_avg_points=1000.0,
+        rf_avg_points_delta=1000.0,
+        control_player_r2=1000.0,
+        treatment_player_r2=1000.0,
+        player_r2_delta=1000.0,
+        control_player_corr=1000.0,
+        treatment_player_corr=1000.0,
+        player_corr_delta=1000.0,
+    )
+
+    aggregate = ablation.build_aggregate_record([included_a, failed, included_b, non_comparable])
+
+    assert aggregate.metrics_comparable is True
+    assert aggregate.control_rf_avg_points == 60.0
+    assert aggregate.treatment_rf_avg_points == 64.0
+    assert aggregate.rf_avg_points_delta == 4.0
+    assert aggregate.control_player_r2 == 0.3
+    assert aggregate.treatment_player_r2 == 0.4
+    assert aggregate.player_r2_delta == 0.1
+    assert aggregate.control_player_corr == 0.5
+    assert aggregate.treatment_player_corr == 0.65
+    assert aggregate.player_corr_delta == pytest.approx(0.15)
