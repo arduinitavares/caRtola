@@ -41,6 +41,7 @@ def test_load_footystats_ppg_rows_builds_home_away_rows_without_outcomes(tmp_pat
     assert result.source_sha256
     assert len(result.rows) == 76
     assert "home_team_goal_count" not in result.rows.columns
+    assert pd.api.types.is_integer_dtype(result.rows["is_home_footystats"])
 
     home_row = result.rows[(result.rows["rodada"] == 1) & (result.rows["id_clube"] == 262)].iloc[0]
     away_row = result.rows[(result.rows["rodada"] == 1) & (result.rows["id_clube"] == 275)].iloc[0]
@@ -48,12 +49,12 @@ def test_load_footystats_ppg_rows_builds_home_away_rows_without_outcomes(tmp_pat
         "rodada": 1,
         "id_clube": 262,
         "opponent_id_clube": 275,
-        "is_home_footystats": True,
+        "is_home_footystats": 1,
         "footystats_team_pre_match_ppg": 1.25,
         "footystats_opponent_pre_match_ppg": 0.75,
         "footystats_ppg_diff": 0.5,
     }
-    assert away_row["is_home_footystats"] is False
+    assert away_row["is_home_footystats"] == 0
     assert away_row["footystats_team_pre_match_ppg"] == 0.75
     assert away_row["footystats_opponent_pre_match_ppg"] == 1.25
     assert away_row["footystats_ppg_diff"] == -0.5

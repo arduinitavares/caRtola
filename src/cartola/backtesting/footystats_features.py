@@ -185,7 +185,7 @@ def _build_feature_rows(
                 "rodada": rodada,
                 "id_clube": home_id,
                 "opponent_id_clube": away_id,
-                "is_home_footystats": True,
+                "is_home_footystats": 1,
                 "footystats_team_pre_match_ppg": home_value,
                 "footystats_opponent_pre_match_ppg": away_value,
                 "footystats_ppg_diff": home_value - away_value,
@@ -196,7 +196,7 @@ def _build_feature_rows(
                 "rodada": rodada,
                 "id_clube": away_id,
                 "opponent_id_clube": home_id,
-                "is_home_footystats": False,
+                "is_home_footystats": 0,
                 "footystats_team_pre_match_ppg": away_value,
                 "footystats_opponent_pre_match_ppg": home_value,
                 "footystats_ppg_diff": away_value - home_value,
@@ -204,7 +204,6 @@ def _build_feature_rows(
         )
 
     result = pd.DataFrame(rows, columns=pd.Index(RESULT_COLUMNS))
-    result["is_home_footystats"] = result["is_home_footystats"].astype(object)
     return result
 
 
