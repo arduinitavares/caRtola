@@ -131,6 +131,7 @@ def load_footystats_ppg_rows(
     home_ppg = _validated_ppg(df, "Pre-Match PPG (Home)")
     away_ppg = _validated_ppg(df, "Pre-Match PPG (Away)")
     statuses = _validated_statuses(df, evaluation_scope)
+    _validate_team_names_present(df)
 
     if evaluation_scope == "historical_candidate":
         if any(status != "complete" for status in statuses):
@@ -199,6 +200,17 @@ def _validated_statuses(df: pd.DataFrame, evaluation_scope: str) -> list[str]:
         if invalid_statuses:
             raise ValueError("live_current requires statuses to be only complete or incomplete")
     return statuses
+
+
+def _validate_team_names_present(df: pd.DataFrame) -> None:
+    missing_columns = []
+    for column in ("home_team_name", "away_team_name"):
+        names = df[column]
+        missing = names.isna() | names.map(lambda value: isinstance(value, str) and value.strip() == "")
+        if bool(missing.any()):
+            missing_columns.append(column)
+    if missing_columns:
+        raise ValueError(f"FootyStats matches file has missing team names in {', '.join(missing_columns)}")
 
 
 def _team_names(df: pd.DataFrame) -> list[str]:

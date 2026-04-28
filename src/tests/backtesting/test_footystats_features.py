@@ -130,6 +130,16 @@ def test_load_footystats_ppg_rows_rejects_invalid_game_week_values(tmp_path: Pat
         _load_historical(tmp_path)
 
 
+def test_load_footystats_ppg_rows_rejects_missing_team_names(tmp_path: Path) -> None:
+    rows = [_match_row(week=week) for week in range(1, 39)]
+    rows[0]["home_team_name"] = None
+    _write_matches_csv(tmp_path, rows)
+    _write_cartola_round(tmp_path)
+
+    with pytest.raises(ValueError, match="missing team names.*home_team_name"):
+        _load_historical(tmp_path)
+
+
 def test_build_footystats_join_diagnostics_reports_missing_keys() -> None:
     season_df = pd.DataFrame(
         [
