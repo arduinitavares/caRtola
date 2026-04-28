@@ -72,53 +72,74 @@ O comando grava os relatórios em:
 
 O audit é somente leitura para `data/footystats` e `data/01_raw`.
 
-### FootyStats PPG ablation
+### FootyStats ablation
 
-Para medir a baseline sem FootyStats:
+Para medir uma baseline isolada sem FootyStats e sem fixtures:
 
 ```bash
 uv run --frozen python -m cartola.backtesting.cli \
   --season 2025 \
   --start-round 5 \
   --budget 100 \
-  --fixture-mode exploratory \
+  --fixture-mode none \
   --footystats-mode none \
-  --output-root data/08_reporting/backtests/footystats_none
+  --output-root data/08_reporting/backtests/footystats_single_none
 ```
 
-Para medir o uso de PPG da FootyStats:
+Para medir o uso de PPG da FootyStats na mesma condição sem fixtures:
 
 ```bash
 uv run --frozen python -m cartola.backtesting.cli \
   --season 2025 \
   --start-round 5 \
   --budget 100 \
-  --fixture-mode exploratory \
+  --fixture-mode none \
   --footystats-mode ppg \
   --footystats-evaluation-scope historical_candidate \
   --footystats-league-slug brazil-serie-a \
   --current-year 2026 \
-  --output-root data/08_reporting/backtests/footystats_ppg
+  --output-root data/08_reporting/backtests/footystats_single_ppg
 ```
 
 Os resultados são gravados em:
 
-- `data/08_reporting/backtests/footystats_none/2025/`
-- `data/08_reporting/backtests/footystats_ppg/2025/`
+- `data/08_reporting/backtests/footystats_single_none/2025/`
+- `data/08_reporting/backtests/footystats_single_ppg/2025/`
 
-Para rodar a ablação multi-temporada de PPG da FootyStats:
+Para rodar a ablação multi-temporada de PPG da FootyStats (`none -> ppg`):
 
 ```bash
-uv run --frozen python scripts/run_footystats_ppg_ablation.py --seasons 2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --force
+uv run --frozen python scripts/run_footystats_ablation.py \
+  --seasons 2023,2024,2025 \
+  --start-round 5 \
+  --budget 100 \
+  --current-year 2026 \
+  --control-footystats-mode none \
+  --treatment-footystats-mode ppg \
+  --force
 ```
 
-Essa ablação multi-temporada fixa `fixture_mode=none`; ela mede somente o efeito marginal de `footystats_mode=ppg` contra `footystats_mode=none`. Se nenhuma temporada for comparável, o comando retorna código `1`, mas ainda grava o CSV/JSON para diagnóstico.
+Para medir o valor marginal de xG sobre PPG (`ppg -> ppg_xg`):
+
+```bash
+uv run --frozen python scripts/run_footystats_ablation.py \
+  --seasons 2023,2024,2025 \
+  --start-round 5 \
+  --budget 100 \
+  --current-year 2026 \
+  --control-footystats-mode ppg \
+  --treatment-footystats-mode ppg_xg \
+  --output-root data/08_reporting/backtests/footystats_xg_ablation \
+  --force
+```
+
+Essas ablações multi-temporada fixam `fixture_mode=none`; elas medem somente o efeito marginal do modo FootyStats de tratamento contra o modo de controle. Se nenhuma temporada for comparável, o comando retorna código `1`, mas ainda grava o CSV/JSON para diagnóstico. O script antigo `scripts/run_footystats_ppg_ablation.py` continua existindo como wrapper de invocação, mas os relatórios agora usam nomes genéricos.
 
 O comando grava:
 
-- `data/08_reporting/backtests/footystats_ablation/ppg_ablation.csv`
-- `data/08_reporting/backtests/footystats_ablation/ppg_ablation.json`
-- execuções por temporada em `data/08_reporting/backtests/footystats_ablation/runs/{season}/footystats_mode={none|ppg}/{season}/`
+- `data/08_reporting/backtests/footystats_ablation/footystats_ablation.csv`
+- `data/08_reporting/backtests/footystats_ablation/footystats_ablation.json`
+- execuções por temporada em `data/08_reporting/backtests/footystats_ablation/runs/{season}/footystats_mode={mode}/{season}/`
 
 ## ✅ Qualidade
 
