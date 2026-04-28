@@ -4,6 +4,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -129,6 +130,42 @@ class FootyStatsAuditConfig:
     project_root: Path = Path(".")
     footystats_dir: Path = Path("data/footystats")
     output_root: Path = Path("data/08_reporting/footystats")
+
+
+CSV_COLUMNS: tuple[str, ...] = (
+    "season",
+    "league_slug",
+    "available_files",
+    "league_status",
+    "match_status",
+    "team_mapping_status",
+    "integration_status",
+    "match_row_count",
+    "min_game_week",
+    "max_game_week",
+    "game_week_count",
+    "status_counts",
+    "footystats_team_count",
+    "mapped_team_count",
+    "unmapped_footystats_teams",
+    "missing_cartola_teams",
+    "pre_match_safe_columns",
+    "post_match_outcome_columns",
+    "missing_safe_columns",
+    "pre_match_missing_counts",
+    "pre_match_zero_counts",
+    "notes",
+)
+
+
+@dataclass(frozen=True)
+class FootyStatsAuditRunResult:
+    generated_at_utc: str
+    project_root: Path
+    config: FootyStatsAuditConfig
+    seasons: list[FootyStatsSeasonAuditRecord]
+    csv_path: Path
+    json_path: Path
 
 
 @dataclass(frozen=True)
@@ -398,6 +435,56 @@ def audit_one_footystats_season(
         pre_match_zero_counts=profile.pre_match_zero_counts,
         notes=notes,
     )
+
+
+def run_footystats_audit(config: FootyStatsAuditConfig) -> FootyStatsAuditRunResult:
+    generated_at_utc = datetime.now(UTC).isoformat()
+    seasons = [audit_one_footystats_season(discovery, config) for discovery in discover_footystats_files(config)]
+    csv_path, json_path = write_footystats_audit_reports(seasons, config, generated_at_utc)
+
+    return FootyStatsAuditRunResult(
+        generated_at_utc=generated_at_utc,
+        project_root=config.project_root,
+        config=config,
+        seasons=seasons,
+        csv_path=csv_path,
+        json_path=json_path,
+    )
+
+
+def write_footystats_audit_reports(
+    seasons: list[FootyStatsSeasonAuditRecord],
+    config: FootyStatsAuditConfig,
+    generated_at_utc: str,
+) -> tuple[Path, Path]:
+    output_root = _resolve_path(config.project_root, config.output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+    csv_path = output_root / "footystats_compatibility.csv"
+    json_path = output_root / "footystats_compatibility.json"
+
+    pd.DataFrame([season.to_csv_row() for season in seasons], columns=pd.Index(CSV_COLUMNS)).to_csv(
+        csv_path,
+        index=False,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "generated_at_utc": generated_at_utc,
+                "project_root": str(config.project_root),
+                "config": {
+                    "footystats_dir": str(config.footystats_dir),
+                    "output_root": str(config.output_root),
+                },
+                "seasons": [season.to_json_object() for season in seasons],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    return csv_path, json_path
 
 
 def normalize_team_name(value: str) -> str:

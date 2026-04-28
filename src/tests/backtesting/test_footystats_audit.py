@@ -503,3 +503,39 @@ def test_audit_one_footystats_season_rejects_matches_without_fixture_status(tmp_
     assert record.status_counts == {}
     assert record.integration_status == "not_candidate"
     assert "match file has no fixture status data" in record.notes
+
+
+def test_run_footystats_audit_writes_csv_and_json(tmp_path: Path) -> None:
+    footystats_dir = tmp_path / "data" / "footystats"
+    footystats_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "status": "complete",
+                "Game Week": 1,
+                "home_team_name": "Flamengo",
+                "away_team_name": "Palmeiras",
+                "Pre-Match PPG (Home)": 0.0,
+                "Pre-Match PPG (Away)": 0.0,
+            }
+        ]
+    ).to_csv(footystats_dir / "brazil-serie-a-matches-2025-to-2025-stats.csv", index=False)
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [262, 275],
+            "atletas.clube.id.full.name": ["FLA", "PAL"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    result = audit.run_footystats_audit(audit.FootyStatsAuditConfig(project_root=tmp_path))
+
+    assert result.csv_path.exists()
+    assert result.json_path.exists()
+    csv_text = result.csv_path.read_text(encoding="utf-8")
+    assert "season,league_slug" in csv_text
+    assert "missing_safe_columns" in csv_text
+    json_text = result.json_path.read_text(encoding="utf-8")
+    assert '"seasons"' in json_text
+    assert result.seasons[0].season == 2025
