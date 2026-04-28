@@ -130,6 +130,70 @@ def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path)
     assert "Backtest complete" in capsys.readouterr().out
 
 
+def test_main_passes_footystats_options_and_output_root_to_config(monkeypatch) -> None:
+    observed_configs: list[BacktestConfig] = []
+
+    def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
+        observed_configs.append(config)
+        return BacktestResult(
+            round_results=pd.DataFrame(),
+            selected_players=pd.DataFrame(),
+            player_predictions=pd.DataFrame(),
+            summary=pd.DataFrame(),
+            diagnostics=pd.DataFrame(),
+            metadata=BacktestMetadata(
+                season=config.season,
+                start_round=config.start_round,
+                max_round=0,
+                fixture_mode=config.fixture_mode,
+                strict_alignment_policy=config.strict_alignment_policy,
+                fixture_source_directory=None,
+                fixture_manifest_paths=[],
+                fixture_manifest_sha256={},
+                generator_versions=[],
+                excluded_rounds=[],
+                warnings=[],
+                footystats_mode=config.footystats_mode,
+                footystats_evaluation_scope=config.footystats_evaluation_scope,
+                footystats_league_slug=config.footystats_league_slug,
+                footystats_matches_source_path=None,
+                footystats_matches_source_sha256=None,
+                footystats_feature_columns=[],
+                footystats_missing_join_keys_by_round={},
+                footystats_duplicate_join_keys_by_round={},
+                footystats_extra_club_rows_by_round={},
+            ),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.cli.run_backtest", fake_run_backtest)
+
+    exit_code = main(
+        [
+            "--season",
+            "2025",
+            "--output-root",
+            "data/08_reporting/backtests/footystats_ppg",
+            "--footystats-mode",
+            "ppg",
+            "--footystats-evaluation-scope",
+            "historical_candidate",
+            "--footystats-league-slug",
+            "brazil-serie-a",
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    assert exit_code == 0
+    config = observed_configs[0]
+    assert config.output_root == Path("data/08_reporting/backtests/footystats_ppg")
+    assert config.output_path == Path("data/08_reporting/backtests/footystats_ppg/2025")
+    assert config.footystats_mode == "ppg"
+    assert config.footystats_evaluation_scope == "historical_candidate"
+    assert config.footystats_league_slug == "brazil-serie-a"
+    assert config.current_year == 2026
+
+
 def test_main_prints_metadata_warnings(monkeypatch, capsys, tmp_path):
     def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
         return BacktestResult(
