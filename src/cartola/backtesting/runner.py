@@ -7,17 +7,12 @@ import pandas as pd
 
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
-from cartola.backtesting.features import (
-    FOOTYSTATS_PPG_FEATURE_COLUMNS,
-    build_prediction_frame,
-    build_training_frame,
-    feature_columns_for_config,
-)
+from cartola.backtesting.features import build_prediction_frame, build_training_frame, feature_columns_for_config
 from cartola.backtesting.footystats_features import (
     FootyStatsJoinDiagnostics,
     FootyStatsPPGLoadResult,
     build_footystats_join_diagnostics,
-    load_footystats_ppg_rows,
+    load_footystats_feature_rows,
 )
 from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
@@ -150,9 +145,7 @@ def run_backtest(
         footystats_matches_source_sha256=(
             resolved_footystats.source_sha256 if resolved_footystats is not None else None
         ),
-        footystats_feature_columns=(
-            list(FOOTYSTATS_PPG_FEATURE_COLUMNS) if resolved_footystats is not None else []
-        ),
+        footystats_feature_columns=list(resolved_footystats.feature_columns) if resolved_footystats is not None else [],
         footystats_missing_join_keys_by_round=footystats_diagnostics.missing_join_keys_by_round,
         footystats_duplicate_join_keys_by_round=footystats_diagnostics.duplicate_join_keys_by_round,
         footystats_extra_club_rows_by_round=footystats_diagnostics.extra_club_rows_by_round,
@@ -244,16 +237,15 @@ def _resolve_footystats(config: BacktestConfig) -> FootyStatsPPGLoadResult | Non
         raise ValueError("live_current is not supported by the backtest runner")
     if config.footystats_mode == "none":
         return None
-    if config.footystats_mode != "ppg":
-        raise ValueError(f"Unsupported footystats_mode: {config.footystats_mode!r}")
 
-    return load_footystats_ppg_rows(
+    return load_footystats_feature_rows(
         season=config.season,
         project_root=config.project_root,
         footystats_dir=config.footystats_dir,
         league_slug=config.footystats_league_slug,
         evaluation_scope=config.footystats_evaluation_scope,
         current_year=config.current_year,
+        footystats_mode=config.footystats_mode,
     )
 
 

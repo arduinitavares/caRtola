@@ -5,7 +5,7 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
-from cartola.backtesting.features import FOOTYSTATS_PPG_FEATURE_COLUMNS
+from cartola.backtesting.features import FOOTYSTATS_PPG_FEATURE_COLUMNS, FOOTYSTATS_XG_FEATURE_COLUMNS
 from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 from cartola.backtesting.runner import run_backtest
 from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
@@ -163,7 +163,7 @@ def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path, monkeypa
     observed_calls: list[dict[str, object]] = []
     source_path = tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv"
 
-    def fake_load_footystats_ppg_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+    def fake_load_footystats_feature_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
         observed_calls.append(kwargs)
         return FootyStatsPPGLoadResult(
             rows=_tiny_footystats_rows(range(1, 6)),
@@ -173,8 +173,8 @@ def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path, monkeypa
         )
 
     monkeypatch.setattr(
-        "cartola.backtesting.runner.load_footystats_ppg_rows",
-        fake_load_footystats_ppg_rows,
+        "cartola.backtesting.runner.load_footystats_feature_rows",
+        fake_load_footystats_feature_rows,
         raising=False,
     )
     config = BacktestConfig(
@@ -197,6 +197,7 @@ def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path, monkeypa
             "league_slug": "custom-league",
             "evaluation_scope": "historical_candidate",
             "current_year": 2025,
+            "footystats_mode": "ppg",
         }
     ]
     assert result.metadata.footystats_mode == "ppg"
@@ -215,12 +216,47 @@ def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path, monkeypa
     assert metadata["footystats_feature_columns"] == FOOTYSTATS_PPG_FEATURE_COLUMNS
 
 
+def test_run_backtest_ppg_xg_passes_mode_and_records_feature_columns(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    source_path = tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv"
+    rows = _tiny_footystats_rows(range(1, 6))
+    rows["footystats_team_pre_match_xg"] = 1.2
+    rows["footystats_opponent_pre_match_xg"] = 0.8
+    rows["footystats_xg_diff"] = 0.4
+    calls: list[dict[str, object]] = []
+    feature_columns = (*FOOTYSTATS_PPG_FEATURE_COLUMNS, *FOOTYSTATS_XG_FEATURE_COLUMNS)
+
+    def fake_load_footystats_feature_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+        calls.append(kwargs)
+        return FootyStatsPPGLoadResult(
+            rows=rows,
+            source_path=source_path,
+            source_sha256="fake-sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+            footystats_mode="ppg_xg",
+            feature_columns=feature_columns,
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_footystats_feature_rows",
+        fake_load_footystats_feature_rows,
+        raising=False,
+    )
+
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, footystats_mode="ppg_xg")
+    result = run_backtest(config, season_df=season_df)
+
+    assert calls[0]["footystats_mode"] == "ppg_xg"
+    assert result.metadata.footystats_feature_columns == list(feature_columns)
+    assert "footystats_xg_diff" in result.player_predictions.columns
+
+
 def test_run_backtest_ppg_rejects_missing_join_keys(tmp_path, monkeypatch):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     rows = _tiny_footystats_rows(range(1, 6))
     rows = rows[~((rows["rodada"] == 5) & (rows["id_clube"] == 18))].copy()
 
-    def fake_load_footystats_ppg_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+    def fake_load_footystats_feature_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
         return FootyStatsPPGLoadResult(
             rows=rows,
             source_path=tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv",
@@ -229,8 +265,8 @@ def test_run_backtest_ppg_rejects_missing_join_keys(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "cartola.backtesting.runner.load_footystats_ppg_rows",
-        fake_load_footystats_ppg_rows,
+        "cartola.backtesting.runner.load_footystats_feature_rows",
+        fake_load_footystats_feature_rows,
         raising=False,
     )
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, footystats_mode="ppg")
@@ -261,7 +297,7 @@ def test_run_backtest_ppg_records_extra_footystats_rows(tmp_path, monkeypatch):
         ignore_index=True,
     )
 
-    def fake_load_footystats_ppg_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+    def fake_load_footystats_feature_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
         return FootyStatsPPGLoadResult(
             rows=rows,
             source_path=tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv",
@@ -270,8 +306,8 @@ def test_run_backtest_ppg_records_extra_footystats_rows(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "cartola.backtesting.runner.load_footystats_ppg_rows",
-        fake_load_footystats_ppg_rows,
+        "cartola.backtesting.runner.load_footystats_feature_rows",
+        fake_load_footystats_feature_rows,
         raising=False,
     )
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, footystats_mode="ppg")

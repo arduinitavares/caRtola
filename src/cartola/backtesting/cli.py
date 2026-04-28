@@ -17,7 +17,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/backtests"))
     parser.add_argument("--fixture-mode", choices=("none", "exploratory", "strict"), default="none")
     parser.add_argument("--strict-alignment-policy", choices=("fail", "exclude_round"), default="fail")
-    parser.add_argument("--footystats-mode", choices=("none", "ppg"), default="none")
+    parser.add_argument("--footystats-mode", choices=("none", "ppg", "ppg_xg"), default="none")
     parser.add_argument(
         "--footystats-evaluation-scope",
         choices=("historical_candidate", "live_current"),

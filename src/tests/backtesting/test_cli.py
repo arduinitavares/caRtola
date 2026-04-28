@@ -68,6 +68,12 @@ def test_parse_args_accepts_footystats_and_output_options() -> None:
     assert args.current_year == 2026
 
 
+def test_parse_args_accepts_ppg_xg_footystats_mode() -> None:
+    args = parse_args(["--footystats-mode", "ppg_xg"])
+
+    assert args.footystats_mode == "ppg_xg"
+
+
 def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path):
     observed_configs: list[BacktestConfig] = []
 
