@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Sequence, cast
 
 import pandas as pd
 
@@ -450,6 +451,31 @@ def run_footystats_audit(config: FootyStatsAuditConfig) -> FootyStatsAuditRunRes
         csv_path=csv_path,
         json_path=json_path,
     )
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the FootyStats compatibility audit.")
+    parser.add_argument("--project-root", type=Path, default=Path("."))
+    parser.add_argument("--footystats-dir", type=Path, default=Path("data/footystats"))
+    parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/footystats"))
+    return parser.parse_args(argv)
+
+
+def config_from_args(args: argparse.Namespace) -> FootyStatsAuditConfig:
+    return FootyStatsAuditConfig(
+        project_root=args.project_root,
+        footystats_dir=args.footystats_dir,
+        output_root=args.output_root,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    config = config_from_args(parse_args(argv))
+    result = run_footystats_audit(config)
+    print("FootyStats compatibility audit complete")
+    print(f"CSV: {result.csv_path}")
+    print(f"JSON: {result.json_path}")
+    return 0
 
 
 def write_footystats_audit_reports(

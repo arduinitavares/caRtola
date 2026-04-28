@@ -59,6 +59,19 @@ O comando usa `fixture_mode=none` e grava os relatórios em:
 
 As execuções isoladas não sobrescrevem `data/08_reporting/backtests/{season}/`.
 
+Para auditar a compatibilidade dos CSVs locais da FootyStats:
+
+```bash
+uv run --frozen python scripts/audit_footystats_compatibility.py
+```
+
+O comando grava os relatórios em:
+
+- `data/08_reporting/footystats/footystats_compatibility.csv`
+- `data/08_reporting/footystats/footystats_compatibility.json`
+
+O audit é somente leitura para `data/footystats` e `data/01_raw`.
+
 ## ✅ Qualidade
 
 O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:

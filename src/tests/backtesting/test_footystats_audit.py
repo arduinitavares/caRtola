@@ -7,6 +7,25 @@ import pandas as pd
 from cartola.backtesting import footystats_audit as audit
 
 
+def test_config_from_args_uses_project_root_and_output_root(tmp_path: Path) -> None:
+    args = audit.parse_args(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--footystats-dir",
+            "custom/footystats",
+            "--output-root",
+            "custom/report",
+        ]
+    )
+
+    config = audit.config_from_args(args)
+
+    assert config.project_root == tmp_path
+    assert config.footystats_dir == Path("custom/footystats")
+    assert config.output_root == Path("custom/report")
+
+
 def test_parse_footystats_filename_extracts_table_and_year() -> None:
     parsed = audit.parse_footystats_filename(Path("brazil-serie-a-matches-2025-to-2025-stats.csv"))
 
