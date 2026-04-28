@@ -282,8 +282,20 @@ def test_audit_one_footystats_season_marks_joinable_safe_complete_season(tmp_pat
     assert record.min_game_week == 1
     assert record.max_game_week == 38
     assert record.unmapped_footystats_teams == []
+    assert record.missing_cartola_teams == []
+    assert record.missing_safe_columns == []
     assert record.pre_match_safe_columns == ["Pre-Match PPG (Home)", "Pre-Match PPG (Away)"]
     assert record.post_match_outcome_columns == ["home_team_goal_count", "away_team_goal_count"]
+
+    csv_row = record.to_csv_row()
+    assert csv_row["available_files"] == "league|matches"
+    assert csv_row["pre_match_safe_columns"] == "Pre-Match PPG (Home)|Pre-Match PPG (Away)"
+    assert csv_row["post_match_outcome_columns"] == "home_team_goal_count|away_team_goal_count"
+    assert csv_row["missing_safe_columns"] == ""
+
+    json_object = record.to_json_object()
+    assert json_object["available_files"] == ["league", "matches"]
+    assert json_object["pre_match_safe_columns"] == ["Pre-Match PPG (Home)", "Pre-Match PPG (Away)"]
 
 
 def test_audit_one_footystats_season_keeps_missing_match_metrics_nullable(tmp_path: Path) -> None:
@@ -301,6 +313,8 @@ def test_audit_one_footystats_season_keeps_missing_match_metrics_nullable(tmp_pa
     assert record.match_status == "missing"
     assert record.match_row_count is None
     assert record.game_week_count is None
+    assert record.missing_cartola_teams == []
+    assert record.missing_safe_columns == []
     assert record.pre_match_safe_columns == []
     assert record.post_match_outcome_columns == []
 
@@ -316,6 +330,7 @@ def test_audit_one_footystats_season_rejects_incomplete_game_week_coverage(tmp_p
                 "home_team_name": "Flamengo" if week % 2 else "Palmeiras",
                 "away_team_name": "Palmeiras" if week % 2 else "Flamengo",
                 "Pre-Match PPG (Home)": 1.0,
+                "Pre-Match PPG (Away)": 1.0,
             }
             for week in range(1, 20)
         ]
@@ -335,6 +350,75 @@ def test_audit_one_footystats_season_rejects_incomplete_game_week_coverage(tmp_p
     assert record.team_mapping_status == "ok"
     assert record.integration_status == "partial_current"
     assert "match file does not cover game weeks 1-38" in record.notes
+
+
+def test_audit_one_footystats_season_rejects_missing_required_safe_columns(tmp_path: Path) -> None:
+    footystats_dir = tmp_path / "data" / "footystats"
+    footystats_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "status": "complete",
+                "Game Week": week,
+                "home_team_name": "Flamengo" if week == 1 else "Palmeiras",
+                "away_team_name": "Palmeiras" if week == 1 else "Flamengo",
+                "Pre-Match PPG (Home)": 1.0,
+            }
+            for week in range(1, 39)
+        ]
+    ).to_csv(footystats_dir / "brazil-serie-a-matches-2025-to-2025-stats.csv", index=False)
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [262, 275],
+            "atletas.clube.id.full.name": ["FLA", "PAL"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    discovery = audit.discover_footystats_files(audit.FootyStatsAuditConfig(project_root=tmp_path))[0]
+    record = audit.audit_one_footystats_season(discovery, audit.FootyStatsAuditConfig(project_root=tmp_path))
+
+    assert record.team_mapping_status == "ok"
+    assert record.missing_safe_columns == ["Pre-Match PPG (Away)"]
+    assert record.integration_status == "not_candidate"
+    assert record.to_csv_row()["missing_safe_columns"] == "Pre-Match PPG (Away)"
+
+
+def test_audit_one_footystats_season_rejects_missing_cartola_team_coverage(tmp_path: Path) -> None:
+    footystats_dir = tmp_path / "data" / "footystats"
+    footystats_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "status": "complete",
+                "Game Week": week,
+                "home_team_name": "Flamengo",
+                "away_team_name": "Palmeiras",
+                "Pre-Match PPG (Home)": 1.0,
+                "Pre-Match PPG (Away)": 1.0,
+            }
+            for week in range(1, 39)
+        ]
+    ).to_csv(footystats_dir / "brazil-serie-a-matches-2025-to-2025-stats.csv", index=False)
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [262, 275, 284],
+            "atletas.clube.id.full.name": ["FLA", "PAL", "GRE"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    discovery = audit.discover_footystats_files(audit.FootyStatsAuditConfig(project_root=tmp_path))[0]
+    record = audit.audit_one_footystats_season(discovery, audit.FootyStatsAuditConfig(project_root=tmp_path))
+
+    assert record.unmapped_footystats_teams == []
+    assert record.missing_cartola_teams == ["gremio"]
+    assert record.team_mapping_status == "failed"
+    assert record.integration_status == "not_candidate"
+    assert record.to_csv_row()["missing_cartola_teams"] == "gremio"
+    assert record.to_json_object()["missing_cartola_teams"] == ["gremio"]
 
 
 def test_audit_one_footystats_season_rejects_matches_without_team_names(tmp_path: Path) -> None:

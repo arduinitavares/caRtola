@@ -16,6 +16,7 @@ FOOTYSTATS_FILE_RE = re.compile(
     r"(?P<start_year>\d{4})-to-(?P<end_year>\d{4})-stats\.csv$"
 )
 SUPPORTED_TABLE_TYPES: tuple[FootyStatsTableType, ...] = ("league", "matches", "players", "teams", "teams2")
+REQUIRED_PRE_MATCH_SAFE_COLUMNS: tuple[str, ...] = ("Pre-Match PPG (Home)", "Pre-Match PPG (Away)")
 PRE_MATCH_SAFE_COLUMNS = (
     "Pre-Match PPG (Home)",
     "Pre-Match PPG (Away)",
@@ -169,6 +170,7 @@ class TeamComparison:
     cartola_clubs_by_normalized_name: dict[str, int]
     mapped_teams: dict[str, int]
     unmapped_footystats_teams: list[str]
+    missing_cartola_teams: list[str]
 
 
 @dataclass(frozen=True)
@@ -188,8 +190,10 @@ class FootyStatsSeasonAuditRecord:
     footystats_team_count: int
     mapped_team_count: int
     unmapped_footystats_teams: list[str]
+    missing_cartola_teams: list[str]
     pre_match_safe_columns: list[str]
     post_match_outcome_columns: list[str]
+    missing_safe_columns: list[str]
     pre_match_missing_counts: dict[str, int]
     pre_match_zero_counts: dict[str, int]
     notes: list[str] = field(default_factory=list)
@@ -198,7 +202,7 @@ class FootyStatsSeasonAuditRecord:
         return {
             "season": self.season,
             "league_slug": self.league_slug,
-            "available_files": ",".join(self.available_files),
+            "available_files": _pipe_join(self.available_files),
             "league_status": self.league_status,
             "match_status": self.match_status,
             "team_mapping_status": self.team_mapping_status,
@@ -210,9 +214,11 @@ class FootyStatsSeasonAuditRecord:
             "status_counts": json.dumps(self.status_counts, sort_keys=True),
             "footystats_team_count": self.footystats_team_count,
             "mapped_team_count": self.mapped_team_count,
-            "unmapped_footystats_teams": ",".join(self.unmapped_footystats_teams),
-            "pre_match_safe_columns": ",".join(self.pre_match_safe_columns),
-            "post_match_outcome_columns": ",".join(self.post_match_outcome_columns),
+            "unmapped_footystats_teams": _pipe_join(self.unmapped_footystats_teams),
+            "missing_cartola_teams": _pipe_join(self.missing_cartola_teams),
+            "pre_match_safe_columns": _pipe_join(self.pre_match_safe_columns),
+            "post_match_outcome_columns": _pipe_join(self.post_match_outcome_columns),
+            "missing_safe_columns": _pipe_join(self.missing_safe_columns),
             "pre_match_missing_counts": json.dumps(self.pre_match_missing_counts, sort_keys=True),
             "pre_match_zero_counts": json.dumps(self.pre_match_zero_counts, sort_keys=True),
             "notes": "; ".join(self.notes),
@@ -223,8 +229,10 @@ class FootyStatsSeasonAuditRecord:
         row["available_files"] = self.available_files
         row["status_counts"] = self.status_counts
         row["unmapped_footystats_teams"] = self.unmapped_footystats_teams
-        row["pre_match_safe_columns"] = list(self.pre_match_safe_columns)
-        row["post_match_outcome_columns"] = list(self.post_match_outcome_columns)
+        row["missing_cartola_teams"] = self.missing_cartola_teams
+        row["pre_match_safe_columns"] = self.pre_match_safe_columns
+        row["post_match_outcome_columns"] = self.post_match_outcome_columns
+        row["missing_safe_columns"] = self.missing_safe_columns
         row["pre_match_missing_counts"] = self.pre_match_missing_counts
         row["pre_match_zero_counts"] = self.pre_match_zero_counts
         row["notes"] = self.notes
@@ -318,8 +326,10 @@ def audit_one_footystats_season(
             footystats_team_count=0,
             mapped_team_count=0,
             unmapped_footystats_teams=[],
+            missing_cartola_teams=[],
             pre_match_safe_columns=[],
             post_match_outcome_columns=[],
+            missing_safe_columns=[],
             pre_match_missing_counts={},
             pre_match_zero_counts={},
             notes=["missing matches file"],
@@ -327,7 +337,14 @@ def audit_one_footystats_season(
 
     profile = profile_match_file(match_path)
     comparison = compare_teams_to_cartola(discovery.season, profile.team_names, config.project_root)
-    team_mapping_status = "failed" if not profile.team_names or comparison.unmapped_footystats_teams else "ok"
+    missing_safe_columns = [
+        column for column in REQUIRED_PRE_MATCH_SAFE_COLUMNS if column not in profile.pre_match_safe_columns
+    ]
+    team_mapping_status = (
+        "failed"
+        if not profile.team_names or comparison.unmapped_footystats_teams or comparison.missing_cartola_teams
+        else "ok"
+    )
     notes: list[str] = []
 
     has_complete_game_week_coverage = (
@@ -339,6 +356,9 @@ def audit_one_footystats_season(
     if not profile.team_names:
         notes.append("match file has no team names")
 
+    if comparison.missing_cartola_teams:
+        notes.append("cartola teams missing from footystats match file")
+
     has_fixture_status_data = bool(profile.status_counts)
     if not has_fixture_status_data:
         notes.append("match file has no fixture status data")
@@ -347,7 +367,7 @@ def audit_one_footystats_season(
     if has_non_complete_fixtures:
         notes.append("match file contains non-complete fixtures")
 
-    if team_mapping_status == "failed" or not profile.pre_match_safe_columns or not has_fixture_status_data:
+    if team_mapping_status == "failed" or missing_safe_columns or not has_fixture_status_data:
         integration_status = "not_candidate"
     elif has_non_complete_fixtures or not has_complete_game_week_coverage:
         integration_status = "partial_current"
@@ -370,8 +390,10 @@ def audit_one_footystats_season(
         footystats_team_count=len(profile.team_names),
         mapped_team_count=len(comparison.mapped_teams),
         unmapped_footystats_teams=comparison.unmapped_footystats_teams,
+        missing_cartola_teams=comparison.missing_cartola_teams,
         pre_match_safe_columns=list(profile.pre_match_safe_columns),
         post_match_outcome_columns=list(profile.post_match_outcome_columns),
+        missing_safe_columns=missing_safe_columns,
         pre_match_missing_counts=profile.pre_match_missing_counts,
         pre_match_zero_counts=profile.pre_match_zero_counts,
         notes=notes,
@@ -419,17 +441,23 @@ def compare_teams_to_cartola(season: int, footystats_team_names: list[str], proj
 
     mapped_teams: dict[str, int] = {}
     unmapped_footystats_teams: list[str] = []
+    mapped_normalized_names: set[str] = set()
     for team_name in footystats_team_names:
-        club_id = cartola_clubs_by_normalized_name.get(normalize_team_name(team_name))
+        normalized_team_name = normalize_team_name(team_name)
+        club_id = cartola_clubs_by_normalized_name.get(normalized_team_name)
         if club_id is None:
             unmapped_footystats_teams.append(team_name)
         else:
             mapped_teams[team_name] = club_id
+            mapped_normalized_names.add(normalized_team_name)
+
+    missing_cartola_teams = sorted(set(cartola_clubs_by_normalized_name) - mapped_normalized_names)
 
     return TeamComparison(
         cartola_clubs_by_normalized_name=cartola_clubs_by_normalized_name,
         mapped_teams=mapped_teams,
         unmapped_footystats_teams=sorted(unmapped_footystats_teams),
+        missing_cartola_teams=missing_cartola_teams,
     )
 
 
@@ -463,3 +491,7 @@ def _numeric_zero_counts(df: pd.DataFrame, columns: tuple[str, ...]) -> dict[str
 
 def _has_non_complete_fixtures(status_counts: dict[str, int]) -> bool:
     return any(status.lower() != "complete" for status in status_counts)
+
+
+def _pipe_join(values: list[str]) -> str:
+    return "|".join(values)
