@@ -50,9 +50,16 @@ def parse_seasons(value: str) -> tuple[int, ...]:
     return tuple(seasons)
 
 
+def parse_seasons_arg(value: str) -> tuple[int, ...]:
+    try:
+        return parse_seasons(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the FootyStats PPG ablation report.")
-    parser.add_argument("--seasons", type=parse_seasons, default=DEFAULT_SEASONS)
+    parser.add_argument("--seasons", type=parse_seasons_arg, default=DEFAULT_SEASONS)
     parser.add_argument("--start-round", type=int, default=5)
     parser.add_argument("--budget", type=float, default=100.0)
     parser.add_argument("--project-root", type=Path, default=Path("."))

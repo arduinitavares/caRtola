@@ -33,6 +33,14 @@ def test_config_from_default_args() -> None:
     assert config.force is False
 
 
+def test_parse_args_preserves_duplicate_season_error_message(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        ablation.parse_args(["--seasons", "2023,2023"])
+
+    captured = capsys.readouterr()
+    assert "duplicate season" in captured.err
+
+
 def test_script_imports_main_from_footystats_ablation() -> None:
     script_path = Path(__file__).resolve().parents[3] / "scripts" / "run_footystats_ppg_ablation.py"
     spec = importlib.util.spec_from_file_location("run_footystats_ppg_ablation", script_path)
