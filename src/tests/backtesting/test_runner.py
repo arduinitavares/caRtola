@@ -5,6 +5,8 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
+from cartola.backtesting.features import FOOTYSTATS_PPG_FEATURE_COLUMNS
+from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 from cartola.backtesting.runner import run_backtest
 from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
 
@@ -61,6 +63,27 @@ def _write_tiny_fixture_files(root: Path, rounds: range) -> None:
         round_fixtures.to_csv(fixture_dir / f"partidas-{round_number}.csv", index=False)
 
 
+def _tiny_footystats_rows(rounds: range, clubs: range = range(1, 19)) -> pd.DataFrame:
+    rows = []
+    for round_number in rounds:
+        for club_id in clubs:
+            opponent_id = club_id + 1 if club_id % 2 == 1 else club_id - 1
+            team_ppg = round_number + (club_id / 100)
+            opponent_ppg = round_number + (opponent_id / 100)
+            rows.append(
+                {
+                    "rodada": round_number,
+                    "id_clube": club_id,
+                    "opponent_id_clube": opponent_id,
+                    "is_home_footystats": int(club_id % 2 == 1),
+                    "footystats_team_pre_match_ppg": team_ppg,
+                    "footystats_opponent_pre_match_ppg": opponent_ppg,
+                    "footystats_ppg_diff": team_ppg - opponent_ppg,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
@@ -107,25 +130,141 @@ def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):
     assert metadata["footystats_extra_club_rows_by_round"] == {}
 
 
-def test_run_backtest_rejects_inactive_footystats_mode(tmp_path):
-    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
-    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, footystats_mode="ppg")
-
-    with pytest.raises(ValueError, match="footystats_mode='ppg'.*not.*implemented"):
-        run_backtest(config, season_df=season_df)
-
-
-def test_run_backtest_rejects_inactive_footystats_evaluation_scope(tmp_path):
+def test_run_backtest_rejects_live_current_scope(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(
         project_root=tmp_path,
         start_round=5,
         budget=100,
+        footystats_mode="ppg",
         footystats_evaluation_scope="live_current",
     )
 
-    with pytest.raises(ValueError, match="footystats_evaluation_scope='live_current'.*not.*implemented"):
+    with pytest.raises(ValueError, match="live_current is not supported"):
         run_backtest(config, season_df=season_df)
+
+
+def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    observed_calls: list[dict[str, object]] = []
+    source_path = tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv"
+
+    def fake_load_footystats_ppg_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+        observed_calls.append(kwargs)
+        return FootyStatsPPGLoadResult(
+            rows=_tiny_footystats_rows(range(1, 6)),
+            source_path=source_path,
+            source_sha256="fake-sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_footystats_ppg_rows",
+        fake_load_footystats_ppg_rows,
+        raising=False,
+    )
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        footystats_mode="ppg",
+        footystats_dir=Path("custom/footystats"),
+        footystats_league_slug="custom-league",
+        current_year=2025,
+    )
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert observed_calls == [
+        {
+            "season": 2025,
+            "project_root": tmp_path,
+            "footystats_dir": Path("custom/footystats"),
+            "league_slug": "custom-league",
+            "evaluation_scope": "historical_candidate",
+            "current_year": 2025,
+        }
+    ]
+    assert result.metadata.footystats_mode == "ppg"
+    assert result.metadata.footystats_matches_source_path == str(source_path)
+    assert result.metadata.footystats_matches_source_sha256 == "fake-sha"
+    assert result.metadata.footystats_feature_columns == FOOTYSTATS_PPG_FEATURE_COLUMNS
+    assert result.metadata.footystats_missing_join_keys_by_round == {}
+    assert result.metadata.footystats_duplicate_join_keys_by_round == {}
+    assert result.metadata.footystats_extra_club_rows_by_round == {}
+    assert "footystats_ppg_diff" in result.player_predictions.columns
+
+    metadata = pd.read_json(tmp_path / "data/08_reporting/backtests/2025/run_metadata.json", typ="series").to_dict()
+    assert metadata["footystats_mode"] == "ppg"
+    assert metadata["footystats_matches_source_path"] == str(source_path)
+    assert metadata["footystats_matches_source_sha256"] == "fake-sha"
+    assert metadata["footystats_feature_columns"] == FOOTYSTATS_PPG_FEATURE_COLUMNS
+
+
+def test_run_backtest_ppg_rejects_missing_join_keys(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    rows = _tiny_footystats_rows(range(1, 6))
+    rows = rows[~((rows["rodada"] == 5) & (rows["id_clube"] == 18))].copy()
+
+    def fake_load_footystats_ppg_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+        return FootyStatsPPGLoadResult(
+            rows=rows,
+            source_path=tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv",
+            source_sha256="fake-sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_footystats_ppg_rows",
+        fake_load_footystats_ppg_rows,
+        raising=False,
+    )
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, footystats_mode="ppg")
+
+    with pytest.raises(ValueError, match="missing join keys"):
+        run_backtest(config, season_df=season_df)
+
+
+def test_run_backtest_ppg_records_extra_footystats_rows(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    rows = pd.concat(
+        [
+            _tiny_footystats_rows(range(1, 6)),
+            pd.DataFrame(
+                [
+                    {
+                        "rodada": 5,
+                        "id_clube": 99,
+                        "opponent_id_clube": 1,
+                        "is_home_footystats": 1,
+                        "footystats_team_pre_match_ppg": 2.0,
+                        "footystats_opponent_pre_match_ppg": 1.0,
+                        "footystats_ppg_diff": 1.0,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    def fake_load_footystats_ppg_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+        return FootyStatsPPGLoadResult(
+            rows=rows,
+            source_path=tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv",
+            source_sha256="fake-sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_footystats_ppg_rows",
+        fake_load_footystats_ppg_rows,
+        raising=False,
+    )
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, footystats_mode="ppg")
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.footystats_extra_club_rows_by_round == {"5": [{"rodada": 5, "id_clube": 99}]}
 
 
 def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path):

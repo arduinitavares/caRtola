@@ -7,7 +7,18 @@ import pandas as pd
 
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
-from cartola.backtesting.features import build_prediction_frame, build_training_frame, feature_columns_for_config
+from cartola.backtesting.features import (
+    FOOTYSTATS_PPG_FEATURE_COLUMNS,
+    build_prediction_frame,
+    build_training_frame,
+    feature_columns_for_config,
+)
+from cartola.backtesting.footystats_features import (
+    FootyStatsJoinDiagnostics,
+    FootyStatsPPGLoadResult,
+    build_footystats_join_diagnostics,
+    load_footystats_ppg_rows,
+)
 from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
@@ -89,7 +100,6 @@ def run_backtest(
     season_df: pd.DataFrame | None = None,
     fixtures: pd.DataFrame | None = None,
 ) -> BacktestResult:
-    _validate_footystats_config(config)
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
@@ -103,6 +113,15 @@ def run_backtest(
     excluded_rounds = sorted({*resolved_fixtures.excluded_rounds, *alignment_excluded_rounds})
     if excluded_rounds:
         data = data[~pd.to_numeric(data["rodada"], errors="raise").isin(excluded_rounds)].copy()
+
+    resolved_footystats = _resolve_footystats(config)
+    footystats_rows = resolved_footystats.rows if resolved_footystats is not None else None
+    footystats_diagnostics = (
+        build_footystats_join_diagnostics(data, footystats_rows)
+        if footystats_rows is not None
+        else FootyStatsJoinDiagnostics()
+    )
+    _validate_footystats_join_diagnostics(footystats_diagnostics)
 
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
@@ -125,12 +144,18 @@ def run_backtest(
         footystats_mode=config.footystats_mode,
         footystats_evaluation_scope=config.footystats_evaluation_scope,
         footystats_league_slug=config.footystats_league_slug,
-        footystats_matches_source_path=None,
-        footystats_matches_source_sha256=None,
-        footystats_feature_columns=[],
-        footystats_missing_join_keys_by_round={},
-        footystats_duplicate_join_keys_by_round={},
-        footystats_extra_club_rows_by_round={},
+        footystats_matches_source_path=(
+            str(resolved_footystats.source_path) if resolved_footystats is not None else None
+        ),
+        footystats_matches_source_sha256=(
+            resolved_footystats.source_sha256 if resolved_footystats is not None else None
+        ),
+        footystats_feature_columns=(
+            list(FOOTYSTATS_PPG_FEATURE_COLUMNS) if resolved_footystats is not None else []
+        ),
+        footystats_missing_join_keys_by_round=footystats_diagnostics.missing_join_keys_by_round,
+        footystats_duplicate_join_keys_by_round=footystats_diagnostics.duplicate_join_keys_by_round,
+        footystats_extra_club_rows_by_round=footystats_diagnostics.extra_club_rows_by_round,
     )
     for round_number in range(config.start_round, max_round + 1):
         if round_number in excluded_rounds:
@@ -141,8 +166,9 @@ def run_backtest(
             round_number,
             playable_statuses=config.playable_statuses,
             fixtures=fixture_data,
+            footystats_rows=footystats_rows,
         )
-        candidates = build_prediction_frame(data, round_number, fixtures=fixture_data)
+        candidates = build_prediction_frame(data, round_number, fixtures=fixture_data, footystats_rows=footystats_rows)
         candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy()
 
         if training.empty or candidates.empty:
@@ -213,16 +239,29 @@ def run_backtest(
     )
 
 
-def _validate_footystats_config(config: BacktestConfig) -> None:
-    if config.footystats_mode != "none":
-        raise ValueError(
-            f"footystats_mode={config.footystats_mode!r} is not implemented by the current backtest runner."
-        )
-    if config.footystats_evaluation_scope != "historical_candidate":
-        raise ValueError(
-            "footystats_evaluation_scope="
-            f"{config.footystats_evaluation_scope!r} is not implemented by the current backtest runner."
-        )
+def _resolve_footystats(config: BacktestConfig) -> FootyStatsPPGLoadResult | None:
+    if config.footystats_mode == "none":
+        return None
+    if config.footystats_mode != "ppg":
+        raise ValueError(f"Unsupported footystats_mode: {config.footystats_mode!r}")
+    if config.footystats_evaluation_scope == "live_current":
+        raise ValueError("live_current is not supported by the backtest runner")
+
+    return load_footystats_ppg_rows(
+        season=config.season,
+        project_root=config.project_root,
+        footystats_dir=config.footystats_dir,
+        league_slug=config.footystats_league_slug,
+        evaluation_scope=config.footystats_evaluation_scope,
+        current_year=config.current_year,
+    )
+
+
+def _validate_footystats_join_diagnostics(diagnostics: FootyStatsJoinDiagnostics) -> None:
+    if diagnostics.missing_join_keys_by_round:
+        raise ValueError(f"FootyStats PPG missing join keys: {diagnostics.missing_join_keys_by_round}")
+    if diagnostics.duplicate_join_keys_by_round:
+        raise ValueError(f"FootyStats PPG duplicate join keys: {diagnostics.duplicate_join_keys_by_round}")
 
 
 def _max_round(data: pd.DataFrame) -> int:
