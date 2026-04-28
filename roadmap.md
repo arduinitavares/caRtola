@@ -55,7 +55,12 @@ The FootyStats compatibility audit is now implemented and the current `data/foot
 - Required safe columns are present: `Pre-Match PPG (Home)` and `Pre-Match PPG (Away)`.
 - Optional safe columns include pre-match xG, odds, goal environment, corners, and cards fields.
 
-That means the next step is no longer discovery. It is designing the first leakage-safe FootyStats feature integration for candidate seasons.
+That means the next step is no longer discovery. It is the first leakage-safe FootyStats feature integration.
+
+Important distinction:
+
+- For historical comparison, `2026` is `partial_current` and should not be compared directly against complete seasons.
+- For actual gameplay, `2026` is the live production season. Current-year FootyStats pre-match rows are useful for generating real squad recommendations, as long as only pre-deadline/pre-match-safe fields enter the model and missing target-round fixture context fails loudly.
 
 **How To Run Now**
 No fixture context:
@@ -95,14 +100,13 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Design the FootyStats integration:
+1. Add the first FootyStats PPG integration:
    - map FootyStats team names to Cartola `id_clube`,
    - align FootyStats game weeks to Cartola `rodada`,
-   - define leakage-safe feature columns,
-   - validate that only pre-match-safe fields enter the model,
-   - define how partial/current seasons are excluded from comparable historical evaluation.
-2. Add the first FootyStats match-context features:
    - home and away pre-match PPG,
+   - train/evaluate on complete candidate seasons (`2023`-`2025`),
+   - support `2026` as live/current-season prediction context without treating it as comparable historical evidence.
+2. Add broader FootyStats match-context features after the PPG ablation:
    - pre-match xG where available,
    - odds-derived win/draw/loss probabilities where available,
    - pre-match goal environment features.
