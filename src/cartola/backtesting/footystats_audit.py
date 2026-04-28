@@ -131,6 +131,7 @@ class FootyStatsAuditConfig:
     project_root: Path = Path(".")
     footystats_dir: Path = Path("data/footystats")
     output_root: Path = Path("data/08_reporting/footystats")
+    current_year: int | None = None
 
 
 CSV_COLUMNS: tuple[str, ...] = (
@@ -150,6 +151,7 @@ CSV_COLUMNS: tuple[str, ...] = (
     "mapped_team_count",
     "unmapped_footystats_teams",
     "missing_cartola_teams",
+    "duplicate_mapped_cartola_teams",
     "pre_match_safe_columns",
     "post_match_outcome_columns",
     "missing_safe_columns",
@@ -196,6 +198,8 @@ class MatchFileProfile:
     min_game_week: int | None
     max_game_week: int | None
     game_week_count: int
+    detected_game_weeks: list[int]
+    has_invalid_game_weeks: bool
     team_names: list[str]
     pre_match_safe_columns: tuple[str, ...]
     post_match_outcome_columns: tuple[str, ...]
@@ -209,6 +213,7 @@ class TeamComparison:
     mapped_teams: dict[str, int]
     unmapped_footystats_teams: list[str]
     missing_cartola_teams: list[str]
+    duplicate_mapped_cartola_teams: list[str]
 
 
 @dataclass(frozen=True)
@@ -229,6 +234,7 @@ class FootyStatsSeasonAuditRecord:
     mapped_team_count: int
     unmapped_footystats_teams: list[str]
     missing_cartola_teams: list[str]
+    duplicate_mapped_cartola_teams: list[str]
     pre_match_safe_columns: list[str]
     post_match_outcome_columns: list[str]
     missing_safe_columns: list[str]
@@ -254,6 +260,7 @@ class FootyStatsSeasonAuditRecord:
             "mapped_team_count": self.mapped_team_count,
             "unmapped_footystats_teams": _pipe_join(self.unmapped_footystats_teams),
             "missing_cartola_teams": _pipe_join(self.missing_cartola_teams),
+            "duplicate_mapped_cartola_teams": _pipe_join(self.duplicate_mapped_cartola_teams),
             "pre_match_safe_columns": _pipe_join(self.pre_match_safe_columns),
             "post_match_outcome_columns": _pipe_join(self.post_match_outcome_columns),
             "missing_safe_columns": _pipe_join(self.missing_safe_columns),
@@ -268,6 +275,7 @@ class FootyStatsSeasonAuditRecord:
         row["status_counts"] = self.status_counts
         row["unmapped_footystats_teams"] = self.unmapped_footystats_teams
         row["missing_cartola_teams"] = self.missing_cartola_teams
+        row["duplicate_mapped_cartola_teams"] = self.duplicate_mapped_cartola_teams
         row["pre_match_safe_columns"] = self.pre_match_safe_columns
         row["post_match_outcome_columns"] = self.post_match_outcome_columns
         row["missing_safe_columns"] = self.missing_safe_columns
@@ -305,7 +313,10 @@ def discover_footystats_files(config: FootyStatsAuditConfig) -> list[FootyStatsS
     grouped: dict[tuple[int, str], dict[FootyStatsTableType, Path]] = {}
 
     for path in sorted(footystats_dir.glob("*.csv")):
-        parsed = parse_footystats_filename(path)
+        try:
+            parsed = parse_footystats_filename(path)
+        except ValueError:
+            continue
         grouped.setdefault((parsed.season, parsed.league_slug), {})[parsed.table_type] = path
 
     return [
@@ -318,10 +329,9 @@ def profile_match_file(path: Path) -> MatchFileProfile:
     df = pd.read_csv(path)
     pre_match_safe_columns = tuple(column for column in df.columns if column in PRE_MATCH_SAFE_COLUMNS)
     post_match_outcome_columns = tuple(column for column in df.columns if column in POST_MATCH_OUTCOME_COLUMNS)
-
-    game_weeks = pd.to_numeric(df["Game Week"], errors="coerce").dropna() if "Game Week" in df else pd.Series(dtype="float64")
-    min_game_week = int(game_weeks.min()) if not game_weeks.empty else None
-    max_game_week = int(game_weeks.max()) if not game_weeks.empty else None
+    detected_game_weeks, has_invalid_game_weeks = _detected_game_weeks(df)
+    min_game_week = min(detected_game_weeks) if detected_game_weeks else None
+    max_game_week = max(detected_game_weeks) if detected_game_weeks else None
 
     return MatchFileProfile(
         path=path,
@@ -329,7 +339,9 @@ def profile_match_file(path: Path) -> MatchFileProfile:
         status_counts=_value_counts(df, "status"),
         min_game_week=min_game_week,
         max_game_week=max_game_week,
-        game_week_count=int(game_weeks.nunique()) if not game_weeks.empty else 0,
+        game_week_count=len(detected_game_weeks),
+        detected_game_weeks=detected_game_weeks,
+        has_invalid_game_weeks=has_invalid_game_weeks,
         team_names=_team_names(df),
         pre_match_safe_columns=pre_match_safe_columns,
         post_match_outcome_columns=post_match_outcome_columns,
@@ -365,6 +377,7 @@ def audit_one_footystats_season(
             mapped_team_count=0,
             unmapped_footystats_teams=[],
             missing_cartola_teams=[],
+            duplicate_mapped_cartola_teams=[],
             pre_match_safe_columns=[],
             post_match_outcome_columns=[],
             missing_safe_columns=[],
@@ -378,24 +391,34 @@ def audit_one_footystats_season(
     missing_safe_columns = [
         column for column in REQUIRED_PRE_MATCH_SAFE_COLUMNS if column not in profile.pre_match_safe_columns
     ]
-    team_mapping_status = (
-        "failed"
-        if not profile.team_names or comparison.unmapped_footystats_teams or comparison.missing_cartola_teams
-        else "ok"
-    )
+    team_mapping_status = "ok"
+    if (
+        not profile.team_names
+        or comparison.unmapped_footystats_teams
+        or comparison.missing_cartola_teams
+        or comparison.duplicate_mapped_cartola_teams
+    ):
+        team_mapping_status = "failed"
     notes: list[str] = []
 
+    expected_game_weeks = list(range(1, 39))
     has_complete_game_week_coverage = (
-        profile.min_game_week == 1 and profile.max_game_week == 38 and profile.game_week_count == 38
+        not profile.has_invalid_game_weeks and profile.detected_game_weeks == expected_game_weeks
     )
     if not has_complete_game_week_coverage:
         notes.append("match file does not cover game weeks 1-38")
+
+    if profile.has_invalid_game_weeks:
+        notes.append("match file has invalid game week values")
 
     if not profile.team_names:
         notes.append("match file has no team names")
 
     if comparison.missing_cartola_teams:
         notes.append("cartola teams missing from footystats match file")
+
+    if comparison.duplicate_mapped_cartola_teams:
+        notes.append("duplicate footystats teams map to the same cartola club")
 
     has_fixture_status_data = bool(profile.status_counts)
     if not has_fixture_status_data:
@@ -405,7 +428,16 @@ def audit_one_footystats_season(
     if has_non_complete_fixtures:
         notes.append("match file contains non-complete fixtures")
 
-    if team_mapping_status == "failed" or missing_safe_columns or not has_fixture_status_data:
+    current_year = _resolved_current_year(config)
+    is_current_season = discovery.season == current_year
+
+    if (
+        team_mapping_status == "failed"
+        or missing_safe_columns
+        or not has_fixture_status_data
+        or profile.has_invalid_game_weeks
+        or ((has_non_complete_fixtures or not has_complete_game_week_coverage) and not is_current_season)
+    ):
         integration_status = "not_candidate"
     elif has_non_complete_fixtures or not has_complete_game_week_coverage:
         integration_status = "partial_current"
@@ -429,6 +461,7 @@ def audit_one_footystats_season(
         mapped_team_count=len(comparison.mapped_teams),
         unmapped_footystats_teams=comparison.unmapped_footystats_teams,
         missing_cartola_teams=comparison.missing_cartola_teams,
+        duplicate_mapped_cartola_teams=comparison.duplicate_mapped_cartola_teams,
         pre_match_safe_columns=list(profile.pre_match_safe_columns),
         post_match_outcome_columns=list(profile.post_match_outcome_columns),
         missing_safe_columns=missing_safe_columns,
@@ -439,7 +472,7 @@ def audit_one_footystats_season(
 
 
 def run_footystats_audit(config: FootyStatsAuditConfig) -> FootyStatsAuditRunResult:
-    generated_at_utc = datetime.now(UTC).isoformat()
+    generated_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     seasons = [audit_one_footystats_season(discovery, config) for discovery in discover_footystats_files(config)]
     csv_path, json_path = write_footystats_audit_reports(seasons, config, generated_at_utc)
 
@@ -458,6 +491,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--footystats-dir", type=Path, default=Path("data/footystats"))
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/footystats"))
+    parser.add_argument("--current-year", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -466,6 +500,7 @@ def config_from_args(args: argparse.Namespace) -> FootyStatsAuditConfig:
         project_root=args.project_root,
         footystats_dir=args.footystats_dir,
         output_root=args.output_root,
+        current_year=args.current_year,
     )
 
 
@@ -484,6 +519,7 @@ def write_footystats_audit_reports(
     generated_at_utc: str,
 ) -> tuple[Path, Path]:
     output_root = _resolve_path(config.project_root, config.output_root)
+    _validate_report_output_root(config, output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     csv_path = output_root / "footystats_compatibility.csv"
     json_path = output_root / "footystats_compatibility.json"
@@ -500,6 +536,7 @@ def write_footystats_audit_reports(
                 "config": {
                     "footystats_dir": str(config.footystats_dir),
                     "output_root": str(config.output_root),
+                    "current_year": config.current_year,
                 },
                 "seasons": [season.to_json_object() for season in seasons],
             },
@@ -555,6 +592,7 @@ def compare_teams_to_cartola(season: int, footystats_team_names: list[str], proj
     mapped_teams: dict[str, int] = {}
     unmapped_footystats_teams: list[str] = []
     mapped_normalized_names: set[str] = set()
+    mapped_teams_by_club_id: dict[int, list[str]] = {}
     for team_name in footystats_team_names:
         normalized_team_name = normalize_team_name(team_name)
         club_id = cartola_clubs_by_normalized_name.get(normalized_team_name)
@@ -563,14 +601,24 @@ def compare_teams_to_cartola(season: int, footystats_team_names: list[str], proj
         else:
             mapped_teams[team_name] = club_id
             mapped_normalized_names.add(normalized_team_name)
+            mapped_teams_by_club_id.setdefault(club_id, []).append(team_name)
 
     missing_cartola_teams = sorted(set(cartola_clubs_by_normalized_name) - mapped_normalized_names)
+    cartola_name_by_club_id = {
+        club_id: normalized_name for normalized_name, club_id in sorted(cartola_clubs_by_normalized_name.items())
+    }
+    duplicate_mapped_cartola_teams = sorted(
+        cartola_name_by_club_id.get(club_id, str(club_id))
+        for club_id, team_names in mapped_teams_by_club_id.items()
+        if len(set(team_names)) > 1
+    )
 
     return TeamComparison(
         cartola_clubs_by_normalized_name=cartola_clubs_by_normalized_name,
         mapped_teams=mapped_teams,
         unmapped_footystats_teams=sorted(unmapped_footystats_teams),
         missing_cartola_teams=missing_cartola_teams,
+        duplicate_mapped_cartola_teams=duplicate_mapped_cartola_teams,
     )
 
 
@@ -583,7 +631,39 @@ def _resolve_path(project_root: Path, path: Path) -> Path:
 def _value_counts(df: pd.DataFrame, column: str) -> dict[str, int]:
     if column not in df:
         return {}
-    return {str(key): int(value) for key, value in df[column].value_counts(dropna=False).items()}
+    counts: dict[str, int] = {}
+    for key, value in df[column].value_counts(dropna=False).items():
+        label = "missing" if pd.isna(key) else str(key)
+        counts[label] = counts.get(label, 0) + int(value)
+    return counts
+
+
+def _detected_game_weeks(df: pd.DataFrame) -> tuple[list[int], bool]:
+    if "Game Week" not in df:
+        return [], False
+
+    game_weeks = pd.to_numeric(df["Game Week"], errors="coerce")
+    valid_game_weeks = game_weeks.dropna()
+    integer_game_weeks = valid_game_weeks[valid_game_weeks.mod(1).eq(0) & valid_game_weeks.gt(0)]
+    has_invalid_game_weeks = len(integer_game_weeks) != len(game_weeks)
+    return sorted({int(value) for value in integer_game_weeks}), bool(has_invalid_game_weeks)
+
+
+def _resolved_current_year(config: FootyStatsAuditConfig) -> int:
+    if config.current_year is not None:
+        return config.current_year
+    return datetime.now(UTC).year
+
+
+def _validate_report_output_root(config: FootyStatsAuditConfig, output_root: Path) -> None:
+    resolved_output_root = output_root.resolve()
+    protected_roots = (
+        _resolve_path(config.project_root, config.footystats_dir).resolve(),
+        _resolve_path(config.project_root, Path("data/01_raw")).resolve(),
+    )
+    for protected_root in protected_roots:
+        if resolved_output_root == protected_root or resolved_output_root.is_relative_to(protected_root):
+            raise ValueError("output_root must not be inside data/footystats or data/01_raw")
 
 
 def _team_names(df: pd.DataFrame) -> list[str]:

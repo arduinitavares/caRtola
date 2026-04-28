@@ -62,7 +62,7 @@ As execuções isoladas não sobrescrevem `data/08_reporting/backtests/{season}/
 Para auditar a compatibilidade dos CSVs locais da FootyStats:
 
 ```bash
-uv run --frozen python scripts/audit_footystats_compatibility.py
+uv run --frozen python scripts/audit_footystats_compatibility.py --current-year 2026
 ```
 
 O comando grava os relatórios em:

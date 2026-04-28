@@ -85,7 +85,7 @@ uv run --frozen python scripts/audit_backtest_compatibility.py --current-year 20
 FootyStats compatibility audit:
 
 ```bash
-uv run --frozen python scripts/audit_footystats_compatibility.py
+uv run --frozen python scripts/audit_footystats_compatibility.py --current-year 2026
 ```
 
 Quality gate:
