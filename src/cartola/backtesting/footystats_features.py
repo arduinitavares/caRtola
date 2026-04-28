@@ -43,6 +43,7 @@ PPG_FEATURE_COLUMNS: tuple[str, ...] = (
     "footystats_ppg_diff",
 )
 XG_FEATURE_COLUMNS: tuple[str, ...] = XG_RESULT_COLUMNS
+ALL_FEATURE_COLUMNS: tuple[str, ...] = (*PPG_FEATURE_COLUMNS, *XG_FEATURE_COLUMNS)
 FEATURE_COLUMNS_BY_MODE: dict[str, tuple[str, ...]] = {
     "ppg": PPG_FEATURE_COLUMNS,
     "ppg_xg": (*PPG_FEATURE_COLUMNS, *XG_FEATURE_COLUMNS),
@@ -76,6 +77,15 @@ def merge_footystats_ppg(
     *,
     target_round: int,
 ) -> pd.DataFrame:
+    return merge_footystats_features(frame, footystats_rows, target_round=target_round)
+
+
+def merge_footystats_features(
+    frame: pd.DataFrame,
+    footystats_rows: pd.DataFrame | None,
+    *,
+    target_round: int,
+) -> pd.DataFrame:
     if footystats_rows is None:
         return frame
 
@@ -93,7 +103,7 @@ def merge_footystats_ppg(
     if missing_clubs:
         raise ValueError(f"missing FootyStats PPG rows for round {target_round} clubs: {missing_clubs}")
 
-    feature_columns = [column for column in FEATURE_COLUMNS_BY_MODE["ppg_xg"] if column in round_rows.columns]
+    feature_columns = [column for column in ALL_FEATURE_COLUMNS if column in round_rows.columns]
     feature_rows = round_rows[["id_clube", *feature_columns]]
     return frame.merge(feature_rows, on="id_clube", how="left", validate="many_to_one")
 

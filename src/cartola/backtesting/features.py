@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, MARKET_OPEN_PRICE_COLUMN
-from cartola.backtesting.footystats_features import merge_footystats_ppg
+from cartola.backtesting.footystats_features import merge_footystats_features
 
 if TYPE_CHECKING:
     from cartola.backtesting.config import BacktestConfig
@@ -102,7 +102,7 @@ def build_prediction_frame(
     played_history = _played_history(season_df, target_round)
     all_history = season_df[season_df["rodada"] < target_round].copy()
     frame = _add_prior_features(candidates, played_history, all_history, fixtures, target_round)
-    return merge_footystats_ppg(frame, footystats_rows, target_round=target_round)
+    return merge_footystats_features(frame, footystats_rows, target_round=target_round)
 
 
 def build_training_frame(
