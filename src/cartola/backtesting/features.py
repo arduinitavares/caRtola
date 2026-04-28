@@ -56,6 +56,12 @@ FOOTYSTATS_PPG_FEATURE_COLUMNS: list[str] = [
     "footystats_ppg_diff",
 ]
 
+FOOTYSTATS_XG_FEATURE_COLUMNS: list[str] = [
+    "footystats_team_pre_match_xg",
+    "footystats_opponent_pre_match_xg",
+    "footystats_xg_diff",
+]
+
 NUMERIC_PRIOR_COLUMNS: list[str] = [
     "position_points_prior",
     "prior_appearances",
@@ -81,6 +87,8 @@ def feature_columns_for_config(config: BacktestConfig) -> list[str]:
         return list(FEATURE_COLUMNS)
     if config.footystats_mode == "ppg":
         return [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS]
+    if config.footystats_mode == "ppg_xg":
+        return [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS, *FOOTYSTATS_XG_FEATURE_COLUMNS]
     raise ValueError(f"Unsupported footystats_mode: {config.footystats_mode!r}")
 
 

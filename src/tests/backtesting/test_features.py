@@ -7,6 +7,7 @@ from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
 from cartola.backtesting.features import (
     FEATURE_COLUMNS,
     FOOTYSTATS_PPG_FEATURE_COLUMNS,
+    FOOTYSTATS_XG_FEATURE_COLUMNS,
     build_prediction_frame,
     build_training_frame,
     feature_columns_for_config,
@@ -388,6 +389,16 @@ def test_feature_columns_for_ppg_includes_footystats_columns_after_base_columns(
     columns = feature_columns_for_config(BacktestConfig(footystats_mode="ppg"))
 
     assert columns == [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS]
+
+
+def test_feature_columns_for_ppg_xg_includes_ppg_then_xg_columns_after_base_columns() -> None:
+    columns = feature_columns_for_config(BacktestConfig(footystats_mode="ppg_xg"))
+
+    base_count = len(FEATURE_COLUMNS)
+    ppg_count = len(FOOTYSTATS_PPG_FEATURE_COLUMNS)
+    assert columns[:base_count] == FEATURE_COLUMNS
+    assert columns[base_count : base_count + ppg_count] == FOOTYSTATS_PPG_FEATURE_COLUMNS
+    assert columns[base_count + ppg_count :] == FOOTYSTATS_XG_FEATURE_COLUMNS
 
 
 def test_prediction_frame_merges_footystats_ppg_rows() -> None:

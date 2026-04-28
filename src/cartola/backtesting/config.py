@@ -31,7 +31,7 @@ MARKET_OPEN_PRICE_COLUMN = "preco_pre_rodada"
 
 FixtureMode = Literal["none", "exploratory", "strict"]
 StrictAlignmentPolicy = Literal["fail", "exclude_round"]
-FootyStatsMode = Literal["none", "ppg"]
+FootyStatsMode = Literal["none", "ppg", "ppg_xg"]
 FootyStatsEvaluationScope = Literal["historical_candidate", "live_current"]
 
 STATUS_ID_TO_NAME: Mapping[int, str] = {

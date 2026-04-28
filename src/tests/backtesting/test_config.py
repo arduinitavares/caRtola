@@ -45,3 +45,9 @@ def test_backtest_config_accepts_fixture_modes() -> None:
     assert BacktestConfig(fixture_mode="exploratory").fixture_mode == "exploratory"
     assert BacktestConfig(fixture_mode="strict").fixture_mode == "strict"
     assert BacktestConfig(strict_alignment_policy="exclude_round").strict_alignment_policy == "exclude_round"
+
+
+def test_backtest_config_accepts_ppg_xg_footystats_mode() -> None:
+    config = BacktestConfig(footystats_mode="ppg_xg")
+
+    assert config.footystats_mode == "ppg_xg"
