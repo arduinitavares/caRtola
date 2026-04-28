@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -648,3 +649,161 @@ def test_build_aggregate_record_rejects_non_finite_required_metric_on_comparable
 
     with pytest.raises(ValueError, match="control_rf_avg_points"):
         ablation.build_aggregate_record([record])
+
+
+def _report_result(tmp_path: Path) -> ablation.FootyStatsPPGAblationResult:
+    output_root = tmp_path / "reports" / "footystats_ablation"
+    included = ablation.SeasonAblationRecord(
+        season=2024,
+        season_status="candidate",
+        metrics_comparable=True,
+        control_status="ok",
+        treatment_status="ok",
+        metric_status="ok",
+        control_output_path=str(output_root / "runs" / "2024" / "footystats_mode=none" / "2024"),
+        treatment_output_path=str(output_root / "runs" / "2024" / "footystats_mode=ppg" / "2024"),
+        control_baseline_avg_points=45.0,
+        treatment_baseline_avg_points=45.0,
+        baseline_avg_points=45.0,
+        baseline_avg_points_equal=True,
+        control_rf_avg_points=50.0,
+        treatment_rf_avg_points=55.0,
+        rf_avg_points_delta=5.0,
+        control_player_r2=0.1,
+        treatment_player_r2=0.2,
+        player_r2_delta=0.1,
+        control_player_corr=0.3,
+        treatment_player_corr=0.4,
+        player_corr_delta=0.1,
+        rf_minus_baseline_control=5.0,
+        rf_minus_baseline_treatment=10.0,
+        treatment_source_path="data/footystats/brazil-serie-a-matches-2024-to-2024-stats.csv",
+        treatment_source_sha256="sha-2024",
+    )
+    excluded = ablation.SeasonAblationRecord(
+        season=2025,
+        season_status="candidate",
+        metrics_comparable=False,
+        control_status="ok",
+        treatment_status="ok",
+        metric_status="failed",
+        control_output_path=str(output_root / "runs" / "2025" / "footystats_mode=none" / "2025"),
+        treatment_output_path=str(output_root / "runs" / "2025" / "footystats_mode=ppg" / "2025"),
+        error_stage="metric_extraction",
+        error_message="x" * 600,
+        treatment_source_sha256="sha-2025",
+        errors=[
+            ablation.AblationError(
+                stage="metric_extraction",
+                type="ValueError",
+                message="x" * 600,
+                traceback="Traceback...",
+            )
+        ],
+    )
+    aggregate = ablation.build_aggregate_record([included, excluded])
+    config = ablation.FootyStatsPPGAblationConfig(
+        seasons=(2024, 2025),
+        start_round=7,
+        budget=90.5,
+        project_root=tmp_path,
+        output_root=Path("reports/footystats_ablation"),
+        current_year=2026,
+        force=True,
+    )
+    return ablation.FootyStatsPPGAblationResult(
+        config=config,
+        resolved_output_root=output_root,
+        seasons=[included, excluded],
+        aggregate=aggregate,
+    )
+
+
+def test_write_reports_creates_csv_and_json_report_artifacts(tmp_path: Path) -> None:
+    result = _report_result(tmp_path)
+    result.resolved_output_root.mkdir(parents=True)
+
+    ablation.write_reports(result)
+
+    csv_path = result.resolved_output_root / "ppg_ablation.csv"
+    json_path = result.resolved_output_root / "ppg_ablation.json"
+    assert csv_path.is_file()
+    assert json_path.is_file()
+
+    csv = pd.read_csv(csv_path, keep_default_na=False)
+    assert csv["season"].astype(str).tolist() == ["2024", "2025", "aggregate"]
+    assert "metric_status" in csv.columns
+
+    report = json.loads(json_path.read_text())
+    assert report["config"]["fixture_mode"] == "none"
+    assert report["config"]["control_footystats_mode"] == "none"
+    assert report["config"]["treatment_footystats_mode"] == "ppg"
+    assert report["config"]["footystats_evaluation_scope"] == "historical_candidate"
+    assert report["seasons"][0]["treatment_source_sha256"] == "sha-2024"
+    assert report["aggregate"]["included_seasons"] == [2024]
+    assert report["generated_at_utc"].endswith("Z")
+
+
+def test_write_reports_truncates_csv_error_message_and_keeps_null_metric_cells_empty(tmp_path: Path) -> None:
+    result = _report_result(tmp_path)
+    result.resolved_output_root.mkdir(parents=True)
+
+    ablation.write_reports(result)
+
+    csv = pd.read_csv(result.resolved_output_root / "ppg_ablation.csv", keep_default_na=False)
+    failed = csv[csv["season"].astype(str).eq("2025")].iloc[0]
+    assert failed["error_message"] == "x" * 500
+    assert failed["baseline_avg_points"] == ""
+    assert failed["rf_avg_points_delta"] == ""
+
+
+def test_write_reports_json_includes_config_and_aggregate_exclusions(tmp_path: Path) -> None:
+    result = _report_result(tmp_path)
+    result.resolved_output_root.mkdir(parents=True)
+
+    ablation.write_reports(result)
+
+    report = json.loads((result.resolved_output_root / "ppg_ablation.json").read_text())
+    assert report["config"] == {
+        "project_root": str(tmp_path),
+        "resolved_project_root": str(tmp_path.resolve()),
+        "output_root": "reports/footystats_ablation",
+        "resolved_output_root": str(result.resolved_output_root.resolve()),
+        "seasons": [2024, 2025],
+        "start_round": 7,
+        "budget": 90.5,
+        "current_year": 2026,
+        "resolved_current_year": 2026,
+        "fixture_mode": "none",
+        "control_footystats_mode": "none",
+        "treatment_footystats_mode": "ppg",
+        "footystats_evaluation_scope": "historical_candidate",
+        "footystats_league_slug": "brazil-serie-a",
+        "force": True,
+    }
+    assert report["aggregate"]["excluded_seasons"] == [
+        {
+            "season": 2025,
+            "reason": "metric_extraction: " + ("x" * 600),
+        }
+    ]
+    assert report["aggregate"]["aggregation_method"] == "mean"
+    assert report["aggregate"]["metrics"]["rf_avg_points_delta"] == 5.0
+
+
+def test_write_reports_uses_atomic_replace_without_final_files_on_replace_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _report_result(tmp_path)
+    result.resolved_output_root.mkdir(parents=True)
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        ablation.write_reports(result)
+
+    assert not (result.resolved_output_root / "ppg_ablation.csv").exists()
+    assert not (result.resolved_output_root / "ppg_ablation.json").exists()

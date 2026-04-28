@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import shutil
 import traceback
@@ -18,6 +19,34 @@ from cartola.backtesting.runner import run_backtest
 DEFAULT_SEASONS = (2023, 2024, 2025)
 DEFAULT_OUTPUT_ROOT = Path("data/08_reporting/backtests/footystats_ablation")
 DEFAULT_LEAGUE_SLUG = "brazil-serie-a"
+CSV_COLUMNS = (
+    "season",
+    "row_type",
+    "season_status",
+    "metrics_comparable",
+    "control_status",
+    "treatment_status",
+    "metric_status",
+    "control_output_path",
+    "treatment_output_path",
+    "control_baseline_avg_points",
+    "treatment_baseline_avg_points",
+    "baseline_avg_points",
+    "baseline_avg_points_equal",
+    "control_rf_avg_points",
+    "treatment_rf_avg_points",
+    "rf_avg_points_delta",
+    "control_player_r2",
+    "treatment_player_r2",
+    "player_r2_delta",
+    "control_player_corr",
+    "treatment_player_corr",
+    "player_corr_delta",
+    "rf_minus_baseline_control",
+    "rf_minus_baseline_treatment",
+    "error_stage",
+    "error_message",
+)
 
 
 @dataclass(frozen=True)
@@ -446,6 +475,123 @@ def _required_metric(record: SeasonAblationRecord, metric: str) -> float:
     if not math.isfinite(numeric_value):
         raise ValueError(f"invalid aggregate metric {metric!r} for season {record.season!r}: {numeric_value!r}")
     return numeric_value
+
+
+def _csv_row(record: SeasonAblationRecord) -> dict[str, object]:
+    row = {column: getattr(record, column) for column in CSV_COLUMNS}
+    error_message = row["error_message"]
+    if isinstance(error_message, str):
+        row["error_message"] = error_message[:500]
+    return row
+
+
+def _json_record(record: SeasonAblationRecord) -> dict[str, object]:
+    return asdict(record)
+
+
+def _generated_at_utc() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _is_included_in_aggregate(record: SeasonAblationRecord) -> bool:
+    return (
+        record.metrics_comparable
+        and record.control_status == "ok"
+        and record.treatment_status == "ok"
+        and record.metric_status == "ok"
+    )
+
+
+def _excluded_reason(record: SeasonAblationRecord) -> str:
+    if record.error_stage and record.error_message:
+        return f"{record.error_stage}: {record.error_message}"
+    if record.error_stage:
+        return record.error_stage
+    if record.metric_status != "ok":
+        return f"metric_status={record.metric_status}"
+    if record.control_status != "ok":
+        return f"control_status={record.control_status}"
+    if record.treatment_status != "ok":
+        return f"treatment_status={record.treatment_status}"
+    if not record.metrics_comparable:
+        return "metrics_comparable=False"
+    return "not included"
+
+
+def _aggregate_json(records: list[SeasonAblationRecord], aggregate: SeasonAblationRecord) -> dict[str, object]:
+    included = [record for record in records if _is_included_in_aggregate(record)]
+    metrics = {
+        "control_baseline_avg_points": aggregate.control_baseline_avg_points,
+        "treatment_baseline_avg_points": aggregate.treatment_baseline_avg_points,
+        "baseline_avg_points": aggregate.baseline_avg_points,
+        "baseline_avg_points_equal": aggregate.baseline_avg_points_equal,
+        "control_rf_avg_points": aggregate.control_rf_avg_points,
+        "treatment_rf_avg_points": aggregate.treatment_rf_avg_points,
+        "rf_avg_points_delta": aggregate.rf_avg_points_delta,
+        "control_player_r2": aggregate.control_player_r2,
+        "treatment_player_r2": aggregate.treatment_player_r2,
+        "player_r2_delta": aggregate.player_r2_delta,
+        "control_player_corr": aggregate.control_player_corr,
+        "treatment_player_corr": aggregate.treatment_player_corr,
+        "player_corr_delta": aggregate.player_corr_delta,
+        "rf_minus_baseline_control": aggregate.rf_minus_baseline_control,
+        "rf_minus_baseline_treatment": aggregate.rf_minus_baseline_treatment,
+    }
+    return {
+        "included_seasons": [record.season for record in included],
+        "excluded_seasons": [
+            {"season": record.season, "reason": _excluded_reason(record)}
+            for record in records
+            if record not in included
+        ],
+        "aggregation_method": "mean",
+        "metrics": metrics,
+    }
+
+
+def _config_json(config: FootyStatsPPGAblationConfig, resolved_output_root: Path) -> dict[str, object]:
+    return {
+        "project_root": str(config.project_root),
+        "resolved_project_root": str(config.project_root.resolve()),
+        "output_root": str(config.output_root),
+        "resolved_output_root": str(resolved_output_root.resolve()),
+        "seasons": list(config.seasons),
+        "start_round": config.start_round,
+        "budget": config.budget,
+        "current_year": config.current_year,
+        "resolved_current_year": config.resolved_current_year,
+        "fixture_mode": "none",
+        "control_footystats_mode": "none",
+        "treatment_footystats_mode": "ppg",
+        "footystats_evaluation_scope": "historical_candidate",
+        "footystats_league_slug": config.footystats_league_slug,
+        "force": config.force,
+    }
+
+
+def write_reports(result: FootyStatsPPGAblationResult) -> None:
+    result.resolved_output_root.mkdir(parents=True, exist_ok=True)
+    rows = [_csv_row(record) for record in [*result.seasons, result.aggregate]]
+    csv_path = result.resolved_output_root / "ppg_ablation.csv"
+    json_path = result.resolved_output_root / "ppg_ablation.json"
+    csv_tmp = result.resolved_output_root / ".ppg_ablation.csv.tmp"
+    json_tmp = result.resolved_output_root / ".ppg_ablation.json.tmp"
+
+    report = {
+        "generated_at_utc": _generated_at_utc(),
+        "config": _config_json(result.config, result.resolved_output_root),
+        "seasons": [_json_record(record) for record in result.seasons],
+        "aggregate": _aggregate_json(result.seasons, result.aggregate),
+    }
+
+    try:
+        pd.DataFrame(rows, columns=CSV_COLUMNS).to_csv(csv_tmp, index=False, na_rep="")
+        json_tmp.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        csv_tmp.replace(csv_path)
+        json_tmp.replace(json_path)
+    finally:
+        csv_tmp.unlink(missing_ok=True)
+        json_tmp.unlink(missing_ok=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
