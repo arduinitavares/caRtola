@@ -298,6 +298,36 @@ def test_audit_one_footystats_season_marks_joinable_safe_complete_season(tmp_pat
     assert json_object["pre_match_safe_columns"] == ["Pre-Match PPG (Home)", "Pre-Match PPG (Away)"]
 
 
+def test_audit_record_csv_pipe_joins_notes_but_json_keeps_list() -> None:
+    record = audit.FootyStatsSeasonAuditRecord(
+        season=2025,
+        league_slug="brazil-serie-a",
+        available_files=[],
+        league_status="missing",
+        match_status="missing",
+        team_mapping_status="skipped",
+        integration_status="not_candidate",
+        match_row_count=None,
+        min_game_week=None,
+        max_game_week=None,
+        game_week_count=None,
+        status_counts={},
+        footystats_team_count=0,
+        mapped_team_count=0,
+        unmapped_footystats_teams=[],
+        missing_cartola_teams=[],
+        pre_match_safe_columns=[],
+        post_match_outcome_columns=[],
+        missing_safe_columns=[],
+        pre_match_missing_counts={},
+        pre_match_zero_counts={},
+        notes=["first note", "second note"],
+    )
+
+    assert record.to_csv_row()["notes"] == "first note|second note"
+    assert record.to_json_object()["notes"] == ["first note", "second note"]
+
+
 def test_audit_one_footystats_season_keeps_missing_match_metrics_nullable(tmp_path: Path) -> None:
     footystats_dir = tmp_path / "data" / "footystats"
     footystats_dir.mkdir(parents=True)

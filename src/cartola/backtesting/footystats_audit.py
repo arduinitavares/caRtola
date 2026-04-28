@@ -221,7 +221,7 @@ class FootyStatsSeasonAuditRecord:
             "missing_safe_columns": _pipe_join(self.missing_safe_columns),
             "pre_match_missing_counts": json.dumps(self.pre_match_missing_counts, sort_keys=True),
             "pre_match_zero_counts": json.dumps(self.pre_match_zero_counts, sort_keys=True),
-            "notes": "; ".join(self.notes),
+            "notes": _pipe_join(self.notes),
         }
 
     def to_json_object(self) -> dict[str, object]:
