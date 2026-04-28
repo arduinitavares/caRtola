@@ -5,8 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from cartola.backtesting.footystats_features import load_footystats_ppg_rows
-
+from cartola.backtesting.footystats_features import build_footystats_join_diagnostics, load_footystats_ppg_rows
 
 SEASON = 2025
 LEAGUE_SLUG = "brazil-serie-a"
@@ -129,6 +128,54 @@ def test_load_footystats_ppg_rows_rejects_invalid_game_week_values(tmp_path: Pat
 
     with pytest.raises(ValueError, match="positive integer Game Week"):
         _load_historical(tmp_path)
+
+
+def test_build_footystats_join_diagnostics_reports_missing_keys() -> None:
+    season_df = pd.DataFrame(
+        [
+            {"rodada": 1, "id_clube": 10},
+            {"rodada": 1, "id_clube": 20},
+        ]
+    )
+    footystats_rows = pd.DataFrame([{"rodada": 1, "id_clube": 10}])
+
+    diagnostics = build_footystats_join_diagnostics(season_df, footystats_rows)
+
+    assert diagnostics.missing_join_keys_by_round == {"1": [{"rodada": 1, "id_clube": 20}]}
+    assert diagnostics.duplicate_join_keys_by_round == {}
+    assert diagnostics.extra_club_rows_by_round == {}
+
+
+def test_build_footystats_join_diagnostics_reports_duplicate_keys() -> None:
+    season_df = pd.DataFrame([{"rodada": 2, "id_clube": 10}])
+    footystats_rows = pd.DataFrame(
+        [
+            {"rodada": 2, "id_clube": 10},
+            {"rodada": 2, "id_clube": 10},
+        ]
+    )
+
+    diagnostics = build_footystats_join_diagnostics(season_df, footystats_rows)
+
+    assert diagnostics.missing_join_keys_by_round == {}
+    assert diagnostics.duplicate_join_keys_by_round == {"2": [{"rodada": 2, "id_clube": 10, "count": 2}]}
+    assert diagnostics.extra_club_rows_by_round == {}
+
+
+def test_build_footystats_join_diagnostics_reports_extra_club_rows() -> None:
+    season_df = pd.DataFrame([{"rodada": 3, "id_clube": 10}])
+    footystats_rows = pd.DataFrame(
+        [
+            {"rodada": 3, "id_clube": 10},
+            {"rodada": 3, "id_clube": 20},
+        ]
+    )
+
+    diagnostics = build_footystats_join_diagnostics(season_df, footystats_rows)
+
+    assert diagnostics.missing_join_keys_by_round == {}
+    assert diagnostics.duplicate_join_keys_by_round == {}
+    assert diagnostics.extra_club_rows_by_round == {"3": [{"rodada": 3, "id_clube": 20}]}
 
 
 def _load_historical(project_root: Path):

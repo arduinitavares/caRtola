@@ -158,6 +158,67 @@ def _fixture_df() -> pd.DataFrame:
     )
 
 
+def _footystats_rows() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "rodada": 1,
+                "id_clube": 10,
+                "opponent_id_clube": 20,
+                "is_home_footystats": 1,
+                "footystats_team_pre_match_ppg": 0.0,
+                "footystats_opponent_pre_match_ppg": 0.0,
+                "footystats_ppg_diff": 0.0,
+            },
+            {
+                "rodada": 1,
+                "id_clube": 20,
+                "opponent_id_clube": 10,
+                "is_home_footystats": 0,
+                "footystats_team_pre_match_ppg": 0.0,
+                "footystats_opponent_pre_match_ppg": 0.0,
+                "footystats_ppg_diff": 0.0,
+            },
+            {
+                "rodada": 2,
+                "id_clube": 10,
+                "opponent_id_clube": 20,
+                "is_home_footystats": 0,
+                "footystats_team_pre_match_ppg": 1.2,
+                "footystats_opponent_pre_match_ppg": 0.8,
+                "footystats_ppg_diff": 0.4,
+            },
+            {
+                "rodada": 2,
+                "id_clube": 20,
+                "opponent_id_clube": 10,
+                "is_home_footystats": 1,
+                "footystats_team_pre_match_ppg": 0.8,
+                "footystats_opponent_pre_match_ppg": 1.2,
+                "footystats_ppg_diff": -0.4,
+            },
+            {
+                "rodada": 3,
+                "id_clube": 10,
+                "opponent_id_clube": 20,
+                "is_home_footystats": 1,
+                "footystats_team_pre_match_ppg": 1.5,
+                "footystats_opponent_pre_match_ppg": 1.0,
+                "footystats_ppg_diff": 0.5,
+            },
+            {
+                "rodada": 3,
+                "id_clube": 20,
+                "opponent_id_clube": 10,
+                "is_home_footystats": 0,
+                "footystats_team_pre_match_ppg": 1.0,
+                "footystats_opponent_pre_match_ppg": 1.5,
+                "footystats_ppg_diff": -0.5,
+            },
+        ]
+    )
+
+
 def test_prediction_features_use_only_prior_rounds() -> None:
     frame = build_prediction_frame(_season_df(), target_round=3)
     player = frame.loc[frame["id_atleta"] == 1].iloc[0]
@@ -327,6 +388,44 @@ def test_feature_columns_for_ppg_includes_footystats_columns_after_base_columns(
     columns = feature_columns_for_config(BacktestConfig(footystats_mode="ppg"))
 
     assert columns == [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS]
+
+
+def test_prediction_frame_merges_footystats_ppg_rows() -> None:
+    frame = build_prediction_frame(_season_df(), target_round=3, footystats_rows=_footystats_rows())
+    club_10_player = frame.loc[frame["id_clube"] == 10].iloc[0]
+    club_20_player = frame.loc[frame["id_clube"] == 20].iloc[0]
+
+    assert club_10_player["footystats_team_pre_match_ppg"] == 1.5
+    assert club_10_player["footystats_opponent_pre_match_ppg"] == 1.0
+    assert club_10_player["footystats_ppg_diff"] == 0.5
+    assert club_20_player["footystats_team_pre_match_ppg"] == 1.0
+    assert club_20_player["footystats_opponent_pre_match_ppg"] == 1.5
+    assert club_20_player["footystats_ppg_diff"] == -0.5
+    assert "opponent_id_clube" not in frame.columns
+    assert "is_home_footystats" not in frame.columns
+
+
+def test_prediction_frame_fails_when_candidate_club_missing_footystats_row() -> None:
+    footystats_rows = _footystats_rows()
+    footystats_rows = footystats_rows[
+        ~((footystats_rows["rodada"] == 3) & (footystats_rows["id_clube"] == 20))
+    ]
+
+    with pytest.raises(ValueError, match="missing.*20"):
+        build_prediction_frame(_season_df(), target_round=3, footystats_rows=footystats_rows)
+
+
+def test_training_frame_merges_footystats_ppg_rows_for_historical_rounds() -> None:
+    frame = build_training_frame(_season_df(), target_round=3, footystats_rows=_footystats_rows())
+    round_1 = frame[frame["rodada"] == 1].sort_values("id_clube").reset_index(drop=True)
+    round_2 = frame[frame["rodada"] == 2].sort_values("id_clube").reset_index(drop=True)
+
+    assert round_1["footystats_team_pre_match_ppg"].tolist() == [0.0, 0.0]
+    assert round_1["footystats_opponent_pre_match_ppg"].tolist() == [0.0, 0.0]
+    assert round_1["footystats_ppg_diff"].tolist() == [0.0, 0.0]
+    assert round_2["footystats_team_pre_match_ppg"].tolist() == [1.2, 0.8]
+    assert round_2["footystats_opponent_pre_match_ppg"].tolist() == [0.8, 1.2]
+    assert round_2["footystats_ppg_diff"].tolist() == [0.4, -0.4]
 
 
 def test_training_frame_can_filter_to_playable_statuses() -> None:

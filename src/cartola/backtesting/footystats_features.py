@@ -9,7 +9,6 @@ import pandas as pd
 
 from cartola.backtesting.footystats_audit import compare_teams_to_cartola, parse_footystats_filename
 
-
 REQUIRED_MATCH_COLUMNS: tuple[str, ...] = (
     "Game Week",
     "home_team_name",
@@ -24,6 +23,11 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "id_clube",
     "opponent_id_clube",
     "is_home_footystats",
+    "footystats_team_pre_match_ppg",
+    "footystats_opponent_pre_match_ppg",
+    "footystats_ppg_diff",
+)
+PPG_FEATURE_COLUMNS: tuple[str, ...] = (
     "footystats_team_pre_match_ppg",
     "footystats_opponent_pre_match_ppg",
     "footystats_ppg_diff",
@@ -43,6 +47,61 @@ class FootyStatsPPGLoadResult:
     source_path: Path
     source_sha256: str
     diagnostics: FootyStatsJoinDiagnostics
+
+
+def merge_footystats_ppg(
+    frame: pd.DataFrame,
+    footystats_rows: pd.DataFrame | None,
+    *,
+    target_round: int,
+) -> pd.DataFrame:
+    if footystats_rows is None:
+        return frame
+
+    round_rows = footystats_rows[footystats_rows["rodada"].eq(target_round)].copy()
+    duplicate_mask = round_rows.duplicated(subset=["rodada", "id_clube"], keep=False)
+    if bool(duplicate_mask.any()):
+        duplicates = _duplicate_key_records(round_rows[duplicate_mask])
+        raise ValueError(f"Duplicate FootyStats PPG rows for round {target_round}: {duplicates}")
+
+    candidate_clubs = sorted(int(club_id) for club_id in frame["id_clube"].dropna().unique())
+    matched_clubs = {int(club_id) for club_id in round_rows["id_clube"].dropna().unique()}
+    missing_clubs = [club_id for club_id in candidate_clubs if club_id not in matched_clubs]
+    if missing_clubs:
+        raise ValueError(f"missing FootyStats PPG rows for round {target_round} clubs: {missing_clubs}")
+
+    feature_rows = round_rows[["id_clube", *PPG_FEATURE_COLUMNS]]
+    return frame.merge(feature_rows, on="id_clube", how="left", validate="many_to_one")
+
+
+def build_footystats_join_diagnostics(
+    season_df: pd.DataFrame,
+    footystats_rows: pd.DataFrame | None,
+) -> FootyStatsJoinDiagnostics:
+    candidate_keys = _unique_key_frame(season_df)
+    footystats_key_source = pd.DataFrame(columns=pd.Index(["rodada", "id_clube"]))
+    if footystats_rows is not None:
+        footystats_key_source = footystats_rows[["rodada", "id_clube"]].copy()
+    footystats_keys = _unique_key_frame(footystats_key_source)
+
+    missing = candidate_keys.merge(footystats_keys, on=["rodada", "id_clube"], how="left", indicator=True)
+    missing = missing[missing["_merge"].eq("left_only")][["rodada", "id_clube"]]
+
+    extra = footystats_keys.merge(candidate_keys, on=["rodada", "id_clube"], how="left", indicator=True)
+    extra = extra[extra["_merge"].eq("left_only")][["rodada", "id_clube"]]
+
+    duplicate_counts = (
+        footystats_key_source.groupby(["rodada", "id_clube"], as_index=False)
+        .size()
+        .rename(columns={"size": "count"})
+    )
+    duplicate_counts = duplicate_counts[duplicate_counts["count"].gt(1)]
+
+    return FootyStatsJoinDiagnostics(
+        missing_join_keys_by_round=_group_key_records_by_round(missing),
+        duplicate_join_keys_by_round=_group_key_records_by_round(duplicate_counts, include_count=True),
+        extra_club_rows_by_round=_group_key_records_by_round(extra),
+    )
 
 
 def load_footystats_ppg_rows(
@@ -211,6 +270,47 @@ def _reject_duplicate_join_keys(rows: pd.DataFrame) -> None:
     duplicates = rows.duplicated(subset=["rodada", "id_clube"], keep=False)
     if bool(duplicates.any()):
         raise ValueError("FootyStats PPG rows contain duplicate normalized (rodada, id_clube) rows")
+
+
+def _unique_key_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=pd.Index(["rodada", "id_clube"]))
+    keys = df[["rodada", "id_clube"]].dropna().drop_duplicates().copy()
+    keys["rodada"] = keys["rodada"].astype(int)
+    keys["id_clube"] = keys["id_clube"].astype(int)
+    return keys.sort_values(["rodada", "id_clube"]).reset_index(drop=True)
+
+
+def _duplicate_key_records(df: pd.DataFrame) -> list[dict[str, int]]:
+    duplicate_counts = (
+        df.groupby(["rodada", "id_clube"], as_index=False)
+        .size()
+        .rename(columns={"size": "count"})
+        .sort_values(["rodada", "id_clube"])
+    )
+    return [
+        {"rodada": int(row["rodada"]), "id_clube": int(row["id_clube"]), "count": int(row["count"])}
+        for _, row in duplicate_counts.iterrows()
+    ]
+
+
+def _group_key_records_by_round(
+    df: pd.DataFrame,
+    *,
+    include_count: bool = False,
+) -> dict[str, list[dict[str, int]]]:
+    if df.empty:
+        return {}
+
+    grouped: dict[str, list[dict[str, int]]] = {}
+    ordered = df.sort_values(["rodada", "id_clube"]).reset_index(drop=True)
+    for _, row in ordered.iterrows():
+        rodada = int(row["rodada"])
+        record = {"rodada": rodada, "id_clube": int(row["id_clube"])}
+        if include_count:
+            record["count"] = int(row["count"])
+        grouped.setdefault(str(rodada), []).append(record)
+    return grouped
 
 
 def _sha256_file(path: Path) -> str:

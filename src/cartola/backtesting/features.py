@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, MARKET_OPEN_PRICE_COLUMN
+from cartola.backtesting.footystats_features import merge_footystats_ppg
 
 if TYPE_CHECKING:
     from cartola.backtesting.config import BacktestConfig
@@ -87,11 +88,13 @@ def build_prediction_frame(
     season_df: pd.DataFrame,
     target_round: int,
     fixtures: pd.DataFrame | None = None,
+    footystats_rows: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     candidates = season_df[season_df["rodada"] == target_round].copy()
     played_history = _played_history(season_df, target_round)
     all_history = season_df[season_df["rodada"] < target_round].copy()
-    return _add_prior_features(candidates, played_history, all_history, fixtures, target_round)
+    frame = _add_prior_features(candidates, played_history, all_history, fixtures, target_round)
+    return merge_footystats_ppg(frame, footystats_rows, target_round=target_round)
 
 
 def build_training_frame(
@@ -99,6 +102,7 @@ def build_training_frame(
     target_round: int,
     playable_statuses: tuple[str, ...] | None = None,
     fixtures: pd.DataFrame | None = None,
+    footystats_rows: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     historical_rounds = sorted(
@@ -106,7 +110,12 @@ def build_training_frame(
     )
 
     for round_number in historical_rounds:
-        round_frame = build_prediction_frame(season_df, int(round_number), fixtures=fixtures)
+        round_frame = build_prediction_frame(
+            season_df,
+            int(round_number),
+            fixtures=fixtures,
+            footystats_rows=footystats_rows,
+        )
         if playable_statuses is not None:
             round_frame = round_frame[round_frame["status"].isin(playable_statuses)].copy()
         round_frame["target"] = round_frame["pontuacao"]
