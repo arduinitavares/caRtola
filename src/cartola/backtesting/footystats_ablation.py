@@ -618,8 +618,9 @@ def write_reports(result: FootyStatsPPGAblationResult) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     config = config_from_args(parse_args(argv))
-    print(
-        "FootyStats PPG ablation report is not implemented yet "
-        f"for seasons {', '.join(str(season) for season in config.seasons)}."
-    )
-    return 2
+    result = run_footystats_ppg_ablation(config)
+    write_reports(result)
+    comparable_count = sum(1 for record in result.seasons if _is_included_in_aggregate(record))
+    print(f"output_root: {result.resolved_output_root}")
+    print(f"comparable seasons: {comparable_count}")
+    return 0 if comparable_count else 1

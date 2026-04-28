@@ -48,6 +48,9 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - many-to-one join validation by `(rodada, id_clube)`,
   - source file path/hash and join diagnostics in `run_metadata.json`,
   - `live_current` scope rejected by the historical backtest runner until a live workflow exists.
+- Multi-season FootyStats PPG ablation report:
+  - compares `footystats_mode=none` vs `footystats_mode=ppg` for candidate seasons,
+  - writes CSV/JSON summaries and isolated per-season/mode runs under `data/08_reporting/backtests/footystats_ablation/`.
 
 **Current Interpretation**
 The 2025 fixture-context result showed the first meaningful model lift: RF beat baseline and crossed the `player_r2 > 0.05` threshold, but that 2025 fixture data is still **exploratory reconstruction**, not strict historical proof. The strict system is now built for future/live capture, but we still need actual pre-lock snapshots to run strict evaluations.
@@ -75,7 +78,7 @@ The first leakage-safe FootyStats feature integration is now complete. On the 20
 - `0.054011` to `0.063308` player R²,
 - `0.268741` to `0.277921` player correlation.
 
-That is a useful but still modest one-season lift. Before adding more FootyStats columns, we need to validate whether the PPG signal is stable across all complete candidate seasons (`2023`, `2024`, `2025`).
+That was a useful but still modest one-season lift. The multi-season ablation report is now implemented; the next step is to review the PPG multi-season results and decide whether to keep, revise, or drop PPG before adding xG/odds.
 
 Important distinction:
 
@@ -140,6 +143,12 @@ FootyStats compatibility audit:
 uv run --frozen python scripts/audit_footystats_compatibility.py --current-year 2026
 ```
 
+Multi-season FootyStats PPG ablation report:
+
+```bash
+uv run --frozen python scripts/run_footystats_ppg_ablation.py --seasons 2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --force
+```
+
 Quality gate:
 
 ```bash
@@ -147,42 +156,36 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Run a multi-season FootyStats PPG ablation report:
-   - seasons: `2023`, `2024`, `2025`,
-   - modes: `footystats_mode=none` vs `footystats_mode=ppg`,
-   - isolated output roots per season/mode,
-   - summary table with RF average points, baseline average, RF-vs-baseline delta, player R², player correlation, and PPG-vs-control delta,
-   - mark `2026` only as a partial/current-season smoke test, not comparable historical evidence.
-2. Decide whether PPG remains in the model based on multi-season stability:
+1. Review PPG multi-season results and decide whether to keep, revise, or drop PPG before adding xG/odds:
    - keep if it improves most complete candidate seasons or improves the aggregate without degrading a season badly,
    - revise or drop if the 2025 lift does not generalize.
-3. Add broader FootyStats match-context features after the multi-season PPG check:
+2. Add broader FootyStats match-context features after the PPG decision:
    - pre-match xG where available,
    - odds-derived win/draw/loss probabilities where available,
    - pre-match goal environment features.
-4. Run broader FootyStats ablation backtests:
+3. Run broader FootyStats ablation backtests:
    - baseline fixture context only,
    - PPG-only FootyStats features,
    - PPG + xG,
    - PPG + xG + odds/goal environment.
-5. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
-6. Generate strict fixtures from those snapshots and run strict backtests as data accumulates.
-7. Add higher-signal Cartola fixture features:
+4. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
+5. Generate strict fixtures from those snapshots and run strict backtests as data accumulates.
+6. Add higher-signal Cartola fixture features:
    - opponent defensive weakness,
    - points conceded by opponent and position,
    - home/away split priors.
-8. Add DNP probability modeling:
+7. Add DNP probability modeling:
    - predict `p_play`,
    - use `expected_points = predicted_points * p_play`.
-9. Add model comparison only after features improve:
+8. Add model comparison only after features improve:
    - HistGradientBoosting,
    - GradientBoosting,
    - maybe XGBoost/CatBoost later.
-10. Add live selection workflow:
+9. Add live selection workflow:
    - read open market data,
    - use strict/current fixture snapshot,
    - output recommended squad.
-11. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
+10. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:

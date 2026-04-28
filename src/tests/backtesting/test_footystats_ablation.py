@@ -854,3 +854,72 @@ def test_write_reports_restores_old_final_pair_when_json_replace_fails_after_csv
 
     assert csv_path.read_text() == "old csv\n"
     assert json_path.read_text() == '{"old": "json"}\n'
+
+
+def test_main_writes_reports_and_returns_zero_when_at_least_one_season_is_comparable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def load_eligible(**kwargs: object) -> object:
+        return SimpleNamespace(
+            source_path=Path("data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv"),
+            source_sha256="sha-2025",
+        )
+
+    def fake_run_backtest(config: object) -> object:
+        assert hasattr(config, "output_path")
+        _write_backtest_outputs(config.output_path)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", load_eligible)
+    monkeypatch.setattr(ablation, "run_backtest", fake_run_backtest)
+
+    output_root = Path("data/08_reporting/backtests/footystats_ablation")
+    exit_code = ablation.main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--output-root",
+            str(output_root),
+            "--seasons",
+            "2025",
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    resolved_output_root = tmp_path / output_root
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert (resolved_output_root / "ppg_ablation.csv").is_file()
+    assert str(resolved_output_root) in captured.out
+    assert "comparable seasons: 1" in captured.out
+
+
+def test_main_writes_reports_and_returns_one_when_no_season_is_comparable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail_eligibility(**kwargs: object) -> object:
+        raise ValueError("not comparable")
+
+    monkeypatch.setattr(ablation, "load_footystats_ppg_rows", fail_eligibility)
+
+    output_root = Path("data/08_reporting/backtests/footystats_ablation")
+    exit_code = ablation.main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--output-root",
+            str(output_root),
+            "--seasons",
+            "2025",
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    resolved_output_root = tmp_path / output_root
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert (resolved_output_root / "ppg_ablation.json").is_file()
+    assert str(resolved_output_root) in captured.out
+    assert "comparable seasons: 0" in captured.out

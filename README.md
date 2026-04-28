@@ -106,6 +106,18 @@ Os resultados são gravados em:
 - `data/08_reporting/backtests/footystats_none/2025/`
 - `data/08_reporting/backtests/footystats_ppg/2025/`
 
+Para rodar a ablação multi-temporada de PPG da FootyStats:
+
+```bash
+uv run --frozen python scripts/run_footystats_ppg_ablation.py --seasons 2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --force
+```
+
+O comando grava:
+
+- `data/08_reporting/backtests/footystats_ablation/ppg_ablation.csv`
+- `data/08_reporting/backtests/footystats_ablation/ppg_ablation.json`
+- execuções por temporada em `data/08_reporting/backtests/footystats_ablation/runs/{season}/footystats_mode={none|ppg}/{season}/`
+
 ## ✅ Qualidade
 
 O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:
