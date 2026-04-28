@@ -377,8 +377,9 @@ def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path, 
     class NoisyRandomForestPointPredictor:
         calls = 0
 
-        def __init__(self, random_seed: int = 123) -> None:
+        def __init__(self, random_seed: int = 123, feature_columns: list[str] | None = None) -> None:
             self.random_seed = random_seed
+            self.feature_columns = feature_columns
 
         def fit(self, frame: pd.DataFrame) -> "NoisyRandomForestPointPredictor":
             return self

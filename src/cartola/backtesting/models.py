@@ -7,8 +7,6 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-from cartola.backtesting.features import FEATURE_COLUMNS
-
 
 class BaselinePredictor:
     def __init__(self) -> None:
@@ -40,9 +38,13 @@ class BaselinePredictor:
 
 
 class RandomForestPointPredictor:
-    def __init__(self, random_seed: int = 123) -> None:
-        numeric_features = [column for column in FEATURE_COLUMNS if column != "posicao"]
-        categorical_features = ["posicao"]
+    def __init__(self, random_seed: int = 123, feature_columns: list[str] | None = None) -> None:
+        if feature_columns is None:
+            raise ValueError("feature_columns must be provided")
+
+        self.feature_columns = feature_columns
+        numeric_features = [column for column in self.feature_columns if column != "posicao"]
+        categorical_features = ["posicao"] if "posicao" in self.feature_columns else []
 
         self.pipeline = Pipeline(
             steps=[
@@ -77,9 +79,9 @@ class RandomForestPointPredictor:
         )
 
     def fit(self, frame: pd.DataFrame) -> RandomForestPointPredictor:
-        self.pipeline.fit(frame[FEATURE_COLUMNS], frame["target"])
+        self.pipeline.fit(frame[self.feature_columns], frame["target"])
         return self
 
     def predict(self, frame: pd.DataFrame) -> pd.Series:
-        predictions = self.pipeline.predict(frame[FEATURE_COLUMNS])
+        predictions = self.pipeline.predict(frame[self.feature_columns])
         return pd.Series(predictions, index=frame.index, dtype=float)

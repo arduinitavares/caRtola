@@ -3,8 +3,14 @@ import warnings
 import pandas as pd
 import pytest
 
-from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
-from cartola.backtesting.features import FEATURE_COLUMNS, build_prediction_frame, build_training_frame
+from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
+from cartola.backtesting.features import (
+    FEATURE_COLUMNS,
+    FOOTYSTATS_PPG_FEATURE_COLUMNS,
+    build_prediction_frame,
+    build_training_frame,
+    feature_columns_for_config,
+)
 
 
 def _season_df() -> pd.DataFrame:
@@ -306,6 +312,21 @@ def test_feature_columns_exclude_target_round_cumulative_fields() -> None:
     assert "num_jogos" not in FEATURE_COLUMNS
     assert "prior_media" in FEATURE_COLUMNS
     assert "prior_num_jogos" in FEATURE_COLUMNS
+
+
+def test_feature_columns_for_none_excludes_footystats_columns() -> None:
+    columns = feature_columns_for_config(BacktestConfig(footystats_mode="none"))
+
+    assert columns == FEATURE_COLUMNS
+    assert columns is not FEATURE_COLUMNS
+    for column in FOOTYSTATS_PPG_FEATURE_COLUMNS:
+        assert column not in columns
+
+
+def test_feature_columns_for_ppg_includes_footystats_columns_after_base_columns() -> None:
+    columns = feature_columns_for_config(BacktestConfig(footystats_mode="ppg"))
+
+    assert columns == [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS]
 
 
 def test_training_frame_can_filter_to_playable_statuses() -> None:

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pandas as pd
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, MARKET_OPEN_PRICE_COLUMN
+
+if TYPE_CHECKING:
+    from cartola.backtesting.config import BacktestConfig
 
 MARKET_COLUMNS: list[str] = [
     "id_atleta",
@@ -44,6 +49,12 @@ FEATURE_COLUMNS: list[str] = [
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
 ]
 
+FOOTYSTATS_PPG_FEATURE_COLUMNS: list[str] = [
+    "footystats_team_pre_match_ppg",
+    "footystats_opponent_pre_match_ppg",
+    "footystats_ppg_diff",
+]
+
 NUMERIC_PRIOR_COLUMNS: list[str] = [
     "position_points_prior",
     "prior_appearances",
@@ -62,6 +73,14 @@ NUMERIC_PRIOR_COLUMNS: list[str] = [
     "prior_num_jogos",
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
 ]
+
+
+def feature_columns_for_config(config: BacktestConfig) -> list[str]:
+    if config.footystats_mode == "none":
+        return list(FEATURE_COLUMNS)
+    if config.footystats_mode == "ppg":
+        return [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS]
+    raise ValueError(f"Unsupported footystats_mode: {config.footystats_mode!r}")
 
 
 def build_prediction_frame(

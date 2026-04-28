@@ -7,7 +7,7 @@ import pandas as pd
 
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
-from cartola.backtesting.features import build_prediction_frame, build_training_frame
+from cartola.backtesting.features import build_prediction_frame, build_training_frame, feature_columns_for_config
 from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
@@ -109,6 +109,7 @@ def run_backtest(
     prediction_frames: list[pd.DataFrame] = []
 
     max_round = _max_round(data)
+    model_feature_columns = feature_columns_for_config(config)
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
@@ -150,7 +151,10 @@ def run_backtest(
 
         scored_candidates = candidates.copy()
         baseline_model = BaselinePredictor().fit(training)
-        forest_model = RandomForestPointPredictor(random_seed=config.random_seed).fit(training)
+        forest_model = RandomForestPointPredictor(
+            random_seed=config.random_seed,
+            feature_columns=model_feature_columns,
+        ).fit(training)
         scored_candidates["baseline_score"] = baseline_model.predict(scored_candidates)
         scored_candidates["random_forest_score"] = forest_model.predict(scored_candidates)
         scored_candidates["price_score"] = scored_candidates[MARKET_OPEN_PRICE_COLUMN].astype(float)

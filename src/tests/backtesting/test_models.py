@@ -1,7 +1,8 @@
 import pandas as pd
+import pytest
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
-from cartola.backtesting.features import FEATURE_COLUMNS
+from cartola.backtesting.features import FEATURE_COLUMNS, FOOTYSTATS_PPG_FEATURE_COLUMNS
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 
 
@@ -32,11 +33,32 @@ def test_random_forest_point_predictor_fit_predict_smoke() -> None:
     train = _model_frame()
     predict = train.drop(columns=["target"]).copy()
 
-    model = RandomForestPointPredictor(random_seed=7).fit(train)
+    model = RandomForestPointPredictor(random_seed=7, feature_columns=FEATURE_COLUMNS).fit(train)
     predictions = model.predict(predict)
 
     assert len(predictions) == len(predict)
     assert predictions.notna().all()
+
+
+def test_random_forest_point_predictor_uses_explicit_feature_columns() -> None:
+    feature_columns = [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS]
+    train = _model_frame()
+    train["footystats_team_pre_match_ppg"] = [1.0, 2.0, 1.5, 2.5]
+    train["footystats_opponent_pre_match_ppg"] = [2.0, 1.0, 2.5, 1.5]
+    train["footystats_ppg_diff"] = [-1.0, 1.0, -1.0, 1.0]
+    predict = train.drop(columns=["target"]).copy()
+
+    model = RandomForestPointPredictor(random_seed=7, feature_columns=feature_columns).fit(train)
+    predictions = model.predict(predict)
+
+    assert model.feature_columns == feature_columns
+    assert len(predictions) == len(predict)
+    assert predictions.notna().all()
+
+
+def test_random_forest_point_predictor_requires_feature_columns() -> None:
+    with pytest.raises(ValueError, match="feature_columns must be provided"):
+        RandomForestPointPredictor()
 
 
 def _model_frame() -> pd.DataFrame:
