@@ -360,7 +360,8 @@ def test_metric_extraction_failure_marks_paired_comparison_failed(
     first = result.seasons[0]
     assert first.error_stage == "metric_extraction"
     assert first.metrics_comparable is False
-    assert (first.control_status, first.treatment_status) == ("failed", "failed")
+    assert first.metric_status == "failed"
+    assert (first.control_status, first.treatment_status) == ("ok", "ok")
 
 
 def test_extract_run_metrics_uses_prediction_diagnostics_section(tmp_path: Path) -> None:
@@ -389,54 +390,87 @@ def test_extract_run_metrics_uses_prediction_diagnostics_section(tmp_path: Path)
     assert ablation.extract_run_metrics(output_path)["r2"] == 0.25
 
 
-def test_extract_run_metrics_fails_for_missing_random_forest_summary(tmp_path: Path) -> None:
+@pytest.mark.parametrize("strategy", ["baseline", "random_forest"])
+def test_extract_run_metrics_fails_for_missing_summary_strategy(tmp_path: Path, strategy: str) -> None:
     output_path = tmp_path / "run"
     _write_backtest_outputs(output_path)
-    pd.DataFrame([{"strategy": "baseline", "average_actual_points": 50.0}]).to_csv(
-        output_path / "summary.csv",
-        index=False,
-    )
+    summary = pd.read_csv(output_path / "summary.csv")
+    summary = summary[~summary["strategy"].eq(strategy)]
+    summary.to_csv(output_path / "summary.csv", index=False)
 
-    with pytest.raises(ValueError, match="random_forest"):
+    with pytest.raises(ValueError, match=strategy):
         ablation.extract_run_metrics(output_path)
 
 
-def test_extract_run_metrics_fails_for_duplicate_baseline_summary(tmp_path: Path) -> None:
+@pytest.mark.parametrize("strategy", ["baseline", "random_forest"])
+def test_extract_run_metrics_fails_for_duplicate_summary_strategy(tmp_path: Path, strategy: str) -> None:
     output_path = tmp_path / "run"
     _write_backtest_outputs(output_path)
     summary = pd.read_csv(output_path / "summary.csv")
     summary = pd.concat(
         [
             summary,
-            pd.DataFrame([{"strategy": "baseline", "average_actual_points": 50.0}]),
+            summary[summary["strategy"].eq(strategy)],
         ],
         ignore_index=True,
     )
     summary.to_csv(output_path / "summary.csv", index=False)
 
-    with pytest.raises(ValueError, match="baseline"):
+    with pytest.raises(ValueError, match=strategy):
         ablation.extract_run_metrics(output_path)
 
 
-def test_extract_run_metrics_fails_for_missing_prediction_diagnostic(tmp_path: Path) -> None:
+@pytest.mark.parametrize("metric", ["player_r2", "player_correlation"])
+def test_extract_run_metrics_fails_for_missing_prediction_diagnostic(tmp_path: Path, metric: str) -> None:
     output_path = tmp_path / "run"
     _write_backtest_outputs(output_path)
     diagnostics = pd.read_csv(output_path / "diagnostics.csv")
-    diagnostics = diagnostics[~diagnostics["metric"].eq("player_correlation")]
+    diagnostics = diagnostics[~diagnostics["metric"].eq(metric)]
     diagnostics.to_csv(output_path / "diagnostics.csv", index=False)
 
-    with pytest.raises(ValueError, match="player_correlation"):
+    with pytest.raises(ValueError, match=metric):
         ablation.extract_run_metrics(output_path)
 
 
-def test_extract_run_metrics_fails_for_duplicate_prediction_diagnostic(tmp_path: Path) -> None:
+@pytest.mark.parametrize("metric", ["player_r2", "player_correlation"])
+def test_extract_run_metrics_fails_for_duplicate_prediction_diagnostic(tmp_path: Path, metric: str) -> None:
     output_path = tmp_path / "run"
     _write_backtest_outputs(output_path)
     diagnostics = pd.read_csv(output_path / "diagnostics.csv")
-    diagnostics = pd.concat([diagnostics, diagnostics[diagnostics["metric"].eq("player_r2")]], ignore_index=True)
+    diagnostics = pd.concat([diagnostics, diagnostics[diagnostics["metric"].eq(metric)]], ignore_index=True)
     diagnostics.to_csv(output_path / "diagnostics.csv", index=False)
 
-    with pytest.raises(ValueError, match="player_r2"):
+    with pytest.raises(ValueError, match=metric):
+        ablation.extract_run_metrics(output_path)
+
+
+@pytest.mark.parametrize("strategy", ["baseline", "random_forest"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_extract_run_metrics_fails_for_non_finite_summary_values(
+    tmp_path: Path, strategy: str, value: float
+) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path)
+    summary = pd.read_csv(output_path / "summary.csv")
+    summary.loc[summary["strategy"].eq(strategy), "average_actual_points"] = value
+    summary.to_csv(output_path / "summary.csv", index=False)
+
+    with pytest.raises(ValueError, match=f"summary.*{strategy}.*average_actual_points"):
+        ablation.extract_run_metrics(output_path)
+
+
+@pytest.mark.parametrize("metric", ["player_r2", "player_correlation"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_extract_run_metrics_fails_for_non_finite_diagnostic_values(
+    tmp_path: Path, metric: str, value: float
+) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path)
+    diagnostics = pd.read_csv(output_path / "diagnostics.csv")
+    diagnostics.loc[diagnostics["metric"].eq(metric), "value"] = value
+    diagnostics.to_csv(output_path / "diagnostics.csv", index=False)
+
+    with pytest.raises(ValueError, match=f"diagnostics.*{metric}.*value"):
         ablation.extract_run_metrics(output_path)
 
 
@@ -470,6 +504,11 @@ def test_build_aggregate_record_averages_only_successful_comparable_records() ->
         metrics_comparable=True,
         control_status="ok",
         treatment_status="ok",
+        metric_status="ok",
+        control_baseline_avg_points=45.0,
+        treatment_baseline_avg_points=45.0,
+        baseline_avg_points=45.0,
+        baseline_avg_points_equal=True,
         control_rf_avg_points=50.0,
         treatment_rf_avg_points=55.0,
         rf_avg_points_delta=5.0,
@@ -479,12 +518,19 @@ def test_build_aggregate_record_averages_only_successful_comparable_records() ->
         control_player_corr=0.3,
         treatment_player_corr=0.4,
         player_corr_delta=0.1,
+        rf_minus_baseline_control=5.0,
+        rf_minus_baseline_treatment=10.0,
     )
     included_b = ablation.SeasonAblationRecord(
         season=2024,
         metrics_comparable=True,
         control_status="ok",
         treatment_status="ok",
+        metric_status="ok",
+        control_baseline_avg_points=65.0,
+        treatment_baseline_avg_points=65.0,
+        baseline_avg_points=65.0,
+        baseline_avg_points_equal=True,
         control_rf_avg_points=70.0,
         treatment_rf_avg_points=73.0,
         rf_avg_points_delta=3.0,
@@ -494,6 +540,8 @@ def test_build_aggregate_record_averages_only_successful_comparable_records() ->
         control_player_corr=0.7,
         treatment_player_corr=0.9,
         player_corr_delta=0.2,
+        rf_minus_baseline_control=5.0,
+        rf_minus_baseline_treatment=8.0,
     )
     failed = ablation.SeasonAblationRecord(
         season=2025,
@@ -529,6 +577,10 @@ def test_build_aggregate_record_averages_only_successful_comparable_records() ->
     aggregate = ablation.build_aggregate_record([included_a, failed, included_b, non_comparable])
 
     assert aggregate.metrics_comparable is True
+    assert aggregate.control_baseline_avg_points == 55.0
+    assert aggregate.treatment_baseline_avg_points == 55.0
+    assert aggregate.baseline_avg_points == 55.0
+    assert aggregate.baseline_avg_points_equal is True
     assert aggregate.control_rf_avg_points == 60.0
     assert aggregate.treatment_rf_avg_points == 64.0
     assert aggregate.rf_avg_points_delta == 4.0
@@ -538,3 +590,61 @@ def test_build_aggregate_record_averages_only_successful_comparable_records() ->
     assert aggregate.control_player_corr == 0.5
     assert aggregate.treatment_player_corr == 0.65
     assert aggregate.player_corr_delta == pytest.approx(0.15)
+    assert aggregate.rf_minus_baseline_control == 5.0
+    assert aggregate.rf_minus_baseline_treatment == 9.0
+
+
+def test_build_aggregate_record_rejects_missing_required_metric_on_comparable_record() -> None:
+    record = ablation.SeasonAblationRecord(
+        season=2025,
+        metrics_comparable=True,
+        control_status="ok",
+        treatment_status="ok",
+        metric_status="ok",
+        control_baseline_avg_points=50.0,
+        treatment_baseline_avg_points=50.0,
+        baseline_avg_points=50.0,
+        baseline_avg_points_equal=True,
+        control_rf_avg_points=None,
+        treatment_rf_avg_points=55.0,
+        rf_avg_points_delta=5.0,
+        control_player_r2=0.1,
+        treatment_player_r2=0.2,
+        player_r2_delta=0.1,
+        control_player_corr=0.3,
+        treatment_player_corr=0.4,
+        player_corr_delta=0.1,
+        rf_minus_baseline_control=0.0,
+        rf_minus_baseline_treatment=5.0,
+    )
+
+    with pytest.raises(ValueError, match="control_rf_avg_points"):
+        ablation.build_aggregate_record([record])
+
+
+def test_build_aggregate_record_rejects_non_finite_required_metric_on_comparable_record() -> None:
+    record = ablation.SeasonAblationRecord(
+        season=2025,
+        metrics_comparable=True,
+        control_status="ok",
+        treatment_status="ok",
+        metric_status="ok",
+        control_baseline_avg_points=50.0,
+        treatment_baseline_avg_points=50.0,
+        baseline_avg_points=50.0,
+        baseline_avg_points_equal=True,
+        control_rf_avg_points=float("nan"),
+        treatment_rf_avg_points=55.0,
+        rf_avg_points_delta=5.0,
+        control_player_r2=0.1,
+        treatment_player_r2=0.2,
+        player_r2_delta=0.1,
+        control_player_corr=0.3,
+        treatment_player_corr=0.4,
+        player_corr_delta=0.1,
+        rf_minus_baseline_control=0.0,
+        rf_minus_baseline_treatment=5.0,
+    )
+
+    with pytest.raises(ValueError, match="control_rf_avg_points"):
+        ablation.build_aggregate_record([record])

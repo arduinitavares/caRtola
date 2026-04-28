@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
 import traceback
 from dataclasses import asdict, dataclass, field
@@ -53,6 +54,7 @@ class SeasonAblationRecord:
     metrics_comparable: bool = False
     control_status: str = "skipped"
     treatment_status: str = "skipped"
+    metric_status: str = "skipped"
     control_output_path: str | None = None
     treatment_output_path: str | None = None
     control_baseline_avg_points: float | None = None
@@ -308,8 +310,7 @@ def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootySta
         try:
             populate_metrics(record, control_config.output_path, treatment_config.output_path)
         except Exception as exc:
-            record.control_status = "failed"
-            record.treatment_status = "failed"
+            record.metric_status = "failed"
             record.error_stage = "metric_extraction"
             record.error_message = str(exc)
             record.errors.append(_error("metric_extraction", exc))
@@ -340,7 +341,10 @@ def _summary_value(summary: pd.DataFrame, strategy: str) -> float:
     rows = summary[summary["strategy"].eq(strategy)]
     if len(rows) != 1:
         raise ValueError(f"expected exactly one summary row for strategy {strategy!r}, found {len(rows)}")
-    return float(rows["average_actual_points"].iloc[0])
+    return _finite_float(
+        rows["average_actual_points"].iloc[0],
+        context=f"summary strategy {strategy!r} metric 'average_actual_points'",
+    )
 
 
 def _diagnostic_value(diagnostics: pd.DataFrame, metric: str) -> float:
@@ -352,7 +356,17 @@ def _diagnostic_value(diagnostics: pd.DataFrame, metric: str) -> float:
     ]
     if len(rows) != 1:
         raise ValueError(f"expected exactly one diagnostics row for metric {metric!r}, found {len(rows)}")
-    return float(rows["value"].iloc[0])
+    return _finite_float(
+        rows["value"].iloc[0],
+        context=f"diagnostics strategy 'random_forest' metric {metric!r} field 'value'",
+    )
+
+
+def _finite_float(value: object, *, context: str) -> float:
+    numeric_value = float(value)
+    if not math.isfinite(numeric_value):
+        raise ValueError(f"non-finite {context}: {numeric_value!r}")
+    return numeric_value
 
 
 def populate_metrics(record: SeasonAblationRecord, control_path: Path, treatment_path: Path) -> None:
@@ -379,6 +393,7 @@ def populate_metrics(record: SeasonAblationRecord, control_path: Path, treatment
     record.player_corr_delta = treatment["corr"] - control["corr"]
     record.rf_minus_baseline_control = control["rf"] - control["baseline"]
     record.rf_minus_baseline_treatment = treatment["rf"] - treatment["baseline"]
+    record.metric_status = "ok"
 
 
 def build_aggregate_record(records: list[SeasonAblationRecord]) -> SeasonAblationRecord:
@@ -393,11 +408,16 @@ def build_aggregate_record(records: list[SeasonAblationRecord]) -> SeasonAblatio
         season_status="aggregate",
         control_status="not_applicable",
         treatment_status="not_applicable",
+        metric_status="not_applicable",
         metrics_comparable=bool(included),
     )
     if not included:
         return aggregate
 
+    aggregate.control_baseline_avg_points = _mean_metric(included, "control_baseline_avg_points")
+    aggregate.treatment_baseline_avg_points = _mean_metric(included, "treatment_baseline_avg_points")
+    aggregate.baseline_avg_points = _mean_metric(included, "baseline_avg_points")
+    aggregate.baseline_avg_points_equal = all(record.baseline_avg_points_equal is True for record in included)
     aggregate.control_rf_avg_points = _mean_metric(included, "control_rf_avg_points")
     aggregate.treatment_rf_avg_points = _mean_metric(included, "treatment_rf_avg_points")
     aggregate.rf_avg_points_delta = _mean_metric(included, "rf_avg_points_delta")
@@ -407,11 +427,25 @@ def build_aggregate_record(records: list[SeasonAblationRecord]) -> SeasonAblatio
     aggregate.control_player_corr = _mean_metric(included, "control_player_corr")
     aggregate.treatment_player_corr = _mean_metric(included, "treatment_player_corr")
     aggregate.player_corr_delta = _mean_metric(included, "player_corr_delta")
+    aggregate.rf_minus_baseline_control = _mean_metric(included, "rf_minus_baseline_control")
+    aggregate.rf_minus_baseline_treatment = _mean_metric(included, "rf_minus_baseline_treatment")
     return aggregate
 
 
 def _mean_metric(records: list[SeasonAblationRecord], metric: str) -> float:
-    return sum(cast(float, getattr(record, metric)) for record in records) / len(records)
+    return sum(_required_metric(record, metric) for record in records) / len(records)
+
+
+def _required_metric(record: SeasonAblationRecord, metric: str) -> float:
+    value = getattr(record, metric)
+    if value is None:
+        raise ValueError(f"missing aggregate metric {metric!r} for season {record.season!r}")
+    if isinstance(value, bool):
+        raise ValueError(f"invalid aggregate metric {metric!r} for season {record.season!r}: {value!r}")
+    numeric_value = float(value)
+    if not math.isfinite(numeric_value):
+        raise ValueError(f"invalid aggregate metric {metric!r} for season {record.season!r}: {numeric_value!r}")
+    return numeric_value
 
 
 def main(argv: Sequence[str] | None = None) -> int:
