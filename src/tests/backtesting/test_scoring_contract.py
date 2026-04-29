@@ -201,7 +201,7 @@ def test_captain_policy_diagnostics_defaults_missing_prior_points_std_to_zero() 
 
 def test_captain_policy_diagnostics_fills_and_coerces_missing_prior_points_std_to_zero() -> None:
     selected = _selected_for_captain_policy()
-    selected["prior_points_std"] = [None, "0.1", 0.0]
+    selected["prior_points_std"] = [None, "0.1", float("inf")]
 
     diagnostics = captain_policy_diagnostics(selected, predicted_column="predicted_points", actual_column=None)
 
@@ -210,6 +210,16 @@ def test_captain_policy_diagnostics_fills_and_coerces_missing_prior_points_std_t
         "safe": 1,
         "upside": 1,
     }
+
+
+def test_captain_policy_diagnostics_records_are_json_serializable() -> None:
+    diagnostics = captain_policy_diagnostics(
+        _selected_for_captain_policy(),
+        predicted_column="predicted_points",
+        actual_column="pontuacao",
+    )
+
+    json.dumps(diagnostics)
 
 
 def test_captain_policy_diagnostics_rejects_no_non_tecnico_candidates() -> None:

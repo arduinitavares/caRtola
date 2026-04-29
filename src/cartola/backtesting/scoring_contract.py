@@ -64,7 +64,8 @@ def captain_policy_diagnostics(
     predicted_selected = _finite_numeric_series(selected, predicted_column)
 
     if "prior_points_std" in candidates.columns:
-        prior_std = pd.to_numeric(candidates["prior_points_std"], errors="coerce").fillna(0.0)
+        prior_std = pd.to_numeric(candidates["prior_points_std"], errors="coerce")
+        prior_std = prior_std.where(np.isfinite(prior_std), 0.0).fillna(0.0)
     else:
         prior_std = pd.Series(0.0, index=candidates.index)
 
@@ -118,10 +119,10 @@ def captain_policy_diagnostics(
         records.append(
             {
                 "policy": policy,
-                "captain_id": captain["id_atleta"],
-                "captain_name": captain["apelido"],
-                "captain_position": captain["posicao"],
-                "captain_club": captain["nome_clube"],
+                "captain_id": int(captain["id_atleta"]),
+                "captain_name": str(captain["apelido"]),
+                "captain_position": str(captain["posicao"]),
+                "captain_club": str(captain["nome_clube"]),
                 "captain_predicted_points": captain_predicted,
                 "predicted_captain_bonus": predicted_captain_bonus,
                 "predicted_points_with_policy": predicted_points_with_policy,
