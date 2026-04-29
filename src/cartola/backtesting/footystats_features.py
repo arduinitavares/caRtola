@@ -225,6 +225,74 @@ def load_footystats_feature_rows(
     )
 
 
+def load_footystats_feature_rows_for_recommendation(
+    *,
+    season: int,
+    project_root: Path,
+    footystats_dir: Path,
+    league_slug: str,
+    current_year: int | None,
+    target_round: int,
+    footystats_mode: str,
+    require_complete_status: bool,
+    required_keys: pd.DataFrame,
+) -> FootyStatsPPGLoadResult:
+    if footystats_mode not in SOURCE_COLUMNS_BY_MODE:
+        raise ValueError(f"Unsupported footystats_mode: {footystats_mode}")
+    if target_round <= 0:
+        raise ValueError("target_round must be positive")
+
+    source_path = _source_path(
+        project_root=project_root,
+        footystats_dir=footystats_dir,
+        league_slug=league_slug,
+        season=season,
+    )
+    _validate_source_filename(source_path, season=season, league_slug=league_slug)
+
+    required_columns = SOURCE_COLUMNS_BY_MODE[footystats_mode]
+    df = _read_source_frame(source_path, required_columns)
+
+    game_weeks = _validated_game_weeks(df)
+    visible = game_weeks.le(target_round)
+    df = df.loc[visible].copy()
+    game_weeks = game_weeks.loc[visible]
+
+    home_ppg = _validated_ppg(df, "Pre-Match PPG (Home)")
+    away_ppg = _validated_ppg(df, "Pre-Match PPG (Away)")
+    home_xg = _validated_xg(df, "Home Team Pre-Match xG") if footystats_mode == "ppg_xg" else None
+    away_xg = _validated_xg(df, "Away Team Pre-Match xG") if footystats_mode == "ppg_xg" else None
+    statuses = _validated_statuses(df, "live_current")
+    if require_complete_status and any(status != "complete" for status in statuses):
+        raise ValueError("FootyStats recommendation rows require all visible statuses to be complete")
+    _validate_team_names_present(df)
+
+    team_names = _team_names(df)
+    comparison = compare_teams_to_cartola(season=season, footystats_team_names=team_names, project_root=project_root)
+    _validate_team_mapping(comparison, require_all_cartola_teams=False)
+
+    rows = _build_feature_rows(
+        df,
+        game_weeks,
+        home_ppg,
+        away_ppg,
+        comparison.mapped_teams,
+        footystats_mode=footystats_mode,
+        home_xg=home_xg,
+        away_xg=away_xg,
+    )
+    _validate_required_recommendation_keys(rows, required_keys)
+
+    return FootyStatsPPGLoadResult(
+        rows=rows,
+        source_path=source_path,
+        source_sha256=_sha256_file(source_path),
+        diagnostics=FootyStatsJoinDiagnostics(),
+        footystats_mode=footystats_mode,
+        feature_columns=FEATURE_COLUMNS_BY_MODE[footystats_mode],
+    )
+
+
 def _source_path(*, project_root: Path, footystats_dir: Path, league_slug: str, season: int) -> Path:
     resolved_dir = footystats_dir if footystats_dir.is_absolute() else project_root / footystats_dir
     return resolved_dir / f"{league_slug}-matches-{season}-to-{season}-stats.csv"
@@ -303,11 +371,11 @@ def _team_names(df: pd.DataFrame) -> list[str]:
     return sorted({str(team) for team in teams})
 
 
-def _validate_team_mapping(comparison) -> None:
+def _validate_team_mapping(comparison, *, require_all_cartola_teams: bool = True) -> None:
     failures: list[str] = []
     if comparison.unmapped_footystats_teams:
         failures.append(f"unmapped FootyStats teams: {', '.join(comparison.unmapped_footystats_teams)}")
-    if comparison.missing_cartola_teams:
+    if require_all_cartola_teams and comparison.missing_cartola_teams:
         failures.append(f"missing Cartola teams: {', '.join(comparison.missing_cartola_teams)}")
     if comparison.duplicate_mapped_cartola_teams:
         failures.append(f"duplicate mapped Cartola teams: {', '.join(comparison.duplicate_mapped_cartola_teams)}")
@@ -384,6 +452,31 @@ def _reject_duplicate_join_keys(rows: pd.DataFrame) -> None:
     duplicates = rows.duplicated(subset=["rodada", "id_clube"], keep=False)
     if bool(duplicates.any()):
         raise ValueError("FootyStats PPG rows contain duplicate normalized (rodada, id_clube) rows")
+
+
+def _validate_required_recommendation_keys(rows: pd.DataFrame, required_keys: pd.DataFrame) -> None:
+    if required_keys.empty:
+        return
+
+    required = _unique_key_frame(required_keys)
+    available = _unique_key_frame(rows)
+
+    missing = required.merge(available, on=["rodada", "id_clube"], how="left", indicator=True)
+    missing = missing[missing["_merge"].eq("left_only")][["rodada", "id_clube"]]
+    if not missing.empty:
+        raise ValueError(
+            "missing FootyStats recommendation rows: "
+            f"{_group_key_records_by_round(missing)}"
+        )
+
+    duplicate_counts = _duplicate_count_frame(rows)
+    duplicates = duplicate_counts.merge(required, on=["rodada", "id_clube"], how="inner")
+    duplicates = duplicates[duplicates["count"].gt(1)]
+    if not duplicates.empty:
+        raise ValueError(
+            "duplicate FootyStats recommendation rows: "
+            f"{_group_key_records_by_round(duplicates, include_count=True)}"
+        )
 
 
 def _unique_key_frame(df: pd.DataFrame, *, require_club_identity: bool = False) -> pd.DataFrame:

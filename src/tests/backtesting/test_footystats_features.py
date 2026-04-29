@@ -12,6 +12,7 @@ from cartola.backtesting.footystats_features import (
     REQUIRED_MATCH_COLUMNS,
     build_footystats_join_diagnostics,
     load_footystats_feature_rows,
+    load_footystats_feature_rows_for_recommendation,
     load_footystats_ppg_rows,
     merge_footystats_ppg,
 )
@@ -358,6 +359,80 @@ def test_build_footystats_join_diagnostics_reports_extra_club_rows() -> None:
     assert diagnostics.missing_join_keys_by_round == {}
     assert diagnostics.duplicate_join_keys_by_round == {}
     assert diagnostics.extra_club_rows_by_round == {"3": [{"rodada": 3, "id_clube": 20}]}
+
+
+def test_load_footystats_recommendation_rows_ignores_future_bad_rows(tmp_path: Path) -> None:
+    rows = [_match_row(week=week, status="complete") for week in range(1, 4)]
+    future = _match_row(week=4, status="suspended")
+    future["Pre-Match PPG (Home)"] = None
+    rows.append(future)
+    _write_matches_csv(tmp_path, rows)
+    _write_cartola_round(tmp_path)
+    required_keys = pd.DataFrame(
+        [
+            {"rodada": rodada, "id_clube": club_id}
+            for rodada in range(1, 4)
+            for club_id in (262, 275)
+        ]
+    )
+
+    result = load_footystats_feature_rows_for_recommendation(
+        season=SEASON,
+        project_root=tmp_path,
+        footystats_dir=Path("data/footystats"),
+        league_slug=LEAGUE_SLUG,
+        current_year=2026,
+        target_round=3,
+        footystats_mode="ppg",
+        require_complete_status=True,
+        required_keys=required_keys,
+    )
+
+    assert sorted(result.rows["rodada"].unique().tolist()) == [1, 2, 3]
+
+
+def test_load_footystats_recommendation_rows_rejects_missing_required_key(tmp_path: Path) -> None:
+    _write_matches_csv(tmp_path, [_match_row(week=1, status="complete")])
+    _write_cartola_round(tmp_path)
+    required_keys = pd.DataFrame(
+        [
+            {"rodada": 1, "id_clube": 262},
+            {"rodada": 1, "id_clube": 999},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="missing FootyStats recommendation rows"):
+        load_footystats_feature_rows_for_recommendation(
+            season=SEASON,
+            project_root=tmp_path,
+            footystats_dir=Path("data/footystats"),
+            league_slug=LEAGUE_SLUG,
+            current_year=2026,
+            target_round=1,
+            footystats_mode="ppg",
+            require_complete_status=False,
+            required_keys=required_keys,
+        )
+
+
+def test_load_footystats_recommendation_rows_rejects_duplicate_required_key(tmp_path: Path) -> None:
+    rows = [_match_row(week=1, status="complete"), _match_row(week=1, status="complete")]
+    _write_matches_csv(tmp_path, rows)
+    _write_cartola_round(tmp_path)
+    required_keys = pd.DataFrame([{"rodada": 1, "id_clube": 262}])
+
+    with pytest.raises(ValueError, match="duplicate FootyStats recommendation rows"):
+        load_footystats_feature_rows_for_recommendation(
+            season=SEASON,
+            project_root=tmp_path,
+            footystats_dir=Path("data/footystats"),
+            league_slug=LEAGUE_SLUG,
+            current_year=2026,
+            target_round=1,
+            footystats_mode="ppg",
+            require_complete_status=False,
+            required_keys=required_keys,
+        )
 
 
 def _load_historical(project_root: Path, *, footystats_mode: str = "ppg"):
