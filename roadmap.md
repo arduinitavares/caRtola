@@ -54,6 +54,14 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - default comparison remains `footystats_mode=none` vs `footystats_mode=ppg`,
   - supports `footystats_mode=ppg` vs `footystats_mode=ppg_xg`,
   - writes CSV/JSON summaries and isolated per-season/mode runs under `data/08_reporting/backtests/footystats_ablation/`.
+- Single-round squad recommendation workflow:
+  - `scripts/recommend_squad.py` for `live` and `replay` modes,
+  - hard data boundary at `rodada <= target_round`,
+  - RF training uses only rounds `< target_round`,
+  - `fixture_mode=none` fixed for v1 recommendations,
+  - `footystats_mode=ppg` available for current-year/live usage,
+  - replay mode can evaluate actual points after optimization,
+  - live mode suppresses actual/scout output columns and rejects finalized target-round data unless explicitly allowed.
 
 **Current Interpretation**
 The 2025 fixture-context result showed the first meaningful model lift: RF beat baseline and crossed the `player_r2 > 0.05` threshold, but that 2025 fixture data is still **exploratory reconstruction**, not strict historical proof. The strict system is now built for future/live capture, but we still need actual pre-lock snapshots to run strict evaluations.
@@ -120,6 +128,10 @@ Important distinction:
 
 - For historical comparison, `2026` is `partial_current` and should not be compared directly against complete seasons.
 - For actual gameplay, `2026` is the live production season. Current-year FootyStats pre-match rows are useful for generating real squad recommendations, as long as only pre-deadline/pre-match-safe fields enter the model and missing target-round fixture context fails loudly.
+
+The first recommendation workflow is now implemented. It is intentionally narrower than
+the backtest runner: it generates one target-round squad, does not use fixtures yet,
+and writes a replay/live audit trail under `data/08_reporting/recommendations/`.
 
 **How To Run Now**
 No fixture context:
@@ -194,6 +206,30 @@ uv run --frozen python scripts/run_footystats_ablation.py \
   --force
 ```
 
+Live squad recommendation for the current production season:
+
+```bash
+uv run --frozen python scripts/recommend_squad.py \
+  --season 2026 \
+  --target-round 14 \
+  --mode live \
+  --budget 100 \
+  --footystats-mode ppg \
+  --current-year 2026
+```
+
+Replay a completed current-season round without looking past that round:
+
+```bash
+uv run --frozen python scripts/recommend_squad.py \
+  --season 2026 \
+  --target-round 10 \
+  --mode replay \
+  --budget 100 \
+  --footystats-mode ppg \
+  --current-year 2026
+```
+
 Quality gate:
 
 ```bash
@@ -201,28 +237,29 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
-2. Decide the next narrow feature bet:
+1. Use the new recommendation command for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, and `run_metadata.json` before making lineup decisions.
+2. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
+3. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
+4. Generate strict fixtures from those snapshots and integrate strict/current fixture context into the recommendation workflow once snapshots exist.
+5. Decide the next narrow feature bet:
    - odds/goal-environment features as a separate ablation over PPG, not stacked blindly after xG;
    - or DNP probability modeling if selection reliability is the bigger live-game bottleneck.
-3. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
-4. Generate strict fixtures from those snapshots and run strict backtests as data accumulates.
-5. Add higher-signal Cartola fixture features:
+6. Add higher-signal Cartola fixture features:
    - opponent defensive weakness,
    - points conceded by opponent and position,
    - home/away split priors.
-6. Add DNP probability modeling:
+7. Add DNP probability modeling:
    - predict `p_play`,
    - use `expected_points = predicted_points * p_play`.
-7. Add model comparison only after features improve:
+8. Add model comparison only after features improve:
    - HistGradientBoosting,
    - GradientBoosting,
    - maybe XGBoost/CatBoost later.
-8. Add live selection workflow:
-   - read open market data,
-   - use strict/current fixture snapshot,
-   - output recommended squad.
-9. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
+9. Add live data acquisition around the recommendation command:
+   - fetch open market data,
+   - verify pre-lock FootyStats/current fixture inputs,
+   - archive recommendation outputs per round.
+10. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:

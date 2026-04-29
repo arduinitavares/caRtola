@@ -141,6 +141,52 @@ O comando grava:
 - `data/08_reporting/backtests/footystats_ablation/footystats_ablation.json`
 - execuções por temporada em `data/08_reporting/backtests/footystats_ablation/runs/{season}/footystats_mode={mode}/{season}/`
 
+### Recomendação de escalação
+
+Para gerar uma recomendação para a temporada atual, use o modo `live`. Ele exige que
+`--season` seja o ano atual resolvido por `--current-year`, corta os dados em
+`rodada <= target_round`, treina apenas com rodadas anteriores e não escreve colunas
+de pontuação/scouts finais nos CSVs de saída:
+
+```bash
+uv run --frozen python scripts/recommend_squad.py \
+  --season 2026 \
+  --target-round 14 \
+  --mode live \
+  --budget 100 \
+  --footystats-mode ppg \
+  --current-year 2026
+```
+
+Para testar uma rodada já encerrada sem olhar para rodadas futuras, use `replay`.
+Por exemplo, para simular o que a recomendação teria feito na rodada 10 de 2026:
+
+```bash
+uv run --frozen python scripts/recommend_squad.py \
+  --season 2026 \
+  --target-round 10 \
+  --mode replay \
+  --budget 100 \
+  --footystats-mode ppg \
+  --current-year 2026
+```
+
+O modo `replay` ainda corta os dados em `rodada <= target_round`, mas inclui
+`actual_points` e colunas finais quando elas existem para diagnóstico depois da
+otimização. O modo `live` falha se detectar dados finalizados na rodada alvo, a
+menos que `--allow-finalized-live-data` seja passado explicitamente.
+
+As recomendações são gravadas em:
+
+- `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/recommended_squad.csv`
+- `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/candidate_predictions.csv`
+- `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/recommendation_summary.json`
+- `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/run_metadata.json`
+
+Na v1, a recomendação fixa `fixture_mode=none`; `footystats_mode=ppg` é o modo
+recomendado para uso sem fixtures. `ppg_xg` permanece disponível como modo
+experimental.
+
 ## ✅ Qualidade
 
 O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:
