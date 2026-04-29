@@ -58,6 +58,7 @@ def _print_success(console: Console, metadata: dict[str, object]) -> None:
     table.add_row("FootyStats mode", str(metadata.get("footystats_mode")))
     table.add_row("Selected players", str(metadata.get("selected_count")))
     table.add_row("Predicted total", _format_float(metadata.get("predicted_points")))
+    table.add_row("Predicted base", _format_float(metadata.get("predicted_points_base")))
     table.add_row("Captain", str(metadata.get("captain_name", "n/a")))
     table.add_row("Captain bonus", _format_float(metadata.get("captain_bonus_predicted")))
     table.add_row("Budget used", _format_float(metadata.get("budget_used")))
