@@ -148,6 +148,20 @@ Para gerar uma recomendação para a temporada atual, use o modo `live`. Ele exi
 `rodada <= target_round`, treina apenas com rodadas anteriores e não escreve colunas
 de pontuação/scouts finais nos CSVs de saída:
 
+Antes de gerar uma recomendação live, capture a rodada aberta do mercado:
+
+```bash
+uv run --frozen python scripts/capture_market_round.py \
+  --season 2026 \
+  --auto \
+  --current-year 2026
+```
+
+Esse comando usa `mercado/status.rodada_atual` para nomear
+`data/01_raw/{season}/rodada-{rodada_atual}.csv`, sanitiza pontuação/scouts da
+rodada alvo e se recusa a sobrescrever dados existentes que não sejam uma
+captura live anterior.
+
 ```bash
 uv run --frozen python scripts/recommend_squad.py \
   --season 2026 \

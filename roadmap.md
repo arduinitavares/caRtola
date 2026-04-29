@@ -62,6 +62,11 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - `footystats_mode=ppg` available for current-year/live usage,
   - replay mode can evaluate actual points after optimization,
   - live mode suppresses actual/scout output columns and rejects finalized target-round data unless explicitly allowed.
+- Live market round capture:
+  - `scripts/capture_market_round.py` writes the open market round CSV for live recommendations,
+  - validates current-year/open-market scope,
+  - sanitizes target-round outcome fields,
+  - publishes CSV and `.capture.json` with safe overwrite rules.
 
 **Current Interpretation**
 The 2025 fixture-context result showed the first meaningful model lift: RF beat baseline and crossed the `player_r2 > 0.05` threshold, but that 2025 fixture data is still **exploratory reconstruction**, not strict historical proof. The strict system is now built for future/live capture, but we still need actual pre-lock snapshots to run strict evaluations.
@@ -206,6 +211,15 @@ uv run --frozen python scripts/run_footystats_ablation.py \
   --force
 ```
 
+Capture the open market round for the current production season:
+
+```bash
+uv run --frozen python scripts/capture_market_round.py \
+  --season 2026 \
+  --auto \
+  --current-year 2026
+```
+
 Live squad recommendation for the current production season:
 
 ```bash
@@ -237,34 +251,29 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Add live Cartola market round capture for recommendations:
-   - fetch the open market round from `mercado/status`,
-   - write `data/01_raw/{season}/rodada-{rodada_atual}.csv`,
-   - sanitize target-round outcome fields for live prediction,
-   - support manual `--target-round` and idempotent `--auto` capture.
-2. Use the recommendation command for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, and `run_metadata.json` before making lineup decisions.
-3. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
-4. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
-5. Generate strict fixtures from those snapshots and integrate strict/current fixture context into the recommendation workflow once snapshots exist.
-6. Decide the next narrow feature bet:
+1. Use the live capture plus recommendation commands for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, and `run_metadata.json` before making lineup decisions.
+2. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
+3. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
+4. Generate strict fixtures from those snapshots and integrate strict/current fixture context into the recommendation workflow once snapshots exist.
+5. Decide the next narrow feature bet:
    - odds/goal-environment features as a separate ablation over PPG, not stacked blindly after xG;
    - or DNP probability modeling if selection reliability is the bigger live-game bottleneck.
-7. Add higher-signal Cartola fixture features:
+6. Add higher-signal Cartola fixture features:
    - opponent defensive weakness,
    - points conceded by opponent and position,
    - home/away split priors.
-8. Add DNP probability modeling:
+7. Add DNP probability modeling:
    - predict `p_play`,
    - use `expected_points = predicted_points * p_play`.
-9. Add model comparison only after features improve:
+8. Add model comparison only after features improve:
    - HistGradientBoosting,
    - GradientBoosting,
    - maybe XGBoost/CatBoost later.
-10. Add a higher-level live round workflow around the capture and recommendation commands:
-    - auto-capture the open market when missing,
-    - verify pre-lock FootyStats/current fixture inputs,
-    - archive recommendation outputs per round.
-11. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
+9. Add a higher-level live round workflow around the capture and recommendation commands:
+   - auto-capture the open market when missing,
+   - verify pre-lock FootyStats/current fixture inputs,
+   - archive recommendation outputs per round.
+10. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:

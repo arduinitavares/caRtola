@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
@@ -459,3 +460,90 @@ def test_capture_auto_reuses_existing_valid_capture(tmp_path: Path) -> None:
     )
 
     assert result.reused_existing is True
+
+
+def _raw_round_csv(path: Path, round_number: int) -> None:
+    rows: list[dict[str, object]] = []
+    player_id = 1
+    for posicao, count in {"gol": 2, "lat": 3, "zag": 3, "mei": 4, "ata": 4, "tec": 2}.items():
+        for offset in range(count):
+            row = {
+                "atletas.rodada_id": round_number,
+                "atletas.status_id": 7,
+                "atletas.posicao_id": {"gol": 1, "lat": 2, "zag": 3, "mei": 4, "ata": 5, "tec": 6}[posicao],
+                "atletas.atleta_id": player_id,
+                "atletas.apelido": f"{posicao}-{offset}",
+                "atletas.slug": f"{posicao}-{offset}",
+                "atletas.clube_id": player_id,
+                "atletas.clube.id.full.name": f"Club {player_id}",
+                "atletas.preco_num": 5.0,
+                "atletas.pontos_num": float(round_number + offset),
+                "atletas.media_num": float(round_number + offset),
+                "atletas.jogos_num": round_number - 1,
+                "atletas.variacao_num": 0.0,
+                "atletas.entrou_em_campo": True,
+                "atletas.minimo_para_valorizar": 0.0,
+                "atletas.apelido_abreviado": f"{posicao}{offset}",
+                "atletas.nome": f"{posicao} {offset}",
+                "atletas.foto": "",
+            }
+            for scout in DEFAULT_SCOUT_COLUMNS:
+                row[scout] = 1 if scout == "DS" else 0
+            rows.append(row)
+            player_id += 1
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def test_captured_round_can_feed_live_recommendation(tmp_path: Path) -> None:
+    from cartola.backtesting.recommendation import RecommendationConfig, run_recommendation
+
+    season_dir = tmp_path / "data/01_raw/2026"
+    season_dir.mkdir(parents=True)
+    _raw_round_csv(season_dir / "rodada-1.csv", 1)
+    _raw_round_csv(season_dir / "rodada-2.csv", 2)
+
+    # Expand the frozen market payload enough to satisfy the optimizer formation.
+    payload = {"clubes": {}, "atletas": []}
+    player_id = 1
+    for posicao_id, count in {1: 2, 2: 3, 3: 3, 4: 4, 5: 4, 6: 2}.items():
+        for offset in range(count):
+            payload["clubes"][str(player_id)] = {"id": player_id, "nome": f"Club {player_id}"}
+            payload["atletas"].append(
+                {
+                    "atleta_id": player_id,
+                    "apelido": f"p{player_id}",
+                    "slug": f"p{player_id}",
+                    "nome": f"Player {player_id}",
+                    "foto": "",
+                    "apelido_abreviado": f"p{player_id}",
+                    "clube_id": player_id,
+                    "posicao_id": posicao_id,
+                    "status_id": 7,
+                    "preco_num": 5.0,
+                    "media_num": 3.0 + offset,
+                    "jogos_num": 2,
+                    "minimo_para_valorizar": 0.0,
+                }
+            )
+            player_id += 1
+
+    capture_market_round(
+        MarketCaptureConfig(season=2026, target_round=3, current_year=2026, project_root=tmp_path),
+        fetch=_fetch_pair(status_payload=_status_payload(rodada_atual=3), market_payload=payload),
+        now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC),
+    )
+
+    result = run_recommendation(
+        RecommendationConfig(
+            season=2026,
+            target_round=3,
+            mode="live",
+            current_year=2026,
+            project_root=tmp_path,
+            footystats_mode="none",
+        )
+    )
+
+    assert result.summary["mode"] == "live"
+    assert result.summary["target_round"] == 3
+    assert result.summary["selected_count"] == 12
