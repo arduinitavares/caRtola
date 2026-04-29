@@ -1424,12 +1424,10 @@ Expected: PASS.
 Run:
 
 ```bash
-poetry run black --check src/cartola/backtesting src/tests/backtesting
-poetry run isort --check-only src/cartola/backtesting src/tests/backtesting
-poetry run flake8 src/cartola/backtesting src/tests/backtesting
+uv run --frozen scripts/pyrepo-check ruff
 ```
 
-Expected: PASS for all commands.
+Expected: PASS.
 
 - [ ] **Step 3: Check git status**
 

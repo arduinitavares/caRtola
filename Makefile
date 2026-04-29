@@ -4,7 +4,6 @@ FOLDER_PROJECT = src/cartola
 clean:
 	@find . -type f -name '*.pyc' -delete
 	@find . -type d -name '__pycache__' | xargs rm -rf
-	@find . -type d -name '.mypy_cache' | xargs rm -rf
 	@find . -type d -name '*.egg*' | xargs rm -rf
 	@find . -type d -name '*.ropeproject' | xargs rm -rf
 	@rm -rf src/build/
@@ -15,17 +14,17 @@ clean:
 	@rm -f MANIFEST
 	@rm -f .coverage.*
 
-black:
-	@black $(FOLDER_PROJECT) --config pyproject.toml $(args)
+ruff:
+	@uv run --frozen scripts/pyrepo-check ruff
 
-isort:
-	@isort $(FOLDER_PROJECT) $(args)
+ty:
+	@uv run --frozen scripts/pyrepo-check ty
 
-flake8:
-	@flake8 $(FOLDER_PROJECT)
+bandit:
+	@uv run --frozen scripts/pyrepo-check bandit
 
-mypy:
-	@mypy --ignore-missing-imports --exclude download_data.py$$ --exclude __main__.py$$ --strict src/cartola
+quality:
+	@uv run --frozen scripts/pyrepo-check --all
 
 pre-commit:
 	@pre-commit run --all-files
