@@ -1,6 +1,7 @@
 import pandas as pd
 import pytest
 
+import cartola.backtesting.optimizer as optimizer
 from cartola.backtesting.config import DEFAULT_FORMATIONS, BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER, SCORING_CONTRACT_VERSION
@@ -90,6 +91,20 @@ def test_optimizer_never_captains_unselected_phantom_player_or_tecnico():
     assert result.captain_predicted_points == pytest.approx(18.0)
 
 
+def test_optimizer_rejects_high_scoring_unexpected_position_from_selected_roster():
+    candidates = _candidates()
+    unexpected = _row(999, "ban", score=1000.0, price=0.1)
+    candidates = pd.concat([candidates, pd.DataFrame([unexpected])], ignore_index=True)
+
+    result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
+
+    assert result.status == "Optimal"
+    assert result.selected_count == 12
+    assert 999 not in set(result.selected["id_atleta"])
+    assert "ban" not in set(result.selected["posicao"])
+    assert sum(result.selected.groupby("posicao").size().to_dict().values()) == 12
+
+
 def test_optimizer_reports_per_formation_scores_for_infeasible_and_chosen_formations():
     candidates = _candidates().loc[lambda frame: frame["posicao"] != "lat"].copy()
 
@@ -103,6 +118,25 @@ def test_optimizer_reports_per_formation_scores_for_infeasible_and_chosen_format
         score["formation"] == result.formation_name and score["solver_status"] == "Optimal"
         for score in result.formation_scores
     )
+
+
+def test_optimizer_constructs_one_milp_per_default_formation(monkeypatch):
+    candidates = _candidates().loc[lambda frame: frame["posicao"] != "lat"].copy()
+    problem_names = []
+    original_problem = optimizer.pulp.LpProblem
+
+    def tracking_problem(name, sense):
+        problem_names.append(name)
+        return original_problem(name, sense)
+
+    monkeypatch.setattr(optimizer.pulp, "LpProblem", tracking_problem)
+
+    result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
+
+    assert result.status == "Optimal"
+    assert len(problem_names) == len(DEFAULT_FORMATIONS)
+    assert problem_names == [f"CartolaSquadOptimizer_{formation_name}" for formation_name in DEFAULT_FORMATIONS]
+    assert len(result.formation_scores) == len(DEFAULT_FORMATIONS)
 
 
 def test_optimizer_returns_empty_result_for_empty_candidates():

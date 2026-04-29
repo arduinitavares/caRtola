@@ -77,20 +77,6 @@ def _optimize_formation(
     player_rows[score_column] = _numeric_column(player_rows, score_column)
     player_rows = player_rows.sort_values("id_atleta", kind="mergesort").reset_index(drop=True)
 
-    unavailable_positions = [
-        position
-        for position, required_count in formation.items()
-        if int((player_rows["posicao"] == position).sum()) < required_count
-    ]
-    if unavailable_positions:
-        return _empty_result(
-            "Infeasible",
-            formation_name,
-            candidates,
-            formation_scores=[],
-            infeasibility_reason=f"Insufficient candidates for positions: {', '.join(unavailable_positions)}.",
-        )
-
     variables = {
         index: pulp.LpVariable(f"player_{index}_{player_rows.loc[index, 'id_atleta']}", cat=pulp.LpBinary)
         for index in player_rows.index
@@ -100,14 +86,6 @@ def _optimize_formation(
         for index in player_rows.index
         if player_rows.loc[index, "posicao"] != "tec"
     }
-    if not captain_variables:
-        return _empty_result(
-            "Infeasible",
-            formation_name,
-            candidates,
-            formation_scores=[],
-            infeasibility_reason="No captain-eligible candidates are available.",
-        )
 
     problem = pulp.LpProblem(f"CartolaSquadOptimizer_{formation_name}", pulp.LpMaximize)
     problem += pulp.lpSum(
@@ -120,6 +98,7 @@ def _optimize_formation(
         float(player_rows.loc[index, MARKET_OPEN_PRICE_COLUMN]) * variable
         for index, variable in variables.items()
     ) <= float(config.budget)
+    problem += pulp.lpSum(variables.values()) == sum(formation.values())
 
     for position, required_count in formation.items():
         problem += (
