@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -238,6 +239,60 @@ def _replay_actual_points(selected: pd.DataFrame) -> tuple[float | None, list[st
     return float(values.sum()), []
 
 
+def _empty_oracle_metrics() -> dict[str, object]:
+    return {
+        "oracle_actual_points": None,
+        "oracle_gap": None,
+        "oracle_capture_rate": None,
+        "oracle_optimizer_status": None,
+    }
+
+
+def _numeric_finite_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    values = pd.to_numeric(frame[column], errors="coerce")
+    finite = values.map(lambda value: bool(pd.notna(value) and math.isfinite(float(value))))
+    result = values.astype(float)
+    return result.where(finite)
+
+
+def _oracle_replay_metrics(
+    candidates: pd.DataFrame,
+    *,
+    actual_points: float | None,
+    config: BacktestConfig,
+) -> tuple[dict[str, object], list[str]]:
+    metrics = _empty_oracle_metrics()
+    if "pontuacao" not in candidates.columns:
+        return metrics, ["Oracle actual_points is null because candidate pontuacao is unavailable."]
+
+    actual_values = _numeric_finite_series(candidates, "pontuacao")
+    invalid_count = int(actual_values.isna().sum())
+    if invalid_count:
+        return metrics, [
+            "Oracle actual_points is null because "
+            f"{invalid_count} candidate rows have missing or non-finite pontuacao."
+        ]
+
+    oracle_candidates = candidates.copy()
+    oracle_candidates["pontuacao"] = actual_values
+    oracle_result = optimize_squad(oracle_candidates, score_column="pontuacao", config=config)
+    metrics["oracle_optimizer_status"] = oracle_result.status
+    if oracle_result.status != "Optimal":
+        return metrics, [f"Oracle optimizer did not reach Optimal status: {oracle_result.status}."]
+
+    oracle_points = float(pd.to_numeric(oracle_result.selected["pontuacao"], errors="raise").sum())
+    metrics["oracle_actual_points"] = oracle_points
+    if actual_points is None:
+        return metrics, []
+
+    metrics["oracle_gap"] = oracle_points - actual_points
+    if oracle_points <= 0:
+        return metrics, ["Oracle capture_rate is null because oracle_actual_points is not positive."]
+
+    metrics["oracle_capture_rate"] = actual_points / oracle_points
+    return metrics, []
+
+
 def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
     _validate_mode_scope(config)
     _validate_output_root(config)
@@ -299,9 +354,16 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
     selected["predicted_points"] = selected["random_forest_score"]
     warnings: list[str] = []
     actual_points = None
+    oracle_metrics = _empty_oracle_metrics()
     if config.mode == "replay":
         actual_points, actual_warnings = _replay_actual_points(selected)
         warnings.extend(actual_warnings)
+        oracle_metrics, oracle_warnings = _oracle_replay_metrics(
+            scored,
+            actual_points=actual_points,
+            config=backtest_config,
+        )
+        warnings.extend(oracle_warnings)
 
     selected_columns = [*BASE_OUTPUT_COLUMNS, "predicted_points"]
     candidate_columns = [*BASE_OUTPUT_COLUMNS, *_active_footystats_columns(config)]
@@ -324,6 +386,7 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         "budget_used": float(optimized.budget_used),
         "predicted_points": float(optimized.predicted_points),
         "actual_points": None if actual_points is None else float(actual_points),
+        **oracle_metrics,
         "output_directory": str(config.output_path),
     }
     metadata = _build_metadata(

@@ -56,6 +56,10 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
                 "budget_used": 97.55,
                 "mode": "replay",
                 "output_directory": str(config.output_path),
+                "oracle_actual_points": 50.0,
+                "oracle_capture_rate": 0.765,
+                "oracle_gap": 11.75,
+                "oracle_optimizer_status": "Optimal",
                 "predicted_points": 42.0,
                 "season": 2026,
                 "selected_count": 12,
@@ -99,6 +103,12 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
     assert "38.25" in output
     assert "Delta" in output
     assert "-3.75" in output
+    assert "Best in candidate pool" in output
+    assert "50.00" in output
+    assert "Gap to best" in output
+    assert "11.75" in output
+    assert "Capture rate" in output
+    assert "76.50%" in output
     assert "Budget used" in output
 
 
@@ -113,6 +123,10 @@ def test_main_prints_live_summary_without_actual_points(monkeypatch, tmp_path: P
                 "budget_used": 99.0,
                 "mode": "live",
                 "output_directory": str(config.output_path),
+                "oracle_actual_points": None,
+                "oracle_capture_rate": None,
+                "oracle_gap": None,
+                "oracle_optimizer_status": None,
                 "predicted_points": 51.25,
                 "season": 2026,
                 "selected_count": 12,
@@ -145,6 +159,8 @@ def test_main_prints_live_summary_without_actual_points(monkeypatch, tmp_path: P
     assert "51.25" in output
     assert "Actual points" in output
     assert "n/a (live mode)" in output
+    assert "Best in candidate pool" in output
+    assert "Capture rate" in output
 
 
 def test_main_prints_expected_error_without_traceback(monkeypatch, tmp_path: Path, capsys) -> None:

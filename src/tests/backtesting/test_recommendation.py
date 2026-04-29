@@ -289,6 +289,10 @@ def test_run_recommendation_replay_reports_actual_points(
     result = run_recommendation(config)
 
     assert result.summary["actual_points"] is not None
+    assert result.summary["oracle_actual_points"] == pytest.approx(56.0)
+    assert result.summary["oracle_gap"] == pytest.approx(56.0 - float(result.summary["actual_points"]))
+    assert result.summary["oracle_capture_rate"] == pytest.approx(float(result.summary["actual_points"]) / 56.0)
+    assert result.summary["oracle_optimizer_status"] == "Optimal"
     assert "pontuacao" in result.recommended_squad.columns
     assert result.summary["optimizer_status"] == "Optimal"
 
@@ -326,7 +330,100 @@ def test_run_recommendation_replay_nulls_missing_actual_points(
     result = run_recommendation(config)
 
     assert result.summary["actual_points"] is None
+    assert result.summary["oracle_actual_points"] is None
+    assert result.summary["oracle_gap"] is None
+    assert result.summary["oracle_capture_rate"] is None
+    assert result.summary["oracle_optimizer_status"] is None
     assert "Replay actual_points is null" in result.metadata["warnings"][0]
+
+
+def test_run_recommendation_replay_nulls_oracle_when_any_candidate_actual_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4))
+    target_low_value = (
+        season_df["rodada"].eq(3)
+        & season_df["posicao"].eq("lat")
+        & season_df["apelido"].eq("lat-0")
+    )
+    season_df.loc[target_low_value, "pontuacao"] = pd.NA
+    season_df.loc[target_low_value, "preco_pre_rodada"] = 999.0
+
+    def fake_load_footystats(**kwargs: object):
+        from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
+
+        return FootyStatsPPGLoadResult(
+            rows=_footystats_rows(range(1, 4)),
+            source_path=tmp_path / "data/footystats/source.csv",
+            source_sha256="sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    monkeypatch.setattr(
+        "cartola.backtesting.recommendation.load_footystats_feature_rows_for_recommendation",
+        fake_load_footystats,
+    )
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="replay",
+        project_root=tmp_path,
+        current_year=2026,
+    )
+
+    result = run_recommendation(config)
+
+    assert result.summary["actual_points"] is not None
+    assert result.summary["oracle_actual_points"] is None
+    assert result.summary["oracle_gap"] is None
+    assert result.summary["oracle_capture_rate"] is None
+    assert result.summary["oracle_optimizer_status"] is None
+    assert "Oracle actual_points is null because 1 candidate rows have missing or non-finite pontuacao." in (
+        result.metadata["warnings"]
+    )
+
+
+def test_run_recommendation_replay_nulls_capture_rate_when_oracle_is_not_positive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4))
+    season_df.loc[season_df["rodada"].eq(3), "pontuacao"] = 0.0
+
+    def fake_load_footystats(**kwargs: object):
+        from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
+
+        return FootyStatsPPGLoadResult(
+            rows=_footystats_rows(range(1, 4)),
+            source_path=tmp_path / "data/footystats/source.csv",
+            source_sha256="sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    monkeypatch.setattr(
+        "cartola.backtesting.recommendation.load_footystats_feature_rows_for_recommendation",
+        fake_load_footystats,
+    )
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="replay",
+        project_root=tmp_path,
+        current_year=2026,
+    )
+
+    result = run_recommendation(config)
+
+    assert result.summary["actual_points"] == 0.0
+    assert result.summary["oracle_actual_points"] == 0.0
+    assert result.summary["oracle_gap"] == 0.0
+    assert result.summary["oracle_capture_rate"] is None
+    assert "Oracle capture_rate is null because oracle_actual_points is not positive." in (
+        result.metadata["warnings"]
+    )
 
 
 def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowed(
@@ -362,6 +459,10 @@ def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowe
     result = run_recommendation(config)
 
     assert result.summary["actual_points"] is None
+    assert result.summary["oracle_actual_points"] is None
+    assert result.summary["oracle_gap"] is None
+    assert result.summary["oracle_capture_rate"] is None
+    assert result.summary["oracle_optimizer_status"] is None
     assert "pontuacao" not in result.recommended_squad.columns
     assert "entrou_em_campo" not in result.candidate_predictions.columns
     assert result.metadata["finalized_live_data_detected"] is True

@@ -62,6 +62,13 @@ def _format_delta(summary: dict[str, object]) -> str:
     return f"{actual_points - predicted_points:+.2f}"
 
 
+def _format_capture_rate(summary: dict[str, object]) -> str:
+    capture_rate = _float_summary(summary, "oracle_capture_rate")
+    if capture_rate is None:
+        return "n/a"
+    return f"{capture_rate * 100:.2f}%"
+
+
 def _print_success(console: Console, result_summary: dict[str, object]) -> None:
     season = result_summary.get("season", "")
     target_round = result_summary.get("target_round", "")
@@ -83,6 +90,9 @@ def _print_success(console: Console, result_summary: dict[str, object]) -> None:
     table.add_row("Predicted points", _format_points(_float_summary(result_summary, "predicted_points")))
     table.add_row("Actual points", _format_actual_points(result_summary))
     table.add_row("Delta", _format_delta(result_summary))
+    table.add_row("Best in candidate pool", _format_points(_float_summary(result_summary, "oracle_actual_points")))
+    table.add_row("Gap to best", _format_points(_float_summary(result_summary, "oracle_gap")))
+    table.add_row("Capture rate", _format_capture_rate(result_summary))
     table.add_row("Budget used", budget_display)
     table.add_row("Selected players", str(result_summary.get("selected_count", "n/a")))
     table.add_row("Output", str(result_summary.get("output_directory", "n/a")))
