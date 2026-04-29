@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import importlib
-import sys
+import importlib.util
 from pathlib import Path
 
 import pytest
 
 from cartola.backtesting.recommendation import RecommendationConfig, RecommendationResult
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-recommend_squad = importlib.import_module("scripts.recommend_squad")
+SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "recommend_squad.py"
+SPEC = importlib.util.spec_from_file_location("recommend_squad", SCRIPT_PATH)
+assert SPEC is not None
+assert SPEC.loader is not None
+recommend_squad = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(recommend_squad)
 main = recommend_squad.main
 parse_args = recommend_squad.parse_args
 
@@ -19,9 +22,13 @@ def test_parse_args_requires_target_round() -> None:
         parse_args(["--season", "2026", "--mode", "live"])
 
 
-def test_parse_args_has_no_fixture_mode() -> None:
+def test_parse_args_has_no_fixture_mode(capsys) -> None:
     with pytest.raises(SystemExit):
-        parse_args(["--season", "2026", "--target-round", "14", "--fixture-mode", "none"])
+        parse_args(["--season", "2026", "--target-round", "14", "--mode", "live", "--fixture-mode", "none"])
+
+    captured = capsys.readouterr()
+    assert "unrecognized arguments" in captured.err
+    assert "--fixture-mode" in captured.err
 
 
 def test_parse_args_builds_live_defaults() -> None:
@@ -47,7 +54,7 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
             metadata={},
         )
 
-    monkeypatch.setattr("scripts.recommend_squad.run_recommendation", fake_run_recommendation)
+    monkeypatch.setattr(recommend_squad, "run_recommendation", fake_run_recommendation)
 
     exit_code = main(
         [
