@@ -41,7 +41,7 @@ The command fails before network capture if `season != resolved_current_year`.
 
 ## Source And Round Resolution
 
-For `--auto`, the command resolves the active round from the Cartola market-status payload using the same source contract as strict fixture snapshots:
+For `--auto`, the command resolves the active round from the Cartola market-status payload using shared parser/helper code from strict fixture snapshot capture or an equally strict helper in the same module. The wrapper must not introduce looser duplicate parsing.
 
 - endpoint: `https://api.cartola.globo.com/mercado/status`;
 - required field: `rodada_atual`;
@@ -49,9 +49,9 @@ For `--auto`, the command resolves the active round from the Cartola market-stat
 - `rodada_atual` must parse as a positive integer;
 - `status_mercado` must parse as an integer and must equal `1`.
 
-The active-round fetch is advisory for choosing the round number. `capture_cartola_snapshot(...)` still fetches its own fixture and deadline payloads and must validate that the deadline payload matches the requested `season` and `round_number`. If Cartola changes active round between the advisory fetch and snapshot capture, the command may fail after the advisory step, but it must not generate a strict fixture from mismatched evidence.
+The active-round fetch is advisory for choosing the round number. `capture_cartola_snapshot(...)` still fetches its own fixture and deadline payloads and must validate that the deadline payload matches the requested `season` and `round_number`. If Cartola changes active round between the advisory fetch and snapshot capture, the command may fail after the advisory step, but it must not generate a strict fixture from mismatched evidence. When the advisory `--auto` fetch succeeds but later snapshot capture fails, the error output includes the advisory `round_number` that was attempted.
 
-For `--round N`, the command passes `round_number=N` to `capture_cartola_snapshot(...)`. Snapshot capture must fail if Cartola market status reports a different active `rodada_atual`.
+For `--round N`, the command passes `round_number=N` to `capture_cartola_snapshot(...)`. Either the wrapper or snapshot capture must fail when the deadline payload has `rodada_atual != round_number` or `status_mercado != 1`. V1 implementation must tighten `capture_cartola_snapshot(...)`/`cartola_deadline_at(...)` so both `--auto` and explicit `--round` share the same authoritative open-market validation.
 
 ## Data Flow
 
@@ -123,6 +123,10 @@ If capture succeeds but strict fixture generation fails because a fixture or man
 
 ## Output
 
+All printed artifact paths are project-root-relative when they resolve under `project_root`. For example, print `data/01_raw/fixtures_strict/2026/partidas-14.csv`, not an absolute path. If a path unexpectedly cannot be made relative to `project_root`, print the resolved absolute path.
+
+`Captured at UTC` and `Deadline at UTC` are printed as ISO-8601 UTC strings ending in `Z`, with no `+00:00` offset.
+
 On success, print stable labels:
 
 - `Strict fixture capture complete`
@@ -141,13 +145,14 @@ On generation failure after capture succeeds, print a clean failure message that
 - retained snapshot directory;
 - captured-at UTC;
 - deadline-at UTC;
-- generation error message.
+- original exception type;
+- original exception message.
 
 The command may use Rich formatting, but tests assert stable labels and values rather than box-drawing characters.
 
 ## Error Handling
 
-CLI parse failures use argparse's normal parser behavior. Runtime operational failures return exit code `1` without traceback.
+CLI parse failures use argparse's normal parser behavior. Runtime operational failures return exit code `1` without traceback. `main()` catches expected operational exceptions and prints `error: {message}` to stderr.
 
 Parse-time failures include:
 
@@ -159,11 +164,11 @@ Runtime operational failures include:
 - wrong current year;
 - Cartola market not open;
 - active round parse failure;
-- capture failure;
+- capture failure from `ValueError`, `FileExistsError`, `FileNotFoundError`, JSON decode errors, or `requests.RequestException`;
 - existing generated strict fixture without `--force-generate`;
 - manifest or hash validation failure.
 
-Unexpected exceptions may still propagate during development, but the v1 command should handle known operational errors cleanly.
+Unexpected exceptions may still propagate during development. The v1 command handles known operational errors cleanly.
 
 ## Tests
 
@@ -174,12 +179,15 @@ Add CLI/module tests for:
 - wrong current year fails before capture/status fetch.
 - `--source` rejects non-`cartola_api` at parse time.
 - `--auto` resolves active round from market status.
+- explicit `--round` fails when the deadline/status payload reports `status_mercado != 1`.
 - explicit `--round` passes that round to `capture_cartola_snapshot(...)`.
 - capture success triggers generation.
 - generation receives `captured_at` from the just-returned capture result.
 - `--force-generate` maps only to `generate_strict_fixture(force=True)`.
 - existing strict fixture plus no `--force-generate` returns clean error, keeps the raw snapshot, and reports the snapshot path.
 - terminal success output includes snapshot directory, strict fixture path, manifest path, `captured_at_utc`, and `deadline_at_utc`.
+- printed paths are project-root-relative.
+- printed UTC timestamps end in `Z`.
 
 ## Acceptance Criteria
 
