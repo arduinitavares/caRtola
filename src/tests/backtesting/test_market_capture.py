@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -117,3 +118,63 @@ def test_deadline_metadata_reports_ok_missing_and_invalid() -> None:
     assert deadline_metadata(_status_payload()) == (1777748340, "ok")
     assert deadline_metadata({"rodada_atual": 14, "status_mercado": 1}) == (None, "missing")
     assert deadline_metadata({"fechamento": {"timestamp": "bad"}}) == (None, "invalid")
+
+
+def test_fetch_cartola_json_records_response_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cartola.backtesting.market_capture import fetch_cartola_json
+
+    class Response:
+        status_code = 200
+        content = json.dumps({"ok": True}).encode()
+        url = "https://api.cartola.globo.com/mercado/status?x=1"
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True}
+
+    def fake_get(url: str, timeout: float) -> Response:
+        assert url == "https://api.cartola.globo.com/mercado/status"
+        assert timeout == 12.0
+        return Response()
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    captured = fetch_cartola_json("https://api.cartola.globo.com/mercado/status", 12.0)
+
+    assert captured.payload == {"ok": True}
+    assert captured.status_code == 200
+    assert captured.final_url == "https://api.cartola.globo.com/mercado/status?x=1"
+    assert captured.body_sha256 == "6bc0da1f42f96fc37b8bd7ed20ba57606d2a0da5cda2b135c7854fbdc985b8a3"
+
+
+def test_fetch_cartola_json_rejects_non_200(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cartola.backtesting.market_capture import fetch_cartola_json
+
+    class Response:
+        status_code = 500
+        content = b"error"
+        url = "https://api.cartola.globo.com/mercado/status"
+
+        def json(self) -> dict[str, object]:
+            return {"error": True}
+
+    monkeypatch.setattr("requests.get", lambda url, timeout: Response())
+
+    with pytest.raises(ValueError, match="status=500"):
+        fetch_cartola_json("https://api.cartola.globo.com/mercado/status", 12.0)
+
+
+def test_fetch_cartola_json_rejects_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cartola.backtesting.market_capture import fetch_cartola_json
+
+    class Response:
+        status_code = 200
+        content = b"not-json"
+        url = "https://api.cartola.globo.com/mercado/status"
+
+        def json(self) -> dict[str, object]:
+            raise ValueError("bad json")
+
+    monkeypatch.setattr("requests.get", lambda url, timeout: Response())
+
+    with pytest.raises(ValueError, match="not valid JSON"):
+        fetch_cartola_json("https://api.cartola.globo.com/mercado/status", 12.0)

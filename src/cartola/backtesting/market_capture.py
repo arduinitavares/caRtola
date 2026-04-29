@@ -154,6 +154,23 @@ def _target_round_from_status(config: MarketCaptureConfig, status_payload: dict[
     return config.target_round
 
 
+def _validate_config_year(config: MarketCaptureConfig) -> int:
+    current_year = _resolved_current_year(config)
+    if config.season != current_year:
+        raise ValueError(f"season {config.season} must equal current_year {current_year}")
+    return current_year
+
+
+def _validate_open_market(status_payload: dict[str, Any]) -> int:
+    status_mercado = _int_field(status_payload, "status_mercado")
+    if status_mercado != 1:
+        rodada_atual = status_payload.get("rodada_atual")
+        raise ValueError(
+            f"Cartola market is not open: rodada_atual={rodada_atual} status_mercado {status_mercado}"
+        )
+    return status_mercado
+
+
 def _club_map(market_payload: dict[str, Any]) -> dict[int, str]:
     clubes = market_payload.get("clubes")
     if not isinstance(clubes, dict):
@@ -222,3 +239,99 @@ def build_live_market_frame(market_payload: dict[str, Any], *, target_round: int
         rows.append(row)
 
     return pd.DataFrame(rows, columns=list(RAW_OUTPUT_COLUMNS))
+
+
+def _sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def fetch_cartola_json(url: str, timeout_seconds: float) -> CapturedJsonResponse:
+    import requests  # type: ignore[import-untyped]
+
+    response = requests.get(url, timeout=timeout_seconds)
+    body = response.content
+    if response.status_code != 200:
+        raise ValueError(f"Cartola request failed: url={url} status={response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError(f"Cartola response is not valid JSON: url={url}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Cartola JSON payload must be an object: url={url}")
+    return CapturedJsonResponse(
+        payload=payload,
+        status_code=response.status_code,
+        final_url=str(response.url),
+        body_sha256=_sha256_bytes(body),
+    )
+
+
+def _final_csv_path(config: MarketCaptureConfig, target_round: int) -> Path:
+    return config.project_root / "data" / "01_raw" / str(config.season) / f"rodada-{target_round}.csv"
+
+
+def _final_metadata_path(config: MarketCaptureConfig, target_round: int) -> Path:
+    return config.project_root / "data" / "01_raw" / str(config.season) / f"rodada-{target_round}.capture.json"
+
+
+def _metadata(
+    *,
+    config: MarketCaptureConfig,
+    current_year: int,
+    target_round: int,
+    captured_at_utc: str,
+    status_response: CapturedJsonResponse,
+    market_response: CapturedJsonResponse,
+    status_mercado: int,
+    deadline_timestamp: int | None,
+    deadline_parse_status: str,
+    athlete_count: int,
+    csv_path: Path,
+    csv_sha256: str,
+) -> dict[str, Any]:
+    return {
+        "capture_version": CAPTURE_VERSION,
+        "season": config.season,
+        "current_year": current_year,
+        "target_round": target_round,
+        "captured_at_utc": captured_at_utc,
+        "status_endpoint": CARTOLA_STATUS_ENDPOINT,
+        "status_final_url": status_response.final_url,
+        "status_http_status": status_response.status_code,
+        "status_response_sha256": status_response.body_sha256,
+        "market_endpoint": CARTOLA_MARKET_ENDPOINT,
+        "market_final_url": market_response.final_url,
+        "market_http_status": market_response.status_code,
+        "market_response_sha256": market_response.body_sha256,
+        "rodada_atual": _int_field(status_response.payload, "rodada_atual"),
+        "status_mercado": status_mercado,
+        "deadline_timestamp": deadline_timestamp,
+        "deadline_parse_status": deadline_parse_status,
+        "athlete_count": athlete_count,
+        "csv_path": str(csv_path),
+        "csv_sha256": csv_sha256,
+    }
+
+
+def _write_temp_csv_and_metadata(
+    *,
+    temp_dir: Path,
+    frame: pd.DataFrame,
+    metadata: dict[str, Any],
+) -> tuple[Path, Path]:
+    temp_dir.mkdir(parents=True, exist_ok=False)
+    temp_csv = temp_dir / "round.csv"
+    temp_metadata = temp_dir / "capture.json"
+    frame.to_csv(temp_csv, index=False)
+    metadata = dict(metadata)
+    metadata["csv_sha256"] = _sha256_file(temp_csv)
+    temp_metadata.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return temp_csv, temp_metadata
