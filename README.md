@@ -165,19 +165,6 @@ quando ela já existir, ou `--capture-policy skip` para exigir uma captura exist
 sem buscar `atletas/mercado`. Cada execução fica arquivada em uma pasta
 `runs/run_started_at=...` e o `run_metadata.json` aponta para a captura usada.
 
-### Capture strict fixture evidence
-
-Before market lock, capture strict fixture evidence and generate the canonical strict fixture file:
-
-```bash
-uv run --frozen python scripts/capture_strict_round_fixture.py \
-  --season 2026 \
-  --auto \
-  --current-year 2026
-```
-
-This command is separate from `scripts/run_live_round.py`. Live recommendations still default to `fixture_mode=none`; strict fixture capture is provenance work for future fixture-context integration.
-
 Se preferir rodar em duas etapas, capture a rodada aberta do mercado:
 
 ```bash
@@ -232,6 +219,19 @@ As recomendações são gravadas em:
 Na v1, a recomendação fixa `fixture_mode=none`; `footystats_mode=ppg` é o modo
 recomendado para uso sem fixtures. `ppg_xg` permanece disponível como modo
 experimental.
+
+### Capture strict fixture evidence
+
+Before market lock, capture strict fixture evidence and generate the canonical strict fixture file:
+
+```bash
+uv run --frozen python scripts/capture_strict_round_fixture.py \
+  --season 2026 \
+  --auto \
+  --current-year 2026
+```
+
+This command is separate from `scripts/run_live_round.py`. Live recommendations still default to `fixture_mode=none`; strict fixture capture is provenance work for future fixture-context integration.
 
 ## ✅ Qualidade
 
