@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping
 
@@ -52,14 +52,13 @@ POSITION_ID_TO_CODE: Mapping[int, str] = {
 }
 
 DEFAULT_FORMATIONS: Mapping[str, Mapping[str, int]] = {
-    "4-3-3": {
-        "gol": 1,
-        "lat": 2,
-        "zag": 2,
-        "mei": 3,
-        "ata": 3,
-        "tec": 1,
-    }
+    "3-4-3": {"gol": 1, "lat": 0, "zag": 3, "mei": 4, "ata": 3, "tec": 1},
+    "3-5-2": {"gol": 1, "lat": 0, "zag": 3, "mei": 5, "ata": 2, "tec": 1},
+    "4-3-3": {"gol": 1, "lat": 2, "zag": 2, "mei": 3, "ata": 3, "tec": 1},
+    "4-4-2": {"gol": 1, "lat": 2, "zag": 2, "mei": 4, "ata": 2, "tec": 1},
+    "4-5-1": {"gol": 1, "lat": 2, "zag": 2, "mei": 5, "ata": 1, "tec": 1},
+    "5-3-2": {"gol": 1, "lat": 2, "zag": 3, "mei": 3, "ata": 2, "tec": 1},
+    "5-4-1": {"gol": 1, "lat": 2, "zag": 3, "mei": 4, "ata": 1, "tec": 1},
 }
 
 
@@ -69,7 +68,6 @@ class BacktestConfig:
     start_round: int = 5
     budget: float = 100.0
     playable_statuses: tuple[str, ...] = ("Provavel",)
-    formation_name: str = "4-3-3"
     random_seed: int = 123
     project_root: Path = Path(".")
     output_root: Path = Path("data/08_reporting/backtests")
@@ -81,7 +79,6 @@ class BacktestConfig:
     footystats_dir: Path = Path("data/footystats")
     current_year: int | None = None
     scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS
-    formations: Mapping[str, Mapping[str, int]] = field(default_factory=lambda: DEFAULT_FORMATIONS)
 
     @property
     def raw_season_path(self) -> Path:
@@ -90,9 +87,3 @@ class BacktestConfig:
     @property
     def output_path(self) -> Path:
         return self.project_root / self.output_root / str(self.season)
-
-    @property
-    def selected_formation(self) -> Mapping[str, int]:
-        if self.formation_name not in self.formations:
-            raise ValueError(f"Unknown formation {self.formation_name!r}. Available: {sorted(self.formations)}")
-        return self.formations[self.formation_name]
