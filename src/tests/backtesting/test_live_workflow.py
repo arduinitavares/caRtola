@@ -10,6 +10,7 @@ import pytest
 from cartola.backtesting.live_workflow import LiveWorkflowConfig, run_live_round
 from cartola.backtesting.market_capture import LiveCaptureMetadata, MarketCaptureResult
 from cartola.backtesting.recommendation import RecommendationConfig, RecommendationResult
+from cartola.backtesting.scoring_contract import contract_fields
 
 
 def _capture_metadata(tmp_path: Path, *, round_number: int = 14) -> LiveCaptureMetadata:
@@ -34,8 +35,13 @@ def _recommendation_result(config: RecommendationConfig) -> RecommendationResult
         "budget": config.budget,
         "budget_used": 99.5,
         "predicted_points": 73.25,
+        "predicted_points_base": 70.0,
+        "captain_bonus_predicted": 3.25,
+        "captain_id": 123,
+        "captain_name": "Captain A",
         "selected_count": 12,
         "output_directory": str(config.output_path),
+        **contract_fields(),
     }
     config.output_path.mkdir(parents=True, exist_ok=True)
     (config.output_path / "run_metadata.json").write_text(
@@ -95,6 +101,12 @@ def test_run_live_round_fresh_captures_and_uses_capture_round(
     assert recommendation_calls[0].live_workflow["capture_policy"] == "fresh"
     assert recommendation_calls[0].live_workflow["capture_csv_sha256"] == "a" * 64
     assert result.workflow_metadata["predicted_points"] == 73.25
+    assert result.workflow_metadata["predicted_points_base"] == 70.0
+    assert result.workflow_metadata["captain_bonus_predicted"] == 3.25
+    assert result.workflow_metadata["captain_id"] == 123
+    assert result.workflow_metadata["captain_name"] == "Captain A"
+    assert result.workflow_metadata["formation_search"] == "all_official_formations"
+    assert result.workflow_metadata["captain_scoring_enabled"] is True
     assert result.workflow_metadata["status"] == "ok"
 
 

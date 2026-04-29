@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
 
 import pandas as pd
@@ -13,6 +14,11 @@ from cartola.backtesting.recommendation import (
     _validate_mode_scope,
     _visible_season_frame,
     run_recommendation,
+)
+from cartola.backtesting.scoring_contract import (
+    SCORING_CONTRACT_VERSION,
+    actual_scores_with_captain,
+    contract_fields,
 )
 
 
@@ -55,16 +61,12 @@ def test_recommendation_config_rejects_output_run_id_with_path_separator(output_
         _validate_mode_scope(config)
 
 
-def test_recommendation_config_selected_formation() -> None:
-    config = RecommendationConfig(
-        season=2025,
-        target_round=14,
-        mode="replay",
-        formation_name="3-4-3",
-        formations={"3-4-3": {"gol": 1, "zag": 3, "mei": 4, "ata": 3, "tec": 1}},
-    )
+def test_recommendation_config_has_no_public_fixed_formation_api() -> None:
+    config_fields = {field.name for field in fields(RecommendationConfig)}
 
-    assert config.selected_formation == {"gol": 1, "zag": 3, "mei": 4, "ata": 3, "tec": 1}
+    assert "formation_name" not in config_fields
+    assert "formations" not in config_fields
+    assert not isinstance(RecommendationConfig.__dict__.get("selected_formation"), property)
 
 
 def _round_frame(
@@ -315,13 +317,18 @@ def test_run_recommendation_replay_reports_actual_points(
     )
 
     result = run_recommendation(config)
+    actual_scores = actual_scores_with_captain(result.recommended_squad, actual_column="pontuacao")
 
-    assert result.summary["actual_points"] is not None
-    assert result.summary["oracle_actual_points"] == pytest.approx(56.0)
-    assert result.summary["oracle_gap"] == pytest.approx(56.0 - float(result.summary["actual_points"]))
-    assert result.summary["oracle_capture_rate"] == pytest.approx(float(result.summary["actual_points"]) / 56.0)
+    assert result.summary["actual_points"] == pytest.approx(actual_scores["actual_points_with_captain"])
+    assert result.summary["actual_points_base"] == pytest.approx(actual_scores["actual_points_base"])
+    assert result.summary["captain_bonus_actual"] == pytest.approx(actual_scores["captain_bonus_actual"])
+    assert result.summary["actual_points_with_captain"] == pytest.approx(actual_scores["actual_points_with_captain"])
+    assert result.summary["oracle_actual_points"] == pytest.approx(59.0)
+    assert result.summary["oracle_gap"] == pytest.approx(59.0 - actual_scores["actual_points_with_captain"])
+    assert result.summary["oracle_capture_rate"] == pytest.approx(actual_scores["actual_points_with_captain"] / 59.0)
     assert result.summary["oracle_optimizer_status"] == "Optimal"
     assert "pontuacao" in result.recommended_squad.columns
+    assert "is_captain" in result.recommended_squad.columns
     assert result.summary["optimizer_status"] == "Optimal"
 
 
@@ -358,6 +365,9 @@ def test_run_recommendation_replay_nulls_missing_actual_points(
     result = run_recommendation(config)
 
     assert result.summary["actual_points"] is None
+    assert result.summary["actual_points_base"] is None
+    assert result.summary["captain_bonus_actual"] is None
+    assert result.summary["actual_points_with_captain"] is None
     assert result.summary["oracle_actual_points"] is None
     assert result.summary["oracle_gap"] is None
     assert result.summary["oracle_capture_rate"] is None
@@ -446,6 +456,9 @@ def test_run_recommendation_replay_nulls_capture_rate_when_oracle_is_not_positiv
     result = run_recommendation(config)
 
     assert result.summary["actual_points"] == 0.0
+    assert result.summary["actual_points_base"] == 0.0
+    assert result.summary["captain_bonus_actual"] == 0.0
+    assert result.summary["actual_points_with_captain"] == 0.0
     assert result.summary["oracle_actual_points"] == 0.0
     assert result.summary["oracle_gap"] == 0.0
     assert result.summary["oracle_capture_rate"] is None
@@ -487,13 +500,65 @@ def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowe
     result = run_recommendation(config)
 
     assert result.summary["actual_points"] is None
+    assert result.summary["actual_points_base"] is None
+    assert result.summary["captain_bonus_actual"] is None
+    assert result.summary["actual_points_with_captain"] is None
     assert result.summary["oracle_actual_points"] is None
     assert result.summary["oracle_gap"] is None
     assert result.summary["oracle_capture_rate"] is None
     assert result.summary["oracle_optimizer_status"] is None
     assert "pontuacao" not in result.recommended_squad.columns
     assert "entrou_em_campo" not in result.candidate_predictions.columns
+    assert "is_captain" in result.recommended_squad.columns
+    assert "captain_policy_ev" in result.recommended_squad.columns
+    assert "captain_policy_safe" in result.recommended_squad.columns
+    assert "captain_policy_upside" in result.recommended_squad.columns
+    assert "is_captain" not in result.candidate_predictions.columns
+    assert "captain_policy_ev" not in result.candidate_predictions.columns
     assert result.metadata["finalized_live_data_detected"] is True
+
+
+def test_run_recommendation_outputs_captain_contract_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4), target_round=3, live_target=True)
+
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+        footystats_mode="none",
+    )
+
+    result = run_recommendation(config)
+
+    assert result.summary["scoring_contract_version"] == SCORING_CONTRACT_VERSION
+    assert result.summary["captain_scoring_enabled"] is True
+    assert result.summary["formation_search"] == "all_official_formations"
+    assert result.summary["captain_id"] in set(result.recommended_squad["id_atleta"])
+    assert int(result.recommended_squad["is_captain"].sum()) == 1
+    assert "predicted_points_base" in result.summary
+    assert "captain_bonus_predicted" in result.summary
+    assert "predicted_points_with_captain" in result.summary
+    assert result.summary["predicted_points"] == result.summary["predicted_points_with_captain"]
+    assert "predicted_points" in result.recommended_squad.columns
+    assert "is_captain" in result.recommended_squad.columns
+    assert "captain_policy_ev" in result.recommended_squad.columns
+    assert "captain_policy_safe" in result.recommended_squad.columns
+    assert "captain_policy_upside" in result.recommended_squad.columns
+    assert "is_captain" not in result.candidate_predictions.columns
+    assert "captain_policy_ev" not in result.candidate_predictions.columns
+    assert result.summary["captain_policy_diagnostics"]
+
+    for key, value in contract_fields().items():
+        assert result.metadata[key] == value
+        assert result.summary[key] == value
+    assert result.metadata["formation"] == result.summary["formation"]
+    assert result.metadata["formation_search"] == "all_official_formations"
 
 
 def test_live_mode_rejects_finalized_target_round_without_escape_hatch(

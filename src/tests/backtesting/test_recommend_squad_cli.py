@@ -61,6 +61,10 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
                 "oracle_gap": 11.75,
                 "oracle_optimizer_status": "Optimal",
                 "predicted_points": 42.0,
+                "predicted_points_base": 39.0,
+                "captain_bonus_predicted": 3.0,
+                "predicted_points_with_captain": 42.0,
+                "captain_name": "Captain A",
                 "season": 2026,
                 "selected_count": 12,
                 "target_round": 14,
@@ -97,8 +101,14 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
     ]
     output = capsys.readouterr().out
     assert "Recommendation complete" in output
-    assert "Predicted points" in output
+    assert "Predicted total" in output
     assert "42.00" in output
+    assert "Predicted base" in output
+    assert "39.00" in output
+    assert "Captain bonus" in output
+    assert "3.00" in output
+    assert "Captain" in output
+    assert "Captain A" in output
     assert "Actual points" in output
     assert "38.25" in output
     assert "Delta" in output
@@ -128,6 +138,10 @@ def test_main_prints_live_summary_without_actual_points(monkeypatch, tmp_path: P
                 "oracle_gap": None,
                 "oracle_optimizer_status": None,
                 "predicted_points": 51.25,
+                "predicted_points_base": 49.0,
+                "captain_bonus_predicted": 2.25,
+                "predicted_points_with_captain": 51.25,
+                "captain_name": "Captain B",
                 "season": 2026,
                 "selected_count": 12,
                 "target_round": 14,
@@ -155,8 +169,14 @@ def test_main_prints_live_summary_without_actual_points(monkeypatch, tmp_path: P
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "Recommendation complete" in output
-    assert "Predicted points" in output
+    assert "Predicted total" in output
     assert "51.25" in output
+    assert "Predicted base" in output
+    assert "49.00" in output
+    assert "Captain bonus" in output
+    assert "2.25" in output
+    assert "Captain" in output
+    assert "Captain B" in output
     assert "Actual points" in output
     assert "n/a (live mode)" in output
     assert "Best in candidate pool" in output

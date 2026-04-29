@@ -136,6 +136,22 @@ def _workflow_metadata(
             "candidate_predictions_path": str(output_path / "candidate_predictions.csv"),
             "selected_count": None if recommendation is None else recommendation.summary.get("selected_count"),
             "predicted_points": None if recommendation is None else recommendation.summary.get("predicted_points"),
+            "predicted_points_base": None
+            if recommendation is None
+            else recommendation.summary.get("predicted_points_base"),
+            "captain_bonus_predicted": None
+            if recommendation is None
+            else recommendation.summary.get("captain_bonus_predicted"),
+            "captain_id": None if recommendation is None else recommendation.summary.get("captain_id"),
+            "captain_name": None if recommendation is None else recommendation.summary.get("captain_name"),
+            "scoring_contract_version": None
+            if recommendation is None
+            else recommendation.summary.get("scoring_contract_version"),
+            "captain_scoring_enabled": None
+            if recommendation is None
+            else recommendation.summary.get("captain_scoring_enabled"),
+            "captain_multiplier": None if recommendation is None else recommendation.summary.get("captain_multiplier"),
+            "formation_search": None if recommendation is None else recommendation.summary.get("formation_search"),
             "budget_used": None if recommendation is None else recommendation.summary.get("budget_used"),
             "status": status,
             "error_stage": error_stage,

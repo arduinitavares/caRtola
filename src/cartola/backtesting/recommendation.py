@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Mapping
@@ -32,6 +32,11 @@ from cartola.backtesting.footystats_features import (
 )
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
+from cartola.backtesting.scoring_contract import (
+    actual_scores_with_captain,
+    captain_policy_diagnostics,
+    contract_fields,
+)
 
 RecommendationMode = Literal["live", "replay"]
 
@@ -43,7 +48,6 @@ class RecommendationConfig:
     mode: RecommendationMode
     budget: float = 100.0
     playable_statuses: tuple[str, ...] = ("Provavel",)
-    formation_name: str = "4-3-3"
     random_seed: int = 123
     project_root: Path = Path(".")
     output_root: Path = Path("data/08_reporting/recommendations")
@@ -55,7 +59,6 @@ class RecommendationConfig:
     output_run_id: str | None = None
     live_workflow: Mapping[str, object] | None = None
     scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS
-    formations: Mapping[str, Mapping[str, int]] = field(default_factory=lambda: DEFAULT_FORMATIONS)
 
     @property
     def output_path(self) -> Path:
@@ -63,12 +66,6 @@ class RecommendationConfig:
         if self.output_run_id is None:
             return base
         return base / "runs" / self.output_run_id
-
-    @property
-    def selected_formation(self) -> Mapping[str, int]:
-        if self.formation_name not in self.formations:
-            raise ValueError(f"Unknown formation {self.formation_name!r}. Available: {sorted(self.formations)}")
-        return self.formations[self.formation_name]
 
 
 @dataclass(frozen=True)
@@ -112,7 +109,6 @@ def _backtest_config(config: RecommendationConfig) -> BacktestConfig:
         start_round=config.target_round,
         budget=config.budget,
         playable_statuses=config.playable_statuses,
-        formation_name=config.formation_name,
         random_seed=config.random_seed,
         project_root=config.project_root,
         output_root=Path("data/08_reporting/backtests"),
@@ -123,7 +119,6 @@ def _backtest_config(config: RecommendationConfig) -> BacktestConfig:
         footystats_dir=config.footystats_dir,
         current_year=config.current_year,
         scout_columns=config.scout_columns,
-        formations=config.formations,
     )
 
 
@@ -241,18 +236,47 @@ def _select_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return frame[[column for column in columns if column in frame.columns]].copy()
 
 
-def _replay_actual_points(selected: pd.DataFrame) -> tuple[float | None, list[str]]:
-    if "pontuacao" not in selected.columns:
-        return None, ["Replay actual_points is null because selected pontuacao is unavailable."]
+def _ensure_nome_clube(selected: pd.DataFrame) -> pd.DataFrame:
+    selected = selected.copy()
+    if "nome_clube" not in selected.columns:
+        selected["nome_clube"] = selected["clube"] if "clube" in selected.columns else ""
+        return selected
+    if "clube" not in selected.columns:
+        return selected
 
-    values = pd.to_numeric(selected["pontuacao"], errors="coerce")
-    missing_count = int(values.isna().sum())
-    if missing_count:
-        return None, [
-            "Replay actual_points is null because "
-            f"{missing_count} selected players have missing pontuacao."
+    nome_clube = selected["nome_clube"]
+    missing_name = nome_clube.isna() | nome_clube.map(lambda value: str(value).strip() == "")
+    selected.loc[missing_name, "nome_clube"] = selected.loc[missing_name, "clube"]
+    return selected
+
+
+def _non_finite_count(frame: pd.DataFrame, column: str) -> int:
+    values = pd.to_numeric(frame[column], errors="coerce")
+    finite = values.map(lambda value: bool(pd.notna(value) and math.isfinite(float(value))))
+    return int((~finite).sum())
+
+
+def _null_actual_score_fields() -> dict[str, float | None]:
+    return {
+        "actual_points_base": None,
+        "captain_bonus_actual": None,
+        "actual_points_with_captain": None,
+    }
+
+
+def _replay_actual_scores(selected: pd.DataFrame) -> tuple[dict[str, float | None], list[str]]:
+    if "pontuacao" not in selected.columns:
+        return _null_actual_score_fields(), [
+            "Replay actual_points is null because selected pontuacao is unavailable."
         ]
-    return float(values.sum()), []
+
+    invalid_count = _non_finite_count(selected, "pontuacao")
+    if invalid_count:
+        return _null_actual_score_fields(), [
+            "Replay actual_points is null because "
+            f"{invalid_count} selected players have missing or non-finite pontuacao."
+        ]
+    return actual_scores_with_captain(selected, actual_column="pontuacao"), []
 
 
 def _empty_oracle_metrics() -> dict[str, object]:
@@ -274,7 +298,7 @@ def _numeric_finite_series(frame: pd.DataFrame, column: str) -> pd.Series:
 def _oracle_replay_metrics(
     candidates: pd.DataFrame,
     *,
-    actual_points: float | None,
+    actual_points_with_captain: float | None,
     config: BacktestConfig,
 ) -> tuple[dict[str, object], list[str]]:
     metrics = _empty_oracle_metrics()
@@ -291,22 +315,49 @@ def _oracle_replay_metrics(
 
     oracle_candidates = candidates.copy()
     oracle_candidates["pontuacao"] = actual_values
+    if actual_values.eq(0.0).all():
+        metrics["oracle_optimizer_status"] = "Optimal"
+        metrics["oracle_actual_points"] = 0.0
+        if actual_points_with_captain is None:
+            return metrics, []
+        metrics["oracle_gap"] = 0.0 - actual_points_with_captain
+        return metrics, ["Oracle capture_rate is null because oracle_actual_points is not positive."]
+
     oracle_result = optimize_squad(oracle_candidates, score_column="pontuacao", config=config)
     metrics["oracle_optimizer_status"] = oracle_result.status
     if oracle_result.status != "Optimal":
         return metrics, [f"Oracle optimizer did not reach Optimal status: {oracle_result.status}."]
 
-    oracle_points = float(pd.to_numeric(oracle_result.selected["pontuacao"], errors="raise").sum())
+    oracle_scores = actual_scores_with_captain(oracle_result.selected, actual_column="pontuacao")
+    oracle_points = oracle_scores["actual_points_with_captain"]
     metrics["oracle_actual_points"] = oracle_points
-    if actual_points is None:
+    if actual_points_with_captain is None:
         return metrics, []
 
-    metrics["oracle_gap"] = oracle_points - actual_points
+    metrics["oracle_gap"] = oracle_points - actual_points_with_captain
     if oracle_points <= 0:
         return metrics, ["Oracle capture_rate is null because oracle_actual_points is not positive."]
 
-    metrics["oracle_capture_rate"] = actual_points / oracle_points
+    metrics["oracle_capture_rate"] = actual_points_with_captain / oracle_points
     return metrics, []
+
+
+def _captain_summary_fields(selected: pd.DataFrame) -> dict[str, object]:
+    captain = selected.loc[selected["is_captain"].eq(True)].iloc[0]
+    return {
+        "captain_id": int(captain["id_atleta"]),
+        "captain_name": str(captain["apelido"]),
+        "captain_position": str(captain["posicao"]),
+        "captain_club": str(captain["nome_clube"]),
+    }
+
+
+def _captain_policy_definitions() -> dict[str, str]:
+    return {
+        "ev": "Highest projected points among selected non-tecnico players.",
+        "safe": "Highest projected points minus prior points standard deviation among selected non-tecnico players.",
+        "upside": "Highest projected points plus prior points standard deviation among selected non-tecnico players.",
+    }
 
 
 def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
@@ -366,22 +417,37 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
     if optimized.status != "Optimal":
         raise ValueError(f"Recommendation optimizer failed: status={optimized.status}")
 
-    selected = optimized.selected.copy()
+    selected = _ensure_nome_clube(optimized.selected)
     selected["predicted_points"] = selected["random_forest_score"]
     warnings: list[str] = []
-    actual_points = None
+    actual_scores = _null_actual_score_fields()
+    policy_actual_column = None
     oracle_metrics = _empty_oracle_metrics()
     if config.mode == "replay":
-        actual_points, actual_warnings = _replay_actual_points(selected)
+        actual_scores, actual_warnings = _replay_actual_scores(selected)
         warnings.extend(actual_warnings)
+        if not actual_warnings:
+            policy_actual_column = "pontuacao"
         oracle_metrics, oracle_warnings = _oracle_replay_metrics(
             scored,
-            actual_points=actual_points,
+            actual_points_with_captain=actual_scores["actual_points_with_captain"],
             config=backtest_config,
         )
         warnings.extend(oracle_warnings)
+    policy_diagnostics = captain_policy_diagnostics(
+        selected,
+        predicted_column="random_forest_score",
+        actual_column=policy_actual_column,
+    )
 
-    selected_columns = [*BASE_OUTPUT_COLUMNS, "predicted_points"]
+    selected_columns = [
+        *BASE_OUTPUT_COLUMNS,
+        "predicted_points",
+        "is_captain",
+        "captain_policy_ev",
+        "captain_policy_safe",
+        "captain_policy_upside",
+    ]
     candidate_columns = [*BASE_OUTPUT_COLUMNS, *_active_footystats_columns(config)]
     if config.mode == "replay":
         replay_columns = ["pontuacao", "entrou_em_campo", *config.scout_columns]
@@ -390,18 +456,28 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
 
     recommended_squad = _select_columns(selected, selected_columns)
     candidate_predictions = _select_columns(scored, candidate_columns)
+    actual_points_with_captain = actual_scores["actual_points_with_captain"]
     summary: dict[str, object] = {
+        **contract_fields(),
         "season": config.season,
         "target_round": config.target_round,
         "mode": config.mode,
         "strategy": "random_forest",
-        "formation": config.formation_name,
+        "formation": optimized.formation_name,
         "budget": float(config.budget),
         "optimizer_status": optimized.status,
         "selected_count": int(optimized.selected_count),
         "budget_used": float(optimized.budget_used),
-        "predicted_points": float(optimized.predicted_points),
-        "actual_points": None if actual_points is None else float(actual_points),
+        "predicted_points": float(optimized.predicted_points_with_captain),
+        "predicted_points_base": float(optimized.predicted_points_base),
+        "captain_bonus_predicted": float(optimized.captain_bonus_predicted),
+        "predicted_points_with_captain": float(optimized.predicted_points_with_captain),
+        "actual_points": None if actual_points_with_captain is None else float(actual_points_with_captain),
+        "actual_points_base": actual_scores["actual_points_base"],
+        "captain_bonus_actual": actual_scores["captain_bonus_actual"],
+        "actual_points_with_captain": actual_points_with_captain,
+        **_captain_summary_fields(selected),
+        "captain_policy_diagnostics": policy_diagnostics,
         **oracle_metrics,
         "output_directory": str(config.output_path),
     }
@@ -414,6 +490,8 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         finalized_evidence=finalized_evidence,
         optimizer_status=optimized.status,
         warnings=warnings,
+        formation=optimized.formation_name,
+        captain_policy_diagnostics=policy_diagnostics,
     )
 
     _write_recommendation_outputs(config, recommended_squad, candidate_predictions, summary, metadata)
@@ -439,12 +517,15 @@ def _build_metadata(
     finalized_evidence: dict[str, int],
     optimizer_status: str,
     warnings: list[str],
+    formation: str,
+    captain_policy_diagnostics: list[dict[str, object]],
 ) -> dict[str, object]:
     training_rounds = sorted(
         int(round_number)
         for round_number in visible.loc[visible["rodada"].lt(config.target_round), "rodada"].dropna().unique()
     )
     return {
+        **contract_fields(),
         "season": config.season,
         "target_round": config.target_round,
         "mode": config.mode,
@@ -460,7 +541,10 @@ def _build_metadata(
         "footystats_matches_source_sha256": footystats.source_sha256 if footystats is not None else None,
         "feature_columns": feature_columns,
         "playable_statuses": list(config.playable_statuses),
-        "formation": config.formation_name,
+        "formation": formation,
+        "allowed_formations": list(DEFAULT_FORMATIONS),
+        "captain_policy_definitions": _captain_policy_definitions(),
+        "captain_policy_diagnostics": captain_policy_diagnostics,
         "budget": float(config.budget),
         "random_seed": config.random_seed,
         "finalized_live_data_detected": finalized_detected,

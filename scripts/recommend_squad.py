@@ -55,7 +55,9 @@ def _format_actual_points(summary: dict[str, object]) -> str:
 
 
 def _format_delta(summary: dict[str, object]) -> str:
-    predicted_points = _float_summary(summary, "predicted_points")
+    predicted_points = _float_summary(summary, "predicted_points_with_captain")
+    if predicted_points is None:
+        predicted_points = _float_summary(summary, "predicted_points")
     actual_points = _float_summary(summary, "actual_points")
     if predicted_points is None or actual_points is None:
         return "n/a"
@@ -84,10 +86,16 @@ def _print_success(console: Console, result_summary: dict[str, object]) -> None:
     budget_used = _float_summary(result_summary, "budget_used")
     budget = _float_summary(result_summary, "budget")
     budget_display = "n/a" if budget_used is None or budget is None else f"{budget_used:.2f} / {budget:.2f}"
+    predicted_total = _float_summary(result_summary, "predicted_points_with_captain")
+    if predicted_total is None:
+        predicted_total = _float_summary(result_summary, "predicted_points")
     table = Table(show_header=True, header_style="bold")
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column("Value", overflow="fold")
-    table.add_row("Predicted points", _format_points(_float_summary(result_summary, "predicted_points")))
+    table.add_row("Predicted total", _format_points(predicted_total))
+    table.add_row("Predicted base", _format_points(_float_summary(result_summary, "predicted_points_base")))
+    table.add_row("Captain bonus", _format_points(_float_summary(result_summary, "captain_bonus_predicted")))
+    table.add_row("Captain", str(result_summary.get("captain_name", "n/a")))
     table.add_row("Actual points", _format_actual_points(result_summary))
     table.add_row("Delta", _format_delta(result_summary))
     table.add_row("Best in candidate pool", _format_points(_float_summary(result_summary, "oracle_actual_points")))
