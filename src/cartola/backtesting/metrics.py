@@ -255,6 +255,7 @@ def _random_valid_squad_points(
 ) -> list[float]:
     if random_draws <= 0 or MARKET_OPEN_PRICE_COLUMN not in candidate_pool.columns:
         return []
+    _finite_random_actual_points(candidate_pool)
 
     by_position = {
         position: position_frame.reset_index(drop=True)
@@ -282,7 +283,7 @@ def _random_valid_squad_points(
 
         squad = pd.concat(sampled_frames, ignore_index=True)
         if float(squad[MARKET_OPEN_PRICE_COLUMN].sum()) <= budget:
-            actual_points = pd.to_numeric(squad["pontuacao"], errors="raise").astype(float)
+            actual_points = _finite_random_actual_points(squad)
             captain_candidates = squad["posicao"].ne("tec")
             if not captain_candidates.any():
                 continue
@@ -291,6 +292,17 @@ def _random_valid_squad_points(
             points.append(base_actual + (CAPTAIN_MULTIPLIER - 1.0) * captain_actual)
 
     return points
+
+
+def _finite_random_actual_points(frame: pd.DataFrame) -> pd.Series:
+    if "pontuacao" not in frame.columns:
+        raise ValueError("Random diagnostic candidate pool must include pontuacao")
+
+    actual_points = pd.to_numeric(frame["pontuacao"], errors="coerce")
+    if actual_points.isna().any() or actual_points.isin([float("inf"), float("-inf")]).any():
+        raise ValueError("Random diagnostic pontuacao values must be finite numeric values")
+
+    return actual_points.astype(float)
 
 
 def _score_columns(player_predictions: pd.DataFrame) -> dict[str, str]:

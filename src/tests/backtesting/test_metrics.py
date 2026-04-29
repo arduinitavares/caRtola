@@ -1,6 +1,7 @@
 import pandas as pd
+import pytest
 
-from cartola.backtesting.metrics import build_diagnostics, build_summary
+from cartola.backtesting.metrics import _random_valid_squad_points, build_diagnostics, build_summary
 
 
 def test_build_summary_computes_strategy_totals_and_benchmark_delta():
@@ -319,6 +320,43 @@ def test_build_diagnostics_random_expected_points_include_captain_bonus():
         _metric_value(diagnostics, "random_selection", "model", "all", "random_baseline_captain_policy")
         == "actual_best_non_tecnico"
     )
+
+
+def test_random_valid_squad_points_rejects_missing_pontuacao_column():
+    candidate_pool = pd.DataFrame(
+        [
+            {"posicao": "gol", "preco_pre_rodada": 1.0},
+            {"posicao": "lat", "preco_pre_rodada": 1.0},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="pontuacao"):
+        _random_valid_squad_points(
+            candidate_pool,
+            {"gol": 1, "lat": 1},
+            budget=2.0,
+            random_draws=1,
+            random_seed=7,
+        )
+
+
+@pytest.mark.parametrize("pontuacao", [None, float("nan"), float("inf")])
+def test_random_valid_squad_points_rejects_non_finite_pontuacao(pontuacao: float | None):
+    candidate_pool = pd.DataFrame(
+        [
+            {"posicao": "gol", "pontuacao": 20.0, "preco_pre_rodada": 1.0},
+            {"posicao": "lat", "pontuacao": pontuacao, "preco_pre_rodada": 1.0},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="pontuacao"):
+        _random_valid_squad_points(
+            candidate_pool,
+            {"gol": 1, "lat": 1},
+            budget=2.0,
+            random_draws=1,
+            random_seed=7,
+        )
 
 
 def test_build_diagnostics_returns_expected_columns_for_empty_inputs():
