@@ -148,7 +148,24 @@ Para gerar uma recomendação para a temporada atual, use o modo `live`. Ele exi
 `rodada <= target_round`, treina apenas com rodadas anteriores e não escreve colunas
 de pontuação/scouts finais nos CSVs de saída:
 
-Antes de gerar uma recomendação live, capture a rodada aberta do mercado:
+Fluxo live em um comando:
+
+```bash
+uv run --frozen python scripts/run_live_round.py \
+  --season 2026 \
+  --budget 100 \
+  --footystats-mode ppg \
+  --current-year 2026
+```
+
+Por padrão, esse comando usa `--capture-policy fresh`: ele atualiza a rodada aberta
+com a primitiva segura de captura live e depois gera a recomendação para a rodada
+capturada. Use `--capture-policy missing` para reutilizar uma captura live válida
+quando ela já existir, ou `--capture-policy skip` para exigir uma captura existente
+sem buscar `atletas/mercado`. Cada execução fica arquivada em uma pasta
+`runs/run_started_at=...` e o `run_metadata.json` aponta para a captura usada.
+
+Se preferir rodar em duas etapas, capture a rodada aberta do mercado:
 
 ```bash
 uv run --frozen python scripts/capture_market_round.py \
@@ -197,6 +214,7 @@ As recomendações são gravadas em:
 - `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/candidate_predictions.csv`
 - `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/recommendation_summary.json`
 - `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/run_metadata.json`
+- `data/08_reporting/recommendations/{season}/round-{target_round}/live/runs/run_started_at=.../` quando usado via `scripts/run_live_round.py`
 
 Na v1, a recomendação fixa `fixture_mode=none`; `footystats_mode=ppg` é o modo
 recomendado para uso sem fixtures. `ppg_xg` permanece disponível como modo

@@ -67,6 +67,12 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - validates current-year/open-market scope,
   - sanitizes target-round outcome fields,
   - publishes CSV and `.capture.json` with safe overwrite rules.
+- One-command live round workflow:
+  - `scripts/run_live_round.py` captures or validates the open market round,
+  - defaults to `capture_policy=fresh`,
+  - uses the captured `rodada_atual` as the recommendation target,
+  - archives every recommendation under `runs/run_started_at=...`,
+  - links recommendation metadata back to the capture CSV/hash/metadata.
 
 **Current Interpretation**
 The 2025 fixture-context result showed the first meaningful model lift: RF beat baseline and crossed the `player_r2 > 0.05` threshold, but that 2025 fixture data is still **exploratory reconstruction**, not strict historical proof. The strict system is now built for future/live capture, but we still need actual pre-lock snapshots to run strict evaluations.
@@ -223,6 +229,16 @@ uv run --frozen python scripts/capture_market_round.py \
 Live squad recommendation for the current production season:
 
 ```bash
+uv run --frozen python scripts/run_live_round.py \
+  --season 2026 \
+  --budget 100 \
+  --footystats-mode ppg \
+  --current-year 2026
+```
+
+Manual two-step live recommendation:
+
+```bash
 uv run --frozen python scripts/recommend_squad.py \
   --season 2026 \
   --target-round 14 \
@@ -251,7 +267,7 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Use the live capture plus recommendation commands for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, and `run_metadata.json` before making lineup decisions.
+1. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
 2. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
 3. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
 4. Generate strict fixtures from those snapshots and integrate strict/current fixture context into the recommendation workflow once snapshots exist.
@@ -269,11 +285,7 @@ uv run --frozen scripts/pyrepo-check --all
    - HistGradientBoosting,
    - GradientBoosting,
    - maybe XGBoost/CatBoost later.
-9. Add a higher-level live round workflow around the capture and recommendation commands:
-   - auto-capture the open market when missing,
-   - verify pre-lock FootyStats/current fixture inputs,
-   - archive recommendation outputs per round.
-10. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
+9. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:
