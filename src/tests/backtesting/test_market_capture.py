@@ -450,16 +450,28 @@ def test_capture_force_preserves_originals_when_csv_backup_creation_fails(
     assert not list(initial.csv_path.parent.glob(".tmp-market-capture-*"))
 
 
-def test_capture_auto_reuses_existing_valid_capture(tmp_path: Path) -> None:
+def test_capture_auto_refuses_existing_capture_without_reusing_stale_data(tmp_path: Path) -> None:
     config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
     capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+    original_metadata = (tmp_path / "data/01_raw/2026/rodada-14.capture.json").read_text(encoding="utf-8")
 
-    result = capture_market_round(
-        MarketCaptureConfig(season=2026, auto=True, current_year=2026, project_root=tmp_path),
-        fetch=_fetch_pair(),
-    )
+    fetched_urls: list[str] = []
 
-    assert result.reused_existing is True
+    def fetch(url: str, timeout: float) -> object:
+        fetched_urls.append(url)
+        return _fetch_pair(market_payload=_market_payload(stale_round=12))(url, timeout)
+
+    with pytest.raises(FileExistsError, match="destination already exists"):
+        capture_market_round(
+            MarketCaptureConfig(season=2026, auto=True, current_year=2026, project_root=tmp_path),
+            fetch=fetch,
+            now=lambda: datetime(2026, 4, 29, 12, 5, tzinfo=UTC),
+        )
+
+    assert any(url.endswith("/mercado/status") for url in fetched_urls)
+    assert any(url.endswith("/atletas/mercado") for url in fetched_urls)
+    assert (tmp_path / "data/01_raw/2026/rodada-14.capture.json").read_text(encoding="utf-8") == original_metadata
+    assert not list((tmp_path / "data/01_raw/2026").glob(".tmp-market-capture-*"))
 
 
 def _raw_round_csv(path: Path, round_number: int) -> None:

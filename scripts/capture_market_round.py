@@ -39,8 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             project_root=args.project_root,
         )
     )
-    reused = " reused_existing=true" if result.reused_existing else ""
-    print(f"Captured live market round: {result.csv_path}{reused}")
+    print(f"Captured live market round: {result.csv_path}")
     print(
         "metadata="
         f"{result.metadata_path} "

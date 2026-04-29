@@ -159,8 +159,9 @@ uv run --frozen python scripts/capture_market_round.py \
 
 Esse comando usa `mercado/status.rodada_atual` para nomear
 `data/01_raw/{season}/rodada-{rodada_atual}.csv`, sanitiza pontuação/scouts da
-rodada alvo e se recusa a sobrescrever dados existentes que não sejam uma
-captura live anterior.
+rodada alvo e se recusa a sobrescrever qualquer arquivo existente sem `--force`.
+Com `--force`, ele só substitui uma captura live anterior válida com metadata
+compatível.
 
 ```bash
 uv run --frozen python scripts/recommend_squad.py \

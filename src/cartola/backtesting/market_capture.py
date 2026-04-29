@@ -88,7 +88,6 @@ class MarketCaptureResult:
     status_mercado: int
     deadline_timestamp: int | None
     deadline_parse_status: str
-    reused_existing: bool = False
 
 
 Fetch = Callable[[str, float], CapturedJsonResponse]
@@ -445,20 +444,6 @@ def capture_market_round(
     status_mercado = _validate_open_market(status_response.payload)
     final_csv = _final_csv_path(config, target_round)
     final_metadata = _final_metadata_path(config, target_round)
-
-    if config.auto and not config.force and final_csv.exists() and final_metadata.exists():
-        _validate_previous_capture(final_csv, final_metadata, config=config, target_round=target_round)
-        metadata = json.loads(final_metadata.read_text(encoding="utf-8"))
-        return MarketCaptureResult(
-            csv_path=final_csv,
-            metadata_path=final_metadata,
-            target_round=target_round,
-            athlete_count=int(metadata["athlete_count"]),
-            status_mercado=int(metadata["status_mercado"]),
-            deadline_timestamp=metadata["deadline_timestamp"],
-            deadline_parse_status=str(metadata["deadline_parse_status"]),
-            reused_existing=True,
-        )
 
     market_response = fetch(CARTOLA_MARKET_ENDPOINT, config.timeout_seconds)
     frame = build_live_market_frame(market_response.payload, target_round=target_round)
