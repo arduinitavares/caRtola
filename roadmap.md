@@ -75,7 +75,7 @@ The FootyStats compatibility audit is now implemented and the current `data/foot
 - Required safe columns are present: `Pre-Match PPG (Home)` and `Pre-Match PPG (Away)`.
 - Optional safe columns include pre-match xG, odds, goal environment, corners, and cards fields.
 
-The first leakage-safe FootyStats feature integration is complete, and the xG-over-PPG feature path is now being added as the next narrow FootyStats feature pack. On the 2025 fixture-context benchmark, `footystats_mode=ppg` improved RF from:
+The first leakage-safe FootyStats feature integration is complete. On the 2025 fixture-context benchmark, `footystats_mode=ppg` improved RF from:
 
 - `60.0406` to `61.1415` average points per round,
 - `0.054011` to `0.063308` player R²,
@@ -101,6 +101,20 @@ Per-season RF average points deltas:
 - `2025`: `+2.5391`.
 
 Interpretation: keep FootyStats pre-match PPG. It generalizes across the currently comparable candidate seasons and is now the strongest no-fixture feature addition.
+
+The xG-over-PPG ablation is also implemented and comparable for `2023`, `2024`, and `2025`, but it should **not** be promoted to the default feature pack:
+
+- aggregate RF average points delta: `-0.6777`;
+- aggregate player R² delta: `+0.00445`;
+- aggregate player correlation delta: `+0.00468`.
+
+Per-season RF average points deltas for `ppg -> ppg_xg`:
+
+- `2023`: `-0.7500`;
+- `2024`: `+2.0521`;
+- `2025`: `-3.3353`.
+
+Interpretation: pre-match xG slightly improves player-level fit metrics but hurts squad selection in aggregate and only improves RF average points in one of three seasons. Keep `footystats_mode=ppg_xg` available as an experimental/research mode, but keep `footystats_mode=ppg` as the current recommended no-fixture FootyStats mode.
 
 Important distinction:
 
@@ -187,34 +201,28 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Finish and evaluate the FootyStats pre-match xG feature pack:
-   - run `ppg -> ppg_xg` across `2023`, `2024`, and `2025`,
-   - keep xG only if successful comparable seasons show a positive aggregate RF delta without degrading player R²/correlation.
-2. Then evaluate odds/goal-environment features if xG adds signal:
-   - odds-derived win/draw/loss probabilities where available,
-   - over/under or expected-goals environment fields where available.
-3. Run broader FootyStats ablation backtests:
-   - PPG only,
-   - PPG + xG,
-   - PPG + xG + odds/goal environment.
-4. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
-5. Generate strict fixtures from those snapshots and run strict backtests as data accumulates.
-6. Add higher-signal Cartola fixture features:
+1. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
+2. Decide the next narrow feature bet:
+   - odds/goal-environment features as a separate ablation over PPG, not stacked blindly after xG;
+   - or DNP probability modeling if selection reliability is the bigger live-game bottleneck.
+3. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
+4. Generate strict fixtures from those snapshots and run strict backtests as data accumulates.
+5. Add higher-signal Cartola fixture features:
    - opponent defensive weakness,
    - points conceded by opponent and position,
    - home/away split priors.
-7. Add DNP probability modeling:
+6. Add DNP probability modeling:
    - predict `p_play`,
    - use `expected_points = predicted_points * p_play`.
-8. Add model comparison only after features improve:
+7. Add model comparison only after features improve:
    - HistGradientBoosting,
    - GradientBoosting,
    - maybe XGBoost/CatBoost later.
-9. Add live selection workflow:
+8. Add live selection workflow:
    - read open market data,
    - use strict/current fixture snapshot,
    - output recommended squad.
-10. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
+9. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:
