@@ -132,6 +132,23 @@ def _validate_mode_scope(config: RecommendationConfig) -> None:
             raise ValueError(f"live mode requires season {config.season} to equal current_year {current_year}")
 
 
+def _validate_output_root(config: RecommendationConfig) -> None:
+    project_root = config.project_root.resolve()
+    protected_backtest_root = (project_root / "data" / "08_reporting" / "backtests").resolve()
+    output_root = _resolve_output_root(config)
+    if output_root == protected_backtest_root or protected_backtest_root in output_root.parents:
+        raise ValueError(
+            "Recommendation output_root cannot be inside backtest reports: "
+            f"output_root={config.output_root}"
+        )
+
+
+def _resolve_output_root(config: RecommendationConfig) -> Path:
+    if config.output_root.is_absolute():
+        return config.output_root.resolve()
+    return (config.project_root / config.output_root).resolve()
+
+
 def _visible_season_frame(season_df: pd.DataFrame, *, target_round: int) -> pd.DataFrame:
     rodada = pd.to_numeric(season_df["rodada"], errors="raise").astype(int)
     return season_df.loc[rodada.le(target_round)].copy()
@@ -207,8 +224,23 @@ def _select_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return frame[[column for column in columns if column in frame.columns]].copy()
 
 
+def _replay_actual_points(selected: pd.DataFrame) -> tuple[float | None, list[str]]:
+    if "pontuacao" not in selected.columns:
+        return None, ["Replay actual_points is null because selected pontuacao is unavailable."]
+
+    values = pd.to_numeric(selected["pontuacao"], errors="coerce")
+    missing_count = int(values.isna().sum())
+    if missing_count:
+        return None, [
+            "Replay actual_points is null because "
+            f"{missing_count} selected players have missing pontuacao."
+        ]
+    return float(values.sum()), []
+
+
 def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
     _validate_mode_scope(config)
+    _validate_output_root(config)
     season_df = load_season_data(config.season, project_root=config.project_root)
     visible = _visible_season_frame(season_df, target_round=config.target_round)
     target = visible[visible["rodada"].eq(config.target_round)].copy()
@@ -265,7 +297,11 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
 
     selected = optimized.selected.copy()
     selected["predicted_points"] = selected["random_forest_score"]
-    actual_points = optimized.actual_points if config.mode == "replay" else None
+    warnings: list[str] = []
+    actual_points = None
+    if config.mode == "replay":
+        actual_points, actual_warnings = _replay_actual_points(selected)
+        warnings.extend(actual_warnings)
 
     selected_columns = [*BASE_OUTPUT_COLUMNS, "predicted_points"]
     candidate_columns = [*BASE_OUTPUT_COLUMNS, *_active_footystats_columns(config)]
@@ -298,6 +334,7 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         finalized_detected=finalized_detected,
         finalized_evidence=finalized_evidence,
         optimizer_status=optimized.status,
+        warnings=warnings,
     )
 
     _write_recommendation_outputs(config, recommended_squad, candidate_predictions, summary, metadata)
@@ -322,6 +359,7 @@ def _build_metadata(
     finalized_detected: bool,
     finalized_evidence: dict[str, int],
     optimizer_status: str,
+    warnings: list[str],
 ) -> dict[str, object]:
     training_rounds = sorted(
         int(round_number)
@@ -350,7 +388,7 @@ def _build_metadata(
         "finalized_live_data_evidence": finalized_evidence,
         "allow_finalized_live_data": config.allow_finalized_live_data,
         "optimizer_status": optimizer_status,
-        "warnings": [],
+        "warnings": warnings,
         "generated_at_utc": _utc_now_z(),
     }
 
