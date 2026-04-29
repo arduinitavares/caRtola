@@ -391,6 +391,61 @@ def test_load_footystats_recommendation_rows_ignores_future_bad_rows(tmp_path: P
     assert sorted(result.rows["rodada"].unique().tolist()) == [1, 2, 3]
 
 
+def test_load_footystats_recommendation_rows_ignores_visible_unneeded_bad_rows(tmp_path: Path) -> None:
+    needed = _match_row(week=1, status="complete")
+    unneeded = _match_row(
+        week=1,
+        home="Unmapped FC",
+        away="Another Unmapped FC",
+        status="suspended",
+    )
+    unneeded["Pre-Match PPG (Home)"] = None
+    _write_matches_csv(tmp_path, [needed, unneeded])
+    _write_cartola_round(tmp_path)
+    required_keys = pd.DataFrame([{"rodada": 1, "id_clube": 262}])
+
+    result = load_footystats_feature_rows_for_recommendation(
+        season=SEASON,
+        project_root=tmp_path,
+        footystats_dir=Path("data/footystats"),
+        league_slug=LEAGUE_SLUG,
+        current_year=2026,
+        target_round=1,
+        footystats_mode="ppg",
+        require_complete_status=True,
+        required_keys=required_keys,
+    )
+
+    assert result.rows[["rodada", "id_clube"]].to_dict("records") == [{"rodada": 1, "id_clube": 262}]
+
+
+def test_load_footystats_recommendation_rows_ignores_future_ppg_xg_bad_rows(tmp_path: Path) -> None:
+    future = _match_row(
+        week=2,
+        home="Unmapped FC",
+        away="Another Unmapped FC",
+        status="suspended",
+    )
+    future["Home Team Pre-Match xG"] = None
+    _write_matches_csv(tmp_path, [_match_row(week=1, status="complete"), future])
+    _write_cartola_round(tmp_path)
+    required_keys = pd.DataFrame([{"rodada": 1, "id_clube": 262}])
+
+    result = load_footystats_feature_rows_for_recommendation(
+        season=SEASON,
+        project_root=tmp_path,
+        footystats_dir=Path("data/footystats"),
+        league_slug=LEAGUE_SLUG,
+        current_year=2026,
+        target_round=1,
+        footystats_mode="ppg_xg",
+        require_complete_status=True,
+        required_keys=required_keys,
+    )
+
+    assert result.rows[["rodada", "id_clube"]].to_dict("records") == [{"rodada": 1, "id_clube": 262}]
+
+
 def test_load_footystats_recommendation_rows_rejects_missing_required_key(tmp_path: Path) -> None:
     _write_matches_csv(tmp_path, [_match_row(week=1, status="complete")])
     _write_cartola_round(tmp_path)

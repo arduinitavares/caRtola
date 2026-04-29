@@ -258,6 +258,23 @@ def load_footystats_feature_rows_for_recommendation(
     df = df.loc[visible].copy()
     game_weeks = game_weeks.loc[visible]
 
+    required = _unique_key_frame(required_keys)
+    team_names = _team_names(df)
+    comparison = compare_teams_to_cartola(season=season, footystats_team_names=team_names, project_root=project_root)
+
+    relevant = _relevant_recommendation_match_rows(df, game_weeks, comparison.mapped_teams, required)
+    df = df.loc[relevant].copy()
+    game_weeks = game_weeks.loc[relevant]
+
+    _validate_team_names_present(df)
+    relevant_team_names = _team_names(df)
+    relevant_comparison = compare_teams_to_cartola(
+        season=season,
+        footystats_team_names=relevant_team_names,
+        project_root=project_root,
+    )
+    _validate_team_mapping(relevant_comparison, require_all_cartola_teams=False)
+
     home_ppg = _validated_ppg(df, "Pre-Match PPG (Home)")
     away_ppg = _validated_ppg(df, "Pre-Match PPG (Away)")
     home_xg = _validated_xg(df, "Home Team Pre-Match xG") if footystats_mode == "ppg_xg" else None
@@ -265,22 +282,18 @@ def load_footystats_feature_rows_for_recommendation(
     statuses = _validated_statuses(df, "live_current")
     if require_complete_status and any(status != "complete" for status in statuses):
         raise ValueError("FootyStats recommendation rows require all visible statuses to be complete")
-    _validate_team_names_present(df)
-
-    team_names = _team_names(df)
-    comparison = compare_teams_to_cartola(season=season, footystats_team_names=team_names, project_root=project_root)
-    _validate_team_mapping(comparison, require_all_cartola_teams=False)
 
     rows = _build_feature_rows(
         df,
         game_weeks,
         home_ppg,
         away_ppg,
-        comparison.mapped_teams,
+        relevant_comparison.mapped_teams,
         footystats_mode=footystats_mode,
         home_xg=home_xg,
         away_xg=away_xg,
     )
+    rows = _filter_recommendation_rows_to_required_keys(rows, required)
     _validate_required_recommendation_keys(rows, required_keys)
 
     return FootyStatsPPGLoadResult(
@@ -452,6 +465,50 @@ def _reject_duplicate_join_keys(rows: pd.DataFrame) -> None:
     duplicates = rows.duplicated(subset=["rodada", "id_clube"], keep=False)
     if bool(duplicates.any()):
         raise ValueError("FootyStats PPG rows contain duplicate normalized (rodada, id_clube) rows")
+
+
+def _relevant_recommendation_match_rows(
+    df: pd.DataFrame,
+    game_weeks: pd.Series,
+    mapped_teams: dict[str, int],
+    required: pd.DataFrame,
+) -> pd.Series:
+    if df.empty or required.empty:
+        return pd.Series(False, index=df.index)
+
+    required_pairs = {
+        (int(row["rodada"]), int(row["id_clube"]))
+        for _, row in required[["rodada", "id_clube"]].iterrows()
+    }
+
+    relevant_values: list[bool] = []
+    for index, match in df.iterrows():
+        rodada = int(game_weeks.loc[index])
+        home_id = _mapped_team_id(match["home_team_name"], mapped_teams)
+        away_id = _mapped_team_id(match["away_team_name"], mapped_teams)
+        relevant_values.append((rodada, home_id) in required_pairs or (rodada, away_id) in required_pairs)
+    return pd.Series(relevant_values, index=df.index)
+
+
+def _mapped_team_id(team_name: object, mapped_teams: dict[str, int]) -> int | None:
+    if pd.isna(team_name):
+        return None
+    return mapped_teams.get(str(team_name))
+
+
+def _filter_recommendation_rows_to_required_keys(rows: pd.DataFrame, required: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty or required.empty:
+        return rows.iloc[0:0].copy()
+
+    required_pairs = {
+        (int(row["rodada"]), int(row["id_clube"]))
+        for _, row in required[["rodada", "id_clube"]].iterrows()
+    }
+    keep = [
+        (int(row["rodada"]), int(row["id_clube"])) in required_pairs
+        for _, row in rows[["rodada", "id_clube"]].iterrows()
+    ]
+    return rows.loc[keep].copy()
 
 
 def _validate_required_recommendation_keys(rows: pd.DataFrame, required_keys: pd.DataFrame) -> None:
