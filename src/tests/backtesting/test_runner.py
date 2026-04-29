@@ -8,6 +8,7 @@ from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
 from cartola.backtesting.features import FOOTYSTATS_PPG_FEATURE_COLUMNS, FOOTYSTATS_XG_FEATURE_COLUMNS
 from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 from cartola.backtesting.runner import run_backtest
+from cartola.backtesting.scoring_contract import contract_fields
 from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
 
 
@@ -110,6 +111,8 @@ def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
     assert metadata["fixture_manifest_paths"] == []
     assert metadata["fixture_manifest_sha256"] == {}
     assert metadata["warnings"] == []
+    for field, expected_value in contract_fields().items():
+        assert metadata[field] == expected_value
 
 
 def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):
@@ -540,9 +543,31 @@ def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_pa
 
     assert result.round_results["solver_status"].eq("Optimal").all()
     assert result.round_results["selected_count"].eq(12).all()
+    assert {
+        "predicted_points_base",
+        "captain_bonus_predicted",
+        "predicted_points_with_captain",
+        "actual_points_base",
+        "captain_bonus_actual",
+        "actual_points_with_captain",
+        "captain_id",
+        "captain_name",
+        "captain_policy_ev_id",
+        "captain_policy_safe_id",
+        "captain_policy_upside_id",
+        "actual_points_with_ev_captain",
+        "actual_points_with_safe_captain",
+        "actual_points_with_upside_captain",
+    }.issubset(result.round_results.columns)
+    optimal = result.round_results[result.round_results["solver_status"].eq("Optimal")]
+    assert optimal["predicted_points"].equals(optimal["predicted_points_with_captain"])
+    assert optimal["actual_points"].equals(optimal["actual_points_with_captain"])
     assert set(result.selected_players["strategy"]) == {"baseline", "random_forest", "price"}
     assert result.selected_players["rodada"].eq(5).all()
     assert result.selected_players["predicted_points"].notna().all()
+    assert "is_captain" in result.selected_players.columns
+    captain_counts = result.selected_players.groupby(["rodada", "strategy"])["is_captain"].sum()
+    assert captain_counts.eq(1).all()
     assert len(result.selected_players) == 36
     assert {
         "rodada",
@@ -612,6 +637,22 @@ def test_selected_players_predicted_points_match_strategy_score_column(tmp_path)
     }.items():
         selected = result.selected_players[result.selected_players["strategy"] == strategy]
         assert selected["predicted_points"].equals(selected[score_column])
+        captain = selected.loc[selected["is_captain"]].iloc[0]
+        assert captain["predicted_points"] == captain[score_column]
+        assert captain["predicted_points"] * 1.5 != captain["predicted_points"]
+
+
+def test_run_backtest_skipped_round_uses_empty_formation_without_config_formation_name(tmp_path):
+    season_df = _tiny_round(1)
+    config = BacktestConfig(project_root=tmp_path, start_round=1, budget=100)
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert set(result.round_results["solver_status"]) == {"TrainingEmpty"}
+    assert result.round_results["formation"].eq("").all()
+    assert result.round_results["selected_count"].eq(0).all()
+    assert result.round_results["predicted_points"].eq(0.0).all()
+    assert result.round_results["actual_points"].eq(0.0).all()
 
 
 def test_price_strategy_scores_market_open_price_not_post_round_price(tmp_path):

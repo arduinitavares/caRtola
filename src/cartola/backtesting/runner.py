@@ -17,6 +17,11 @@ from cartola.backtesting.footystats_features import (
 from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
+from cartola.backtesting.scoring_contract import (
+    actual_scores_with_captain,
+    captain_policy_diagnostics,
+    contract_fields,
+)
 from cartola.backtesting.strict_fixtures import load_strict_fixtures
 
 ROUND_RESULT_COLUMNS: list[str] = [
@@ -27,7 +32,21 @@ ROUND_RESULT_COLUMNS: list[str] = [
     "selected_count",
     "budget_used",
     "predicted_points",
+    "predicted_points_base",
+    "captain_bonus_predicted",
+    "predicted_points_with_captain",
     "actual_points",
+    "actual_points_base",
+    "captain_bonus_actual",
+    "actual_points_with_captain",
+    "captain_id",
+    "captain_name",
+    "captain_policy_ev_id",
+    "captain_policy_safe_id",
+    "captain_policy_upside_id",
+    "actual_points_with_ev_captain",
+    "actual_points_with_safe_captain",
+    "actual_points_with_upside_captain",
 ]
 
 OUTPUT_FLOAT_PRECISION = 10
@@ -50,6 +69,10 @@ class BacktestMetadata:
     season: int
     start_round: int
     max_round: int
+    scoring_contract_version: str
+    captain_scoring_enabled: bool
+    captain_multiplier: float
+    formation_search: str
     fixture_mode: str
     strict_alignment_policy: str
     fixture_source_directory: str | None
@@ -124,10 +147,15 @@ def run_backtest(
 
     max_round = _max_round(data)
     model_feature_columns = feature_columns_for_config(config)
+    contract = contract_fields()
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
         max_round=max_round,
+        scoring_contract_version=str(contract["scoring_contract_version"]),
+        captain_scoring_enabled=bool(contract["captain_scoring_enabled"]),
+        captain_multiplier=float(contract["captain_multiplier"]),
+        formation_search=str(contract["formation_search"]),
         fixture_mode=config.fixture_mode,
         strict_alignment_policy=config.strict_alignment_policy,
         fixture_source_directory=resolved_fixtures.source_directory,
@@ -165,7 +193,7 @@ def run_backtest(
         candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy()
 
         if training.empty or candidates.empty:
-            _record_skipped_round(round_rows, round_number, config, "TrainingEmpty" if training.empty else "Empty")
+            _record_skipped_round(round_rows, round_number, "TrainingEmpty" if training.empty else "Empty")
             continue
 
         scored_candidates = candidates.copy()
@@ -183,6 +211,20 @@ def run_backtest(
             strategy_candidates = scored_candidates.copy()
             strategy_candidates["predicted_points"] = strategy_candidates[score_column]
             result = optimize_squad(strategy_candidates, score_column="predicted_points", config=config)
+            actual_scores = _actual_scores_for_result(
+                result.selected,
+                round_number=round_number,
+                strategy=strategy,
+                solver_status=result.status,
+            )
+            policy_diagnostics = _policy_diagnostics_for_result(
+                result.selected,
+                round_number=round_number,
+                strategy=strategy,
+                solver_status=result.status,
+            )
+            policy_summary = _policy_round_summary(policy_diagnostics)
+            actual_points_with_captain = actual_scores["actual_points_with_captain"]
             round_rows.append(
                 {
                     "rodada": round_number,
@@ -191,13 +233,23 @@ def run_backtest(
                     "formation": result.formation_name,
                     "selected_count": result.selected_count,
                     "budget_used": result.budget_used,
-                    "predicted_points": result.predicted_points,
-                    "actual_points": result.actual_points,
+                    "predicted_points": result.predicted_points_with_captain,
+                    "predicted_points_base": result.predicted_points_base,
+                    "captain_bonus_predicted": result.captain_bonus_predicted,
+                    "predicted_points_with_captain": result.predicted_points_with_captain,
+                    "actual_points": actual_points_with_captain,
+                    "actual_points_base": actual_scores["actual_points_base"],
+                    "captain_bonus_actual": actual_scores["captain_bonus_actual"],
+                    "actual_points_with_captain": actual_points_with_captain,
+                    "captain_id": result.captain_id,
+                    "captain_name": result.captain_name,
+                    **policy_summary,
                 }
             )
 
             if not result.selected.empty:
                 selected = result.selected.copy()
+                _apply_captain_policy_flags(selected, policy_diagnostics)
                 selected["rodada"] = round_number
                 selected["strategy"] = strategy
                 selected_frames.append(selected)
@@ -422,10 +474,96 @@ def _strategies() -> dict[str, str]:
     }
 
 
+def _empty_score_fields() -> dict[str, float | None]:
+    return {
+        "actual_points_base": 0.0,
+        "captain_bonus_actual": 0.0,
+        "actual_points_with_captain": 0.0,
+    }
+
+
+def _actual_scores_for_result(
+    selected: pd.DataFrame,
+    *,
+    round_number: int,
+    strategy: str,
+    solver_status: str,
+) -> dict[str, float | None]:
+    if solver_status != "Optimal" or selected.empty:
+        return _empty_score_fields()
+
+    try:
+        return actual_scores_with_captain(selected, actual_column="pontuacao")
+    except ValueError as exc:
+        raise ValueError(
+            f"Failed to score actual captain-aware points for round={round_number} strategy={strategy!r}."
+        ) from exc
+
+
+def _policy_diagnostics_for_result(
+    selected: pd.DataFrame,
+    *,
+    round_number: int,
+    strategy: str,
+    solver_status: str,
+) -> list[dict[str, object]]:
+    if solver_status != "Optimal" or selected.empty:
+        return []
+
+    try:
+        return captain_policy_diagnostics(
+            selected,
+            predicted_column="predicted_points",
+            actual_column="pontuacao",
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Failed to compute captain policy diagnostics for round={round_number} strategy={strategy!r}."
+        ) from exc
+
+
+def _policy_round_summary(policy_diagnostics: list[dict[str, object]]) -> dict[str, object]:
+    by_policy = {str(record["policy"]): record for record in policy_diagnostics}
+    return {
+        "captain_policy_ev_id": _policy_value(by_policy, "ev", "captain_id"),
+        "captain_policy_safe_id": _policy_value(by_policy, "safe", "captain_id"),
+        "captain_policy_upside_id": _policy_value(by_policy, "upside", "captain_id"),
+        "actual_points_with_ev_captain": _policy_value(by_policy, "ev", "actual_points_with_policy"),
+        "actual_points_with_safe_captain": _policy_value(by_policy, "safe", "actual_points_with_policy"),
+        "actual_points_with_upside_captain": _policy_value(by_policy, "upside", "actual_points_with_policy"),
+    }
+
+
+def _policy_value(
+    by_policy: dict[str, dict[str, object]],
+    policy: str,
+    key: str,
+) -> object:
+    record = by_policy.get(policy)
+    if record is None:
+        return None
+    return record[key]
+
+
+def _apply_captain_policy_flags(selected: pd.DataFrame, policy_diagnostics: list[dict[str, object]]) -> None:
+    policy_columns = {
+        "ev": "captain_policy_ev",
+        "safe": "captain_policy_safe",
+        "upside": "captain_policy_upside",
+    }
+    for policy, column in policy_columns.items():
+        if column not in selected.columns:
+            selected[column] = False
+        record = next((item for item in policy_diagnostics if item["policy"] == policy), None)
+        if record is not None:
+            selected[column] = selected["id_atleta"].eq(record["captain_id"])
+        else:
+            selected[column] = selected[column].fillna(False).astype(bool)
+
+
 def _record_skipped_round(
     round_rows: list[dict[str, object]],
     round_number: int,
-    config: BacktestConfig,
     status: str,
 ) -> None:
     for strategy in _strategies():
@@ -434,11 +572,25 @@ def _record_skipped_round(
                 "rodada": round_number,
                 "strategy": strategy,
                 "solver_status": status,
-                "formation": config.formation_name,
+                "formation": "",
                 "selected_count": 0,
                 "budget_used": 0.0,
                 "predicted_points": 0.0,
+                "predicted_points_base": 0.0,
+                "captain_bonus_predicted": 0.0,
+                "predicted_points_with_captain": 0.0,
                 "actual_points": 0.0,
+                "actual_points_base": 0.0,
+                "captain_bonus_actual": 0.0,
+                "actual_points_with_captain": 0.0,
+                "captain_id": None,
+                "captain_name": None,
+                "captain_policy_ev_id": None,
+                "captain_policy_safe_id": None,
+                "captain_policy_upside_id": None,
+                "actual_points_with_ev_captain": None,
+                "actual_points_with_safe_captain": None,
+                "actual_points_with_upside_captain": None,
             }
         )
 
