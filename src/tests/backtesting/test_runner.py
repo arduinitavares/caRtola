@@ -587,6 +587,31 @@ def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_pa
     assert not result.diagnostics.empty
 
 
+def test_run_backtest_records_captain_policy_flags_and_actual_totals(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+
+    result = run_backtest(config, season_df=season_df)
+
+    optimal_rows = result.round_results[result.round_results["solver_status"].eq("Optimal")]
+    for _, round_row in optimal_rows.iterrows():
+        selected = result.selected_players[
+            result.selected_players["rodada"].eq(round_row["rodada"])
+            & result.selected_players["strategy"].eq(round_row["strategy"])
+        ]
+        actual_points_base = float(selected["pontuacao"].sum())
+
+        for policy in ["ev", "safe", "upside"]:
+            policy_column = f"captain_policy_{policy}"
+            policy_selected = selected[selected[policy_column].eq(True)]
+
+            assert len(policy_selected) == 1
+            policy_captain = policy_selected.iloc[0]
+            assert int(round_row[f"captain_policy_{policy}_id"]) == int(policy_captain["id_atleta"])
+            expected_actual = actual_points_base + 0.5 * float(policy_captain["pontuacao"])
+            assert round_row[f"actual_points_with_{policy}_captain"] == pytest.approx(expected_actual)
+
+
 def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path, monkeypatch):
     class NoisyRandomForestPointPredictor:
         calls = 0

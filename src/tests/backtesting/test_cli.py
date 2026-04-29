@@ -5,6 +5,37 @@ import pandas as pd
 from cartola.backtesting.cli import main, parse_args
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.runner import BacktestMetadata, BacktestResult
+from cartola.backtesting.scoring_contract import contract_fields
+
+
+def _metadata_for_config(config: BacktestConfig, *, warnings: list[str] | None = None) -> BacktestMetadata:
+    contract = contract_fields()
+    return BacktestMetadata(
+        season=config.season,
+        start_round=config.start_round,
+        max_round=0,
+        scoring_contract_version=str(contract["scoring_contract_version"]),
+        captain_scoring_enabled=bool(contract["captain_scoring_enabled"]),
+        captain_multiplier=float(contract["captain_multiplier"]),
+        formation_search=str(contract["formation_search"]),
+        fixture_mode=config.fixture_mode,
+        strict_alignment_policy=config.strict_alignment_policy,
+        fixture_source_directory=None,
+        fixture_manifest_paths=[],
+        fixture_manifest_sha256={},
+        generator_versions=[],
+        excluded_rounds=[],
+        warnings=[] if warnings is None else warnings,
+        footystats_mode=config.footystats_mode,
+        footystats_evaluation_scope=config.footystats_evaluation_scope,
+        footystats_league_slug=config.footystats_league_slug,
+        footystats_matches_source_path=None,
+        footystats_matches_source_sha256=None,
+        footystats_feature_columns=[],
+        footystats_missing_join_keys_by_round={},
+        footystats_duplicate_join_keys_by_round={},
+        footystats_extra_club_rows_by_round={},
+    )
 
 
 def test_parse_args_accepts_v1_options():
@@ -85,28 +116,7 @@ def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path)
             player_predictions=pd.DataFrame(),
             summary=pd.DataFrame(),
             diagnostics=pd.DataFrame(),
-            metadata=BacktestMetadata(
-                season=config.season,
-                start_round=config.start_round,
-                max_round=0,
-                fixture_mode=config.fixture_mode,
-                strict_alignment_policy=config.strict_alignment_policy,
-                fixture_source_directory=None,
-                fixture_manifest_paths=[],
-                fixture_manifest_sha256={},
-                generator_versions=[],
-                excluded_rounds=[],
-                warnings=[],
-                footystats_mode=config.footystats_mode,
-                footystats_evaluation_scope=config.footystats_evaluation_scope,
-                footystats_league_slug=config.footystats_league_slug,
-                footystats_matches_source_path=None,
-                footystats_matches_source_sha256=None,
-                footystats_feature_columns=[],
-                footystats_missing_join_keys_by_round={},
-                footystats_duplicate_join_keys_by_round={},
-                footystats_extra_club_rows_by_round={},
-            ),
+            metadata=_metadata_for_config(config),
         )
 
     monkeypatch.setattr("cartola.backtesting.cli.run_backtest", fake_run_backtest)
@@ -147,28 +157,7 @@ def test_main_passes_footystats_options_and_output_root_to_config(monkeypatch) -
             player_predictions=pd.DataFrame(),
             summary=pd.DataFrame(),
             diagnostics=pd.DataFrame(),
-            metadata=BacktestMetadata(
-                season=config.season,
-                start_round=config.start_round,
-                max_round=0,
-                fixture_mode=config.fixture_mode,
-                strict_alignment_policy=config.strict_alignment_policy,
-                fixture_source_directory=None,
-                fixture_manifest_paths=[],
-                fixture_manifest_sha256={},
-                generator_versions=[],
-                excluded_rounds=[],
-                warnings=[],
-                footystats_mode=config.footystats_mode,
-                footystats_evaluation_scope=config.footystats_evaluation_scope,
-                footystats_league_slug=config.footystats_league_slug,
-                footystats_matches_source_path=None,
-                footystats_matches_source_sha256=None,
-                footystats_feature_columns=[],
-                footystats_missing_join_keys_by_round={},
-                footystats_duplicate_join_keys_by_round={},
-                footystats_extra_club_rows_by_round={},
-            ),
+            metadata=_metadata_for_config(config),
         )
 
     monkeypatch.setattr("cartola.backtesting.cli.run_backtest", fake_run_backtest)
@@ -208,28 +197,7 @@ def test_main_prints_metadata_warnings(monkeypatch, capsys, tmp_path):
             player_predictions=pd.DataFrame(),
             summary=pd.DataFrame(),
             diagnostics=pd.DataFrame(),
-            metadata=BacktestMetadata(
-                season=config.season,
-                start_round=config.start_round,
-                max_round=0,
-                fixture_mode=config.fixture_mode,
-                strict_alignment_policy=config.strict_alignment_policy,
-                fixture_source_directory=None,
-                fixture_manifest_paths=[],
-                fixture_manifest_sha256={},
-                generator_versions=[],
-                excluded_rounds=[],
-                warnings=["first warning", "second warning"],
-                footystats_mode=config.footystats_mode,
-                footystats_evaluation_scope=config.footystats_evaluation_scope,
-                footystats_league_slug=config.footystats_league_slug,
-                footystats_matches_source_path=None,
-                footystats_matches_source_sha256=None,
-                footystats_feature_columns=[],
-                footystats_missing_join_keys_by_round={},
-                footystats_duplicate_join_keys_by_round={},
-                footystats_extra_club_rows_by_round={},
-            ),
+            metadata=_metadata_for_config(config, warnings=["first warning", "second warning"]),
         )
 
     monkeypatch.setattr("cartola.backtesting.cli.run_backtest", fake_run_backtest)
