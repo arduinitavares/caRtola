@@ -9,6 +9,7 @@ from cartola.backtesting.scoring_contract import (
     FORMATION_SEARCH,
     SCORING_CONTRACT_VERSION,
     contract_fields,
+    validate_contract_mapping,
     validate_report_contract,
 )
 
@@ -38,6 +39,21 @@ def test_validate_report_contract_rejects_old_report_without_contract(tmp_path: 
     (tmp_path / "run_metadata.json").write_text(json.dumps({"season": 2025}) + "\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="scoring_contract_version"):
+        validate_report_contract(tmp_path)
+
+
+def test_validate_contract_mapping_rejects_mismatched_values() -> None:
+    payload = contract_fields()
+    payload["captain_multiplier"] = 2.0
+
+    with pytest.raises(ValueError, match="captain_multiplier"):
+        validate_contract_mapping(payload)
+
+
+def test_validate_report_contract_rejects_non_object_metadata(tmp_path: Path) -> None:
+    (tmp_path / "run_metadata.json").write_text(json.dumps(["cartola_standard_2026_v1"]) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must contain an object"):
         validate_report_contract(tmp_path)
 
 
