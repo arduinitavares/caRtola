@@ -131,6 +131,20 @@ def test_actual_scores_with_captain_rejects_missing_or_non_finite_actual_scores(
         actual_scores_with_captain(selected, actual_column="pontuacao")
 
 
+def test_actual_scores_with_captain_rejects_missing_actual_column() -> None:
+    selected = _selected_for_captain_policy().drop(columns=["pontuacao"])
+
+    with pytest.raises(ValueError, match="pontuacao"):
+        actual_scores_with_captain(selected, actual_column="pontuacao")
+
+
+def test_actual_scores_with_captain_rejects_missing_is_captain_column() -> None:
+    selected = _selected_for_captain_policy().drop(columns=["is_captain"])
+
+    with pytest.raises(ValueError, match="exactly one captain, got 0"):
+        actual_scores_with_captain(selected, actual_column="pontuacao")
+
+
 @pytest.mark.parametrize("captain_flags", [[False, False, False], [True, True, False]])
 def test_actual_scores_with_captain_rejects_zero_or_multiple_captains(captain_flags: list[bool]) -> None:
     selected = _selected_for_captain_policy()
@@ -171,6 +185,47 @@ def test_captain_policy_diagnostics_omits_actual_fields_when_actual_column_is_no
         assert record["actual_captain_bonus"] is None
         assert record["actual_points_with_policy"] is None
         assert record["actual_delta_vs_ev"] is None
+
+
+def test_captain_policy_diagnostics_defaults_missing_prior_points_std_to_zero() -> None:
+    selected = _selected_for_captain_policy().drop(columns=["prior_points_std"])
+
+    diagnostics = captain_policy_diagnostics(selected, predicted_column="predicted_points", actual_column=None)
+
+    assert {record["policy"]: record["captain_id"] for record in diagnostics} == {
+        "ev": 1,
+        "safe": 1,
+        "upside": 1,
+    }
+
+
+def test_captain_policy_diagnostics_fills_and_coerces_missing_prior_points_std_to_zero() -> None:
+    selected = _selected_for_captain_policy()
+    selected["prior_points_std"] = [None, "0.1", 0.0]
+
+    diagnostics = captain_policy_diagnostics(selected, predicted_column="predicted_points", actual_column=None)
+
+    assert {record["policy"]: record["captain_id"] for record in diagnostics} == {
+        "ev": 1,
+        "safe": 1,
+        "upside": 1,
+    }
+
+
+def test_captain_policy_diagnostics_rejects_no_non_tecnico_candidates() -> None:
+    selected = _selected_for_captain_policy()
+    selected["posicao"] = "tec"
+
+    with pytest.raises(ValueError, match="no non-tecnico captain candidates"):
+        captain_policy_diagnostics(selected, predicted_column="predicted_points", actual_column=None)
+
+
+def test_captain_policy_diagnostics_rejects_non_finite_actual_values_when_actual_column_is_provided() -> None:
+    selected = _selected_for_captain_policy()
+    selected.loc[1, "pontuacao"] = float("inf")
+
+    with pytest.raises(ValueError, match="pontuacao"):
+        captain_policy_diagnostics(selected, predicted_column="predicted_points", actual_column="pontuacao")
 
 
 def test_captain_policy_diagnostics_breaks_ties_by_policy_score_predicted_and_id() -> None:
