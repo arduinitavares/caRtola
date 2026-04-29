@@ -280,7 +280,7 @@ def test_build_diagnostics_reports_prediction_round_selection_and_random_metrics
             "all",
             "random_baseline_captain_policy",
         )
-        == "actual_best_non_tecnico"
+        == "strategy_predicted_best_non_tecnico"
     )
     assert round(
         _metric(diagnostics, "random_selection", "random_forest", "all", "actual_points_delta_vs_random_expected"),
@@ -289,12 +289,12 @@ def test_build_diagnostics_reports_prediction_round_selection_and_random_metrics
 
 
 def test_build_diagnostics_random_expected_points_include_captain_bonus():
-    round_results = pd.DataFrame([_round("model", 1, 70.0)])
+    round_results = pd.DataFrame([_round("random_forest", 1, 70.0)])
     selected_players = pd.DataFrame(
         [
-            _selected("model", 1, "gol", 20.0, True, 1.0),
-            _selected("model", 1, "lat", 10.0, True, 1.0),
-            _selected("model", 1, "tec", 30.0, True, 1.0),
+            _selected("random_forest", 1, "gol", 20.0, True, 1.0),
+            _selected("random_forest", 1, "lat", 10.0, True, 1.0),
+            _selected("random_forest", 1, "tec", 30.0, True, 1.0),
         ]
     )
     player_predictions = pd.DataFrame(
@@ -314,11 +314,11 @@ def test_build_diagnostics_random_expected_points_include_captain_bonus():
         random_seed=7,
     )
 
-    assert _metric(diagnostics, "random_selection", "model", "all", "successful_random_draws") == 1
-    assert _metric(diagnostics, "random_selection", "model", "all", "random_expected_actual_points_total") == 70.0
+    assert _metric(diagnostics, "random_selection", "random_forest", "all", "successful_random_draws") == 1
+    assert _metric(diagnostics, "random_selection", "random_forest", "all", "random_expected_actual_points_total") == 70.0
     assert (
-        _metric_value(diagnostics, "random_selection", "model", "all", "random_baseline_captain_policy")
-        == "actual_best_non_tecnico"
+        _metric_value(diagnostics, "random_selection", "random_forest", "all", "random_baseline_captain_policy")
+        == "strategy_predicted_best_non_tecnico"
     )
 
 
@@ -334,6 +334,7 @@ def test_random_valid_squad_points_rejects_missing_pontuacao_column():
         _random_valid_squad_points(
             candidate_pool,
             {"gol": 1, "lat": 1},
+            score_column="baseline_score",
             budget=2.0,
             random_draws=1,
             random_seed=7,
@@ -353,6 +354,7 @@ def test_random_valid_squad_points_rejects_non_finite_pontuacao(pontuacao: float
         _random_valid_squad_points(
             candidate_pool,
             {"gol": 1, "lat": 1},
+            score_column="baseline_score",
             budget=2.0,
             random_draws=1,
             random_seed=7,

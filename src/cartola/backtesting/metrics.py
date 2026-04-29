@@ -184,7 +184,12 @@ def _append_random_selection_diagnostics(
     if optimal.empty or selected_players.empty or player_predictions.empty:
         return
 
+    score_columns = _score_columns(player_predictions)
     for strategy, strategy_rounds in optimal.groupby("strategy"):
+        score_column = score_columns.get(str(strategy))
+        if score_column is None:
+            continue
+
         expected_points_by_round: list[float] = []
         successful_draws = 0
         requested_draws = 0
@@ -202,6 +207,7 @@ def _append_random_selection_diagnostics(
             draws = _random_valid_squad_points(
                 candidate_pool,
                 formation,
+                score_column=score_column,
                 budget=budget,
                 random_draws=random_draws,
                 random_seed=_round_seed(random_seed, round_number, formation),
@@ -224,7 +230,7 @@ def _append_random_selection_diagnostics(
             str(strategy),
             "all",
             "random_baseline_captain_policy",
-            "actual_best_non_tecnico",
+            "strategy_predicted_best_non_tecnico",
         )
         _append_metric(
             rows,
@@ -249,6 +255,7 @@ def _random_valid_squad_points(
     candidate_pool: pd.DataFrame,
     formation: Mapping[object, int],
     *,
+    score_column: str,
     budget: float,
     random_draws: int,
     random_seed: int,
@@ -256,6 +263,7 @@ def _random_valid_squad_points(
     if random_draws <= 0 or MARKET_OPEN_PRICE_COLUMN not in candidate_pool.columns:
         return []
     _finite_random_actual_points(candidate_pool)
+    _finite_random_score_points(candidate_pool, score_column)
 
     by_position = {
         position: position_frame.reset_index(drop=True)
@@ -284,11 +292,13 @@ def _random_valid_squad_points(
         squad = pd.concat(sampled_frames, ignore_index=True)
         if float(squad[MARKET_OPEN_PRICE_COLUMN].sum()) <= budget:
             actual_points = _finite_random_actual_points(squad)
+            predicted_points = _finite_random_score_points(squad, score_column)
             captain_candidates = squad["posicao"].ne("tec")
             if not captain_candidates.any():
                 continue
             base_actual = float(actual_points.sum())
-            captain_actual = float(actual_points.loc[captain_candidates].max())
+            captain_index = _best_random_captain_index(squad, predicted_points, captain_candidates)
+            captain_actual = float(actual_points.loc[captain_index])
             points.append(base_actual + (CAPTAIN_MULTIPLIER - 1.0) * captain_actual)
 
     return points
@@ -303,6 +313,32 @@ def _finite_random_actual_points(frame: pd.DataFrame) -> pd.Series:
         raise ValueError("Random diagnostic pontuacao values must be finite numeric values")
 
     return actual_points.astype(float)
+
+
+def _finite_random_score_points(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        raise ValueError(f"Random diagnostic candidate pool must include {column}")
+
+    score_points = pd.to_numeric(frame[column], errors="coerce")
+    if score_points.isna().any() or score_points.isin([float("inf"), float("-inf")]).any():
+        raise ValueError(f"Random diagnostic {column} values must be finite numeric values")
+
+    return score_points.astype(float)
+
+
+def _best_random_captain_index(
+    squad: pd.DataFrame,
+    predicted_points: pd.Series,
+    captain_candidates: pd.Series,
+) -> object:
+    captain_frame = squad.loc[captain_candidates].copy()
+    captain_frame["_captain_score"] = predicted_points.loc[captain_candidates]
+    sort_columns = ["_captain_score"]
+    ascending = [False]
+    if "id_atleta" in captain_frame.columns:
+        sort_columns.append("id_atleta")
+        ascending.append(True)
+    return captain_frame.sort_values(sort_columns, ascending=ascending, kind="mergesort").index[0]
 
 
 def _score_columns(player_predictions: pd.DataFrame) -> dict[str, str]:

@@ -136,6 +136,22 @@ def captain_policy_diagnostics(
     return records
 
 
+def apply_captain_policy_flags(selected: pd.DataFrame, policy_diagnostics: list[dict[str, object]]) -> None:
+    policy_columns = {
+        "ev": "captain_policy_ev",
+        "safe": "captain_policy_safe",
+        "upside": "captain_policy_upside",
+    }
+    for policy, column in policy_columns.items():
+        if column not in selected.columns:
+            selected[column] = False
+        record = next((item for item in policy_diagnostics if item["policy"] == policy), None)
+        if record is not None:
+            selected[column] = selected["id_atleta"].eq(record["captain_id"])
+        else:
+            selected[column] = selected[column].fillna(False).astype(bool)
+
+
 def contract_fields() -> dict[str, object]:
     return {
         "scoring_contract_version": SCORING_CONTRACT_VERSION,

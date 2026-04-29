@@ -23,6 +23,7 @@ from cartola.backtesting.scoring_contract import (
     FORMATION_SEARCH,
     SCORING_CONTRACT_VERSION,
     actual_scores_with_captain,
+    apply_captain_policy_flags,
     captain_policy_diagnostics,
 )
 from cartola.backtesting.strict_fixtures import load_strict_fixtures
@@ -251,7 +252,7 @@ def run_backtest(
 
             if not result.selected.empty:
                 selected = result.selected.copy()
-                _apply_captain_policy_flags(selected, policy_diagnostics)
+                apply_captain_policy_flags(selected, policy_diagnostics)
                 selected["rodada"] = round_number
                 selected["strategy"] = strategy
                 selected_frames.append(selected)
@@ -550,22 +551,6 @@ def _policy_value(
     if record is None:
         return None
     return record[key]
-
-
-def _apply_captain_policy_flags(selected: pd.DataFrame, policy_diagnostics: list[dict[str, object]]) -> None:
-    policy_columns = {
-        "ev": "captain_policy_ev",
-        "safe": "captain_policy_safe",
-        "upside": "captain_policy_upside",
-    }
-    for policy, column in policy_columns.items():
-        if column not in selected.columns:
-            selected[column] = False
-        record = next((item for item in policy_diagnostics if item["policy"] == policy), None)
-        if record is not None:
-            selected[column] = selected["id_atleta"].eq(record["captain_id"])
-        else:
-            selected[column] = selected[column].fillna(False).astype(bool)
 
 
 def _record_skipped_round(

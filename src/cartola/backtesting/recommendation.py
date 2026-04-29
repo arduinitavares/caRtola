@@ -34,6 +34,7 @@ from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredi
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.scoring_contract import (
     actual_scores_with_captain,
+    apply_captain_policy_flags,
     captain_policy_diagnostics,
     contract_fields,
 )
@@ -444,6 +445,7 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         predicted_column="random_forest_score",
         actual_column=policy_actual_column,
     )
+    apply_captain_policy_flags(selected, policy_diagnostics)
 
     selected_columns = [
         *BASE_OUTPUT_COLUMNS,

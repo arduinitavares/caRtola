@@ -513,6 +513,9 @@ def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowe
     assert "captain_policy_ev" in result.recommended_squad.columns
     assert "captain_policy_safe" in result.recommended_squad.columns
     assert "captain_policy_upside" in result.recommended_squad.columns
+    assert int(result.recommended_squad["captain_policy_ev"].sum()) == 1
+    assert int(result.recommended_squad["captain_policy_safe"].sum()) == 1
+    assert int(result.recommended_squad["captain_policy_upside"].sum()) == 1
     assert "is_captain" not in result.candidate_predictions.columns
     assert "captain_policy_ev" not in result.candidate_predictions.columns
     assert result.metadata["finalized_live_data_detected"] is True

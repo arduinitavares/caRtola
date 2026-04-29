@@ -11,6 +11,7 @@ from cartola.backtesting.config import DEFAULT_FORMATIONS, MARKET_OPEN_PRICE_COL
 from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER, SCORING_CONTRACT_VERSION
 
 _PRIMARY_OBJECTIVE_TOLERANCE = 1e-6
+_BINARY_SELECTION_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)
@@ -132,9 +133,9 @@ def _optimize_formation(
             infeasibility_reason="No feasible squad satisfies formation, budget, and captain constraints.",
         )
 
-    selected_indexes = [index for index, variable in variables.items() if pulp.value(variable) == 1]
+    selected_indexes = [index for index, variable in variables.items() if _is_binary_selected(variable)]
     selected = player_rows.loc[selected_indexes].copy().sort_values("id_atleta", kind="mergesort").reset_index(drop=True)
-    captain_indexes = {index for index, variable in captain_variables.items() if pulp.value(variable) == 1}
+    captain_indexes = {index for index, variable in captain_variables.items() if _is_binary_selected(variable)}
     captain_ids = set(player_rows.loc[list(captain_indexes), "id_atleta"].tolist())
     selected["is_captain"] = selected["id_atleta"].isin(captain_ids)
     selected["captain_policy_ev"] = False
@@ -187,6 +188,11 @@ def _tie_break_objective(
         for index, captain_variable in captain_variables.items()
     )
     return selected_id_penalty + captain_id_penalty
+
+
+def _is_binary_selected(variable: pulp.LpVariable) -> bool:
+    value = pulp.value(variable)
+    return value is not None and float(value) > _BINARY_SELECTION_THRESHOLD
 
 
 def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
