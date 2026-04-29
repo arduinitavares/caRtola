@@ -5,9 +5,9 @@ import json
 import shutil
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import pandas as pd
 
@@ -85,6 +85,19 @@ class MarketCaptureResult:
     metadata_path: Path
     target_round: int
     athlete_count: int
+    status_mercado: int
+    deadline_timestamp: int | None
+    deadline_parse_status: str
+
+
+@dataclass(frozen=True)
+class LiveCaptureMetadata:
+    csv_path: Path
+    metadata_path: Path
+    season: int
+    target_round: int
+    csv_sha256: str
+    captured_at_utc: str
     status_mercado: int
     deadline_timestamp: int | None
     deadline_parse_status: str
@@ -274,11 +287,11 @@ def fetch_cartola_json(url: str, timeout_seconds: float) -> CapturedJsonResponse
 
 
 def _final_csv_path(config: MarketCaptureConfig, target_round: int) -> Path:
-    return config.project_root / "data" / "01_raw" / str(config.season) / f"rodada-{target_round}.csv"
+    return _csv_path_for(config.project_root, config.season, target_round)
 
 
 def _final_metadata_path(config: MarketCaptureConfig, target_round: int) -> Path:
-    return config.project_root / "data" / "01_raw" / str(config.season) / f"rodada-{target_round}.capture.json"
+    return _metadata_path_for(config.project_root, config.season, target_round)
 
 
 def _metadata(
@@ -336,6 +349,80 @@ def _write_temp_csv_and_metadata(
     return temp_csv, temp_metadata
 
 
+def _metadata_path_for(project_root: Path, season: int, target_round: int) -> Path:
+    return project_root / "data" / "01_raw" / str(season) / f"rodada-{target_round}.capture.json"
+
+
+def _csv_path_for(project_root: Path, season: int, target_round: int) -> Path:
+    return project_root / "data" / "01_raw" / str(season) / f"rodada-{target_round}.csv"
+
+
+def _raise_invalid_live_capture() -> None:
+    raise ValueError("destination is not a previous valid live capture")
+
+
+def _parse_utc_z(value: object) -> str:
+    if not isinstance(value, str):
+        _raise_invalid_live_capture()
+    timestamp = cast(str, value)
+    if not timestamp.endswith("Z"):
+        _raise_invalid_live_capture()
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("destination is not a previous valid live capture") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        _raise_invalid_live_capture()
+    return timestamp
+
+
+def load_valid_live_capture(*, project_root: Path, season: int, target_round: int) -> LiveCaptureMetadata:
+    final_csv = _csv_path_for(project_root, season, target_round)
+    final_metadata = _metadata_path_for(project_root, season, target_round)
+    if not final_csv.exists() or not final_metadata.exists():
+        raise FileNotFoundError(f"live capture files missing for season={season} target_round={target_round}")
+    try:
+        metadata = json.loads(final_metadata.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("destination is not a previous valid live capture") from exc
+    if not isinstance(metadata, dict):
+        _raise_invalid_live_capture()
+
+    if metadata.get("capture_version") != CAPTURE_VERSION:
+        _raise_invalid_live_capture()
+    if metadata.get("season") != season or metadata.get("target_round") != target_round:
+        _raise_invalid_live_capture()
+    if Path(str(metadata.get("csv_path"))) != final_csv:
+        _raise_invalid_live_capture()
+    csv_sha256 = _sha256_file(final_csv)
+    if metadata.get("csv_sha256") != csv_sha256:
+        _raise_invalid_live_capture()
+    captured_at_utc = _parse_utc_z(metadata.get("captured_at_utc"))
+    try:
+        status_mercado = _int_field(metadata, "status_mercado")
+    except ValueError as exc:
+        raise ValueError("destination is not a previous valid live capture") from exc
+    if status_mercado != 1:
+        _raise_invalid_live_capture()
+    deadline_parse_status = str(metadata.get("deadline_parse_status"))
+    deadline_timestamp_value = metadata.get("deadline_timestamp")
+    try:
+        deadline_timestamp = None if deadline_timestamp_value is None else int(deadline_timestamp_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("destination is not a previous valid live capture") from exc
+    return LiveCaptureMetadata(
+        csv_path=final_csv,
+        metadata_path=final_metadata,
+        season=season,
+        target_round=target_round,
+        csv_sha256=csv_sha256,
+        captured_at_utc=captured_at_utc,
+        status_mercado=status_mercado,
+        deadline_timestamp=deadline_timestamp,
+        deadline_parse_status=deadline_parse_status,
+    )
+
+
 def _validate_previous_capture(
     final_csv: Path,
     final_metadata: Path,
@@ -343,20 +430,15 @@ def _validate_previous_capture(
     config: MarketCaptureConfig,
     target_round: int,
 ) -> None:
-    if not final_csv.exists() or not final_metadata.exists():
-        raise ValueError("destination is not a previous valid live capture")
     try:
-        metadata = json.loads(final_metadata.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        metadata = load_valid_live_capture(
+            project_root=config.project_root,
+            season=config.season,
+            target_round=target_round,
+        )
+    except FileNotFoundError as exc:
         raise ValueError("destination is not a previous valid live capture") from exc
-
-    if metadata.get("capture_version") != CAPTURE_VERSION:
-        raise ValueError("destination is not a previous valid live capture")
-    if metadata.get("season") != config.season or metadata.get("target_round") != target_round:
-        raise ValueError("destination is not a previous valid live capture")
-    if Path(str(metadata.get("csv_path"))) != final_csv:
-        raise ValueError("destination is not a previous valid live capture")
-    if metadata.get("csv_sha256") != _sha256_file(final_csv):
+    if metadata.csv_path != final_csv or metadata.metadata_path != final_metadata:
         raise ValueError("destination is not a previous valid live capture")
 
 
