@@ -265,13 +265,16 @@ The needed-key set is based on rows that can enter the training or target predic
 
 ### Historical Replay Scope
 
-For non-current historical seasons, replay should use `historical_candidate` validation:
+For non-current historical seasons, replay uses target-sliced historical validation:
 
-- exact game-week coverage `1..38`;
-- complete match statuses;
+- source filename season and league slug must match the requested season;
+- rows with `Game Week <= target_round` are validated;
+- rows with `Game Week <= target_round` must have complete match statuses;
 - clean team mapping;
 - required mode-specific pre-match columns present;
 - no duplicate join keys.
+
+Recommendation replay does not require exact full-season `1..38` FootyStats coverage, because a replay of round 10 must not validate or depend on weeks 11-38. Complete-season comparability remains the responsibility of the multi-season backtest and ablation reports.
 
 For current-year replay, the command should use current-season semantics rather than full historical-candidate validation, because the current season can be partial.
 
