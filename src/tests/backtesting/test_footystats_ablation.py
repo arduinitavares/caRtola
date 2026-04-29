@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from cartola.backtesting import footystats_ablation as ablation
+from cartola.backtesting.scoring_contract import contract_fields
 
 
 def _write_backtest_outputs(
@@ -18,8 +19,13 @@ def _write_backtest_outputs(
     rf: float = 55.0,
     r2: float = 0.1,
     corr: float = 0.2,
+    metadata: dict[str, object] | None = None,
 ) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
+    if metadata is None:
+        metadata = contract_fields()
+    if metadata:
+        (output_path / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     pd.DataFrame(
         [
             {"strategy": "baseline", "average_actual_points": baseline},
@@ -468,6 +474,7 @@ def test_metric_extraction_failure_marks_paired_comparison_failed(
                 config.output_path / "summary.csv",
                 index=False,
             )
+            (config.output_path / "run_metadata.json").write_text(json.dumps(contract_fields()), encoding="utf-8")
             pd.DataFrame(
                 [
                     {
@@ -530,6 +537,35 @@ def test_extract_run_metrics_uses_prediction_diagnostics_section(tmp_path: Path)
     diagnostics.to_csv(output_path / "diagnostics.csv", index=False)
 
     assert ablation.extract_run_metrics(output_path)["r2"] == 0.25
+
+
+def test_extract_run_metrics_rejects_report_without_contract_metadata(tmp_path: Path) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path, metadata={})
+
+    with pytest.raises(FileNotFoundError, match="run_metadata.json"):
+        ablation.extract_run_metrics(output_path)
+
+
+def test_extract_run_metrics_accepts_standard_contract_metadata(tmp_path: Path) -> None:
+    output_path = tmp_path / "run"
+    _write_backtest_outputs(output_path)
+
+    assert ablation.extract_run_metrics(output_path) == {
+        "baseline": 50.0,
+        "rf": 55.0,
+        "r2": 0.1,
+        "corr": 0.2,
+    }
+
+
+def test_extract_run_metrics_rejects_mismatched_contract_metadata(tmp_path: Path) -> None:
+    output_path = tmp_path / "run"
+    metadata = contract_fields() | {"captain_multiplier": 1.0}
+    _write_backtest_outputs(output_path, metadata=metadata)
+
+    with pytest.raises(ValueError, match="captain_multiplier"):
+        ablation.extract_run_metrics(output_path)
 
 
 @pytest.mark.parametrize("strategy", ["baseline", "random_forest"])
@@ -920,6 +956,8 @@ def test_write_reports_creates_csv_and_json_report_artifacts(tmp_path: Path) -> 
     assert csv.loc[0, "treatment_footystats_mode"] == "ppg"
     assert csv.loc[1, "control_footystats_mode"] == "none"
     assert csv.loc[1, "treatment_footystats_mode"] == "ppg"
+    for key, value in contract_fields().items():
+        assert csv.loc[0, key] == value
 
     report = json.loads(json_path.read_text())
     assert report["config"]["fixture_mode"] == "none"
@@ -927,6 +965,8 @@ def test_write_reports_creates_csv_and_json_report_artifacts(tmp_path: Path) -> 
     assert report["config"]["treatment_footystats_mode"] == "ppg"
     assert report["config"]["footystats_evaluation_scope"] == "historical_candidate"
     assert report["seasons"][0]["treatment_source_sha256"] == "sha-2024"
+    for key, value in contract_fields().items():
+        assert report["seasons"][0][key] == value
     assert report["seasons"][0]["control_summary_path"].endswith(
         "runs/2024/footystats_mode=none/2024/summary.csv"
     )
@@ -941,6 +981,27 @@ def test_write_reports_creates_csv_and_json_report_artifacts(tmp_path: Path) -> 
     )
     assert report["aggregate"]["included_seasons"] == [2024]
     assert report["generated_at_utc"].endswith("Z")
+
+
+def test_write_reports_csv_and_json_rows_include_contract_fields(tmp_path: Path) -> None:
+    result = _report_result(tmp_path)
+    result.resolved_output_root.mkdir(parents=True)
+
+    ablation.write_reports(result)
+
+    csv = pd.read_csv(result.resolved_output_root / "footystats_ablation.csv", keep_default_na=False)
+    report = json.loads((result.resolved_output_root / "footystats_ablation.json").read_text())
+    expected = contract_fields()
+
+    assert all(key in csv.columns for key in expected)
+    for row_index in range(len(csv)):
+        for key, value in expected.items():
+            assert csv.loc[row_index, key] == value
+    for season in report["seasons"]:
+        for key, value in expected.items():
+            assert season[key] == value
+    for key, value in expected.items():
+        assert report["aggregate"][key] == value
 
 
 def test_write_reports_truncates_csv_error_message_and_keeps_null_metric_cells_empty(tmp_path: Path) -> None:

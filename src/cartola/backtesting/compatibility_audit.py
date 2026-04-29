@@ -15,14 +15,20 @@ from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.data import load_season_data
 from cartola.backtesting.features import build_prediction_frame, build_training_frame
 from cartola.backtesting.runner import run_backtest
+from cartola.backtesting.scoring_contract import contract_fields
 
 ROUND_FILE_RE = re.compile(r"^rodada-(\d+)\.csv$")
 EXPECTED_STRATEGIES: tuple[str, ...] = ("baseline", "random_forest", "price")
 CSV_ERROR_MESSAGE_LIMIT = 300
+_CONTRACT_FIELDS = contract_fields()
 CSV_COLUMNS: tuple[str, ...] = (
     "season",
     "season_status",
     "metrics_comparable",
+    "scoring_contract_version",
+    "captain_scoring_enabled",
+    "captain_multiplier",
+    "formation_search",
     "round_file_count",
     "min_round",
     "max_round",
@@ -101,6 +107,10 @@ class SeasonAuditRecord:
     evaluated_rounds: int
     first_evaluated_round: int | None
     last_evaluated_round: int | None
+    scoring_contract_version: str = str(_CONTRACT_FIELDS["scoring_contract_version"])
+    captain_scoring_enabled: bool = bool(_CONTRACT_FIELDS["captain_scoring_enabled"])
+    captain_multiplier: float = float(_CONTRACT_FIELDS["captain_multiplier"])
+    formation_search: str = str(_CONTRACT_FIELDS["formation_search"])
     fixture_mode: str = "none"
     fixture_status: str = STATUS_NOT_APPLICABLE
     load_status: str = STATUS_SKIPPED
@@ -120,6 +130,10 @@ class SeasonAuditRecord:
             "season": self.season,
             "season_status": self.season_status,
             "metrics_comparable": self.metrics_comparable,
+            "scoring_contract_version": self.scoring_contract_version,
+            "captain_scoring_enabled": self.captain_scoring_enabled,
+            "captain_multiplier": self.captain_multiplier,
+            "formation_search": self.formation_search,
             "round_file_count": self.round_file_count,
             "min_round": self.min_round,
             "max_round": self.max_round,

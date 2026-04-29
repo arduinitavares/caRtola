@@ -15,15 +15,21 @@ import pandas as pd
 from cartola.backtesting.config import BacktestConfig, FootyStatsMode
 from cartola.backtesting.footystats_features import FootyStatsPPGLoadResult, load_footystats_feature_rows
 from cartola.backtesting.runner import run_backtest
+from cartola.backtesting.scoring_contract import contract_fields, validate_report_contract
 
 DEFAULT_SEASONS = (2023, 2024, 2025)
 DEFAULT_OUTPUT_ROOT = Path("data/08_reporting/backtests/footystats_ablation")
 DEFAULT_LEAGUE_SLUG = "brazil-serie-a"
+_CONTRACT_FIELDS = contract_fields()
 CSV_COLUMNS = (
     "season",
     "row_type",
     "season_status",
     "metrics_comparable",
+    "scoring_contract_version",
+    "captain_scoring_enabled",
+    "captain_multiplier",
+    "formation_search",
     "control_status",
     "treatment_status",
     "metric_status",
@@ -85,6 +91,10 @@ class SeasonAblationRecord:
     row_type: str = "season"
     season_status: str = "failed"
     metrics_comparable: bool = False
+    scoring_contract_version: str = str(_CONTRACT_FIELDS["scoring_contract_version"])
+    captain_scoring_enabled: bool = bool(_CONTRACT_FIELDS["captain_scoring_enabled"])
+    captain_multiplier: float = float(_CONTRACT_FIELDS["captain_multiplier"])
+    formation_search: str = str(_CONTRACT_FIELDS["formation_search"])
     control_status: str = "skipped"
     treatment_status: str = "skipped"
     metric_status: str = "skipped"
@@ -413,6 +423,7 @@ def run_footystats_ppg_ablation(config: FootyStatsPPGAblationConfig) -> FootySta
 
 
 def extract_run_metrics(output_path: Path) -> dict[str, float]:
+    validate_report_contract(output_path)
     summary = pd.read_csv(output_path / "summary.csv")
     diagnostics = pd.read_csv(output_path / "diagnostics.csv")
     return {
@@ -594,6 +605,7 @@ def _aggregate_json(records: list[SeasonAblationRecord], aggregate: SeasonAblati
         "rf_minus_baseline_treatment": aggregate.rf_minus_baseline_treatment,
     }
     return {
+        **{key: getattr(aggregate, key) for key in _CONTRACT_FIELDS},
         "included_seasons": [record.season for record in included],
         "excluded_seasons": [
             {"season": record.season, "reason": _excluded_reason(record)}

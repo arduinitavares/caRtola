@@ -10,6 +10,7 @@ import pytest
 
 from cartola.backtesting import compatibility_audit as audit
 from cartola.backtesting.config import BacktestConfig
+from cartola.backtesting.scoring_contract import contract_fields
 
 
 def _touch_round(root: Path, season: int, round_name: str) -> Path:
@@ -364,11 +365,38 @@ def test_reports_record_current_year_detected_rounds_and_full_error_details(
 
     assert csv_rows[0]["detected_rounds"] == "1"
     assert len(csv_frame.loc[0, "error_message"]) == 300
+    for key, value in contract_fields().items():
+        assert csv_rows[0][key] == str(value)
     assert payload["config"]["current_year"] == 2026
     assert payload["config"]["fixture_mode"] == "none"
     assert payload["seasons"][0]["detected_rounds"] == [1]
+    for key, value in contract_fields().items():
+        assert payload["seasons"][0][key] == value
     assert payload["seasons"][0]["error_detail"]["message"] == long_message
     assert "ValueError" in payload["seasons"][0]["error_detail"]["traceback"]
+
+
+def test_audit_rows_include_scoring_contract_fields() -> None:
+    record = audit.SeasonAuditRecord(
+        season=2025,
+        season_status="complete_historical",
+        metrics_comparable=True,
+        round_file_count=38,
+        min_round=1,
+        max_round=38,
+        detected_rounds=list(range(1, 39)),
+        start_round=5,
+        evaluated_rounds=34,
+        first_evaluated_round=5,
+        last_evaluated_round=38,
+    )
+
+    csv_row = record.to_csv_row()
+    json_object = record.to_json_object()
+
+    for key, value in contract_fields().items():
+        assert csv_row[key] == value
+        assert json_object[key] == value
 
 
 def test_partial_current_metrics_are_recorded_but_not_comparable(
