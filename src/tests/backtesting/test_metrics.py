@@ -272,7 +272,52 @@ def test_build_diagnostics_reports_prediction_round_selection_and_random_metrics
     assert _metric(diagnostics, "selection", "random_forest", "mei", "selected_entrou_em_campo_rate") == 0.5
     assert _metric(diagnostics, "random_selection", "random_forest", "all", "successful_random_draws") == 100
     assert (
-        _metric(diagnostics, "random_selection", "random_forest", "all", "actual_points_delta_vs_random_expected") > 0
+        _metric_value(
+            diagnostics,
+            "random_selection",
+            "random_forest",
+            "all",
+            "random_baseline_captain_policy",
+        )
+        == "actual_best_non_tecnico"
+    )
+    assert round(
+        _metric(diagnostics, "random_selection", "random_forest", "all", "actual_points_delta_vs_random_expected"),
+        2,
+    ) == -0.04
+
+
+def test_build_diagnostics_random_expected_points_include_captain_bonus():
+    round_results = pd.DataFrame([_round("model", 1, 70.0)])
+    selected_players = pd.DataFrame(
+        [
+            _selected("model", 1, "gol", 20.0, True, 1.0),
+            _selected("model", 1, "lat", 10.0, True, 1.0),
+            _selected("model", 1, "tec", 30.0, True, 1.0),
+        ]
+    )
+    player_predictions = pd.DataFrame(
+        [
+            _prediction(1, "gol", 20.0, 1.0, baseline=20.0, random_forest=20.0, price=20.0),
+            _prediction(1, "lat", 10.0, 1.0, baseline=10.0, random_forest=10.0, price=10.0),
+            _prediction(1, "tec", 30.0, 1.0, baseline=30.0, random_forest=30.0, price=30.0),
+        ]
+    )
+
+    diagnostics = build_diagnostics(
+        round_results,
+        selected_players,
+        player_predictions,
+        budget=3.0,
+        random_draws=1,
+        random_seed=7,
+    )
+
+    assert _metric(diagnostics, "random_selection", "model", "all", "successful_random_draws") == 1
+    assert _metric(diagnostics, "random_selection", "model", "all", "random_expected_actual_points_total") == 70.0
+    assert (
+        _metric_value(diagnostics, "random_selection", "model", "all", "random_baseline_captain_policy")
+        == "actual_best_non_tecnico"
     )
 
 
@@ -339,6 +384,16 @@ def _metric(
     position: str,
     metric: str,
 ) -> float:
+    return float(_metric_value(diagnostics, section, strategy, position, metric))
+
+
+def _metric_value(
+    diagnostics: pd.DataFrame,
+    section: str,
+    strategy: str,
+    position: str,
+    metric: str,
+) -> object:
     matches = diagnostics[
         diagnostics["section"].eq(section)
         & diagnostics["strategy"].eq(strategy)
@@ -346,4 +401,4 @@ def _metric(
         & diagnostics["metric"].eq(metric)
     ]
     assert len(matches) == 1
-    return float(matches.iloc[0]["value"])
+    return matches.iloc[0]["value"]

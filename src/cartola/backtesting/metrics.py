@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import pandas as pd
 
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN
+from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER
 
 SUMMARY_COLUMNS: list[str] = [
     "strategy",
@@ -222,6 +223,14 @@ def _append_random_selection_diagnostics(
             "random_selection",
             str(strategy),
             "all",
+            "random_baseline_captain_policy",
+            "actual_best_non_tecnico",
+        )
+        _append_metric(
+            rows,
+            "random_selection",
+            str(strategy),
+            "all",
             "random_expected_actual_points_total",
             expected_total if expected_total is not None else pd.NA,
         )
@@ -273,7 +282,13 @@ def _random_valid_squad_points(
 
         squad = pd.concat(sampled_frames, ignore_index=True)
         if float(squad[MARKET_OPEN_PRICE_COLUMN].sum()) <= budget:
-            points.append(float(squad["pontuacao"].sum()))
+            actual_points = pd.to_numeric(squad["pontuacao"], errors="raise").astype(float)
+            captain_candidates = squad["posicao"].ne("tec")
+            if not captain_candidates.any():
+                continue
+            base_actual = float(actual_points.sum())
+            captain_actual = float(actual_points.loc[captain_candidates].max())
+            points.append(base_actual + (CAPTAIN_MULTIPLIER - 1.0) * captain_actual)
 
     return points
 
