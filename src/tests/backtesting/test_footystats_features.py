@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pytest
@@ -81,7 +83,11 @@ def test_load_footystats_ppg_rows_reads_only_required_safe_columns(tmp_path: Pat
 
     _load_historical(tmp_path)
 
-    assert footystats_usecols == [None, list(REQUIRED_MATCH_COLUMNS)]
+    assert len(footystats_usecols) == 2
+    assert footystats_usecols[0] is None
+    usecols_predicate = cast(Callable[[str], bool], footystats_usecols[1])
+    candidate_columns = [*REQUIRED_MATCH_COLUMNS, "home_team_goal_count", "Home Team Pre-Match xG"]
+    assert [column for column in candidate_columns if usecols_predicate(column)] == list(REQUIRED_MATCH_COLUMNS)
 
 
 def test_load_footystats_feature_rows_ppg_xg_builds_xg_features(tmp_path: Path) -> None:
@@ -131,7 +137,19 @@ def test_load_footystats_feature_rows_ppg_xg_reads_only_required_safe_columns(
 
     _load_historical(tmp_path, footystats_mode="ppg_xg")
 
-    assert footystats_usecols == [None, [*REQUIRED_MATCH_COLUMNS, *FOOTYSTATS_XG_SOURCE_COLUMNS]]
+    assert len(footystats_usecols) == 2
+    assert footystats_usecols[0] is None
+    usecols_predicate = cast(Callable[[str], bool], footystats_usecols[1])
+    candidate_columns = [
+        *REQUIRED_MATCH_COLUMNS,
+        *FOOTYSTATS_XG_SOURCE_COLUMNS,
+        "home_team_goal_count",
+        "team_a_xg",
+    ]
+    assert [column for column in candidate_columns if usecols_predicate(column)] == [
+        *REQUIRED_MATCH_COLUMNS,
+        *FOOTYSTATS_XG_SOURCE_COLUMNS,
+    ]
 
 
 def test_load_footystats_feature_rows_ppg_does_not_require_xg_columns(tmp_path: Path) -> None:

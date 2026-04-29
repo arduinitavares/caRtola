@@ -246,7 +246,8 @@ def _validate_source_filename(source_path: Path, *, season: int, league_slug: st
 def _read_source_frame(source_path: Path, required_columns: tuple[str, ...]) -> pd.DataFrame:
     header = pd.read_csv(source_path, nrows=0)
     _require_columns(header, required_columns)
-    return pd.read_csv(source_path, usecols=list(required_columns))
+    allowed_columns = set(required_columns)
+    return pd.read_csv(source_path, usecols=lambda column: column in allowed_columns)
 
 
 def _require_columns(df: pd.DataFrame, required_columns: tuple[str, ...]) -> None:
@@ -334,7 +335,7 @@ def _build_feature_rows(
         rodada = int(game_weeks.loc[index])
         home_value = float(home_ppg.loc[index])
         away_value = float(away_ppg.loc[index])
-        home_row = {
+        home_row: dict[str, object] = {
             "rodada": rodada,
             "id_clube": home_id,
             "opponent_id_clube": away_id,
@@ -343,7 +344,7 @@ def _build_feature_rows(
             "footystats_opponent_pre_match_ppg": away_value,
             "footystats_ppg_diff": home_value - away_value,
         }
-        away_row = {
+        away_row: dict[str, object] = {
             "rodada": rodada,
             "id_clube": away_id,
             "opponent_id_clube": home_id,
