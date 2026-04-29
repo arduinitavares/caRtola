@@ -138,6 +138,11 @@ If no prior rounds exist before `target_round`, fail with:
 No training history exists before target round N.
 ```
 
+Live mode has one additional scope rule:
+
+- `mode="live"` fails unless `season == resolved_current_year`.
+- `mode="replay"` may run for current or historical seasons.
+
 ## Live vs Replay Semantics
 
 ### Live Mode
@@ -153,9 +158,23 @@ Live mode must not expose target-round actual outcomes in outputs. The command m
 
 Before prediction, live mode checks whether target-round candidate rows look finalized:
 
-- any target-round `pontuacao` is non-null;
 - any target-round `entrou_em_campo` is true;
-- any target-round scout column is non-null.
+- any target-round `pontuacao` is non-null and non-zero;
+- any target-round scout column contains a non-zero value.
+
+For v1, `pontuacao == 0` is treated as a pre-match placeholder unless `entrou_em_campo` is true or any scout column is non-zero. This can miss a completed player who genuinely scored exactly zero with no scout events, but it avoids rejecting usable pre-match market files that zero-fill not-yet-played stats.
+
+Scout columns are supporting evidence only. Zero-filled scout columns do not make a row finalized, because current-round market files may encode not-yet-played scout stats as `0`.
+
+The finalized-data helper should report the specific evidence it found:
+
+```json
+{
+  "pontuacao_non_zero_count": 12,
+  "entrou_em_campo_true_count": 12,
+  "non_zero_scout_count": 8
+}
+```
 
 If finalized data is detected and `--allow-finalized-live-data` is absent, fail with a clear error.
 
@@ -224,7 +243,8 @@ When `season == current_year`, recommendation mode uses current-season FootyStat
 
 - allow partial season files;
 - allow incomplete future weeks;
-- require only the rows needed for candidate clubs in rounds used by training and target-round prediction;
+- after reading safe source columns, filter FootyStats rows to `Game Week <= target_round` before validation, diagnostics, or feature-row construction;
+- require only the rows needed for Cartola clubs in rounds used by training and target-round prediction;
 - reject missing or duplicate `(rodada, id_clube)` rows for those needed clubs;
 - reject missing required feature values for those needed rows;
 - reject target-round rows whose match status is neither `complete` nor `incomplete`.
@@ -232,6 +252,16 @@ When `season == current_year`, recommendation mode uses current-season FootyStat
 For live target rounds, incomplete target-round FootyStats rows are valid because matches have not finished.
 
 Future weeks must not be used as evidence for accepting or rejecting a recommendation run.
+
+Needed FootyStats keys are computed from `visible_season_df`, not from the full season:
+
+```python
+needed_keys = unique real-club (rodada, id_clube) pairs where rodada <= target_round
+```
+
+Use the same real-club identity rule as the existing FootyStats join diagnostics: rows without a real club identity do not require FootyStats rows.
+
+The needed-key set is based on rows that can enter the training or target prediction frame before playable-status filtering. This matches the current frame construction order, where FootyStats merges happen inside `build_training_frame()` and `build_prediction_frame()`.
 
 ### Historical Replay Scope
 
@@ -244,6 +274,8 @@ For non-current historical seasons, replay should use `historical_candidate` val
 - no duplicate join keys.
 
 For current-year replay, the command should use current-season semantics rather than full historical-candidate validation, because the current season can be partial.
+
+For all recommendation scopes, FootyStats rows with `Game Week > target_round` must be ignored before validation. A bad status, missing value, unmapped team, or duplicate key in a future week must not fail a recommendation for an earlier target round.
 
 ## Recommendation Algorithm
 
@@ -420,6 +452,7 @@ Fail loudly for:
 - no playable target-round candidates;
 - unsupported recommendation mode;
 - unsupported FootyStats mode;
+- `mode="live"` when `season != resolved_current_year`;
 - live finalized data without `--allow-finalized-live-data`;
 - missing FootyStats rows for needed clubs;
 - duplicate FootyStats rows for needed clubs;
@@ -435,12 +468,15 @@ Add focused tests for:
 
 - CLI requires `--target-round`.
 - CLI does not expose `--fixture-mode`.
+- Live mode requires `season == resolved_current_year`.
 - Future rows greater than target round do not enter training or prediction.
 - Replay training uses only rounds `< target_round`.
 - Live mode rejects finalized target-round rows by default.
+- Zero-filled pre-match scout columns do not cause live finalized-data rejection.
 - Live mode with `--allow-finalized-live-data` runs but suppresses actual/evaluation columns.
 - Replay mode writes selected actual points only after optimization.
 - Current-year live FootyStats validation ignores incomplete future weeks.
+- Future FootyStats rows with bad status, missing values, or duplicates are ignored for earlier target rounds.
 - Missing target-round FootyStats club rows fail.
 - Duplicate target-round FootyStats club rows fail.
 - Output files are written under `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/`.
