@@ -349,3 +349,45 @@ def test_run_live_round_rejects_unsafe_output_root_before_failure_metadata(
 
     assert recommend_calls == []
     assert not outside_output_root.exists()
+
+
+def test_workflow_metadata_matches_recommendation_live_workflow_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = _capture_metadata(tmp_path, round_number=14)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.live_workflow.capture_market_round",
+        lambda config, **kwargs: MarketCaptureResult(
+            csv_path=metadata.csv_path,
+            metadata_path=metadata.metadata_path,
+            target_round=14,
+            athlete_count=747,
+            status_mercado=1,
+            deadline_timestamp=1777748340,
+            deadline_parse_status="ok",
+        ),
+    )
+    monkeypatch.setattr("cartola.backtesting.live_workflow.load_valid_live_capture", lambda **kwargs: metadata)
+    monkeypatch.setattr("cartola.backtesting.live_workflow.run_recommendation", _recommendation_result)
+
+    result = run_live_round(
+        LiveWorkflowConfig(season=2026, project_root=tmp_path, current_year=2026),
+        now=lambda: datetime(2026, 4, 29, 12, 34, 56, 123456, tzinfo=UTC),
+    )
+
+    assert result.output_path is not None
+    workflow = json.loads((result.output_path / "live_workflow_metadata.json").read_text(encoding="utf-8"))
+    recommendation_metadata = json.loads((result.output_path / "run_metadata.json").read_text(encoding="utf-8"))
+    link = recommendation_metadata["live_workflow"]
+
+    for key in (
+        "capture_policy",
+        "target_round",
+        "capture_csv_path",
+        "capture_metadata_path",
+        "capture_csv_sha256",
+        "recommendation_output_path",
+    ):
+        assert workflow[key] == link[key]
