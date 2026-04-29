@@ -18,9 +18,12 @@ from cartola.backtesting.metrics import build_diagnostics, build_summary
 from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.scoring_contract import (
+    CAPTAIN_MULTIPLIER,
+    CAPTAIN_SCORING_ENABLED,
+    FORMATION_SEARCH,
+    SCORING_CONTRACT_VERSION,
     actual_scores_with_captain,
     captain_policy_diagnostics,
-    contract_fields,
 )
 from cartola.backtesting.strict_fixtures import load_strict_fixtures
 
@@ -147,15 +150,14 @@ def run_backtest(
 
     max_round = _max_round(data)
     model_feature_columns = feature_columns_for_config(config)
-    contract = contract_fields()
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
         max_round=max_round,
-        scoring_contract_version=str(contract["scoring_contract_version"]),
-        captain_scoring_enabled=bool(contract["captain_scoring_enabled"]),
-        captain_multiplier=float(contract["captain_multiplier"]),
-        formation_search=str(contract["formation_search"]),
+        scoring_contract_version=SCORING_CONTRACT_VERSION,
+        captain_scoring_enabled=CAPTAIN_SCORING_ENABLED,
+        captain_multiplier=CAPTAIN_MULTIPLIER,
+        formation_search=FORMATION_SEARCH,
         fixture_mode=config.fixture_mode,
         strict_alignment_policy=config.strict_alignment_policy,
         fixture_source_directory=resolved_fixtures.source_directory,
@@ -493,11 +495,16 @@ def _actual_scores_for_result(
         return _empty_score_fields()
 
     try:
-        return actual_scores_with_captain(selected, actual_column="pontuacao")
+        scores = actual_scores_with_captain(selected, actual_column="pontuacao")
     except ValueError as exc:
         raise ValueError(
             f"Failed to score actual captain-aware points for round={round_number} strategy={strategy!r}."
         ) from exc
+    return {
+        "actual_points_base": scores["actual_points_base"],
+        "captain_bonus_actual": scores["captain_bonus_actual"],
+        "actual_points_with_captain": scores["actual_points_with_captain"],
+    }
 
 
 def _policy_diagnostics_for_result(

@@ -15,7 +15,14 @@ import pandas as pd
 from cartola.backtesting.config import BacktestConfig, FootyStatsMode
 from cartola.backtesting.footystats_features import FootyStatsPPGLoadResult, load_footystats_feature_rows
 from cartola.backtesting.runner import run_backtest
-from cartola.backtesting.scoring_contract import contract_fields, validate_report_contract
+from cartola.backtesting.scoring_contract import (
+    CAPTAIN_MULTIPLIER,
+    CAPTAIN_SCORING_ENABLED,
+    FORMATION_SEARCH,
+    SCORING_CONTRACT_VERSION,
+    contract_fields,
+    validate_report_contract,
+)
 
 DEFAULT_SEASONS = (2023, 2024, 2025)
 DEFAULT_OUTPUT_ROOT = Path("data/08_reporting/backtests/footystats_ablation")
@@ -91,10 +98,10 @@ class SeasonAblationRecord:
     row_type: str = "season"
     season_status: str = "failed"
     metrics_comparable: bool = False
-    scoring_contract_version: str = str(_CONTRACT_FIELDS["scoring_contract_version"])
-    captain_scoring_enabled: bool = bool(_CONTRACT_FIELDS["captain_scoring_enabled"])
-    captain_multiplier: float = float(_CONTRACT_FIELDS["captain_multiplier"])
-    formation_search: str = str(_CONTRACT_FIELDS["formation_search"])
+    scoring_contract_version: str = SCORING_CONTRACT_VERSION
+    captain_scoring_enabled: bool = CAPTAIN_SCORING_ENABLED
+    captain_multiplier: float = CAPTAIN_MULTIPLIER
+    formation_search: str = FORMATION_SEARCH
     control_status: str = "skipped"
     treatment_status: str = "skipped"
     metric_status: str = "skipped"

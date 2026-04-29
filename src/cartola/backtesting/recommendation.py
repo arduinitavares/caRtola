@@ -276,7 +276,12 @@ def _replay_actual_scores(selected: pd.DataFrame) -> tuple[dict[str, float | Non
             "Replay actual_points is null because "
             f"{invalid_count} selected players have missing or non-finite pontuacao."
         ]
-    return actual_scores_with_captain(selected, actual_column="pontuacao"), []
+    scores = actual_scores_with_captain(selected, actual_column="pontuacao")
+    return {
+        "actual_points_base": scores["actual_points_base"],
+        "captain_bonus_actual": scores["captain_bonus_actual"],
+        "actual_points_with_captain": scores["actual_points_with_captain"],
+    }, []
 
 
 def _empty_oracle_metrics() -> dict[str, object]:
