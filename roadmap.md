@@ -269,23 +269,24 @@ uv run --frozen scripts/pyrepo-check --all
 **Roadmap**
 1. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
 2. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
-3. Start capturing strict 2026 pre-lock Cartola fixture snapshots every round.
-4. Generate strict fixtures from those snapshots and integrate strict/current fixture context into the recommendation workflow once snapshots exist.
-5. Decide the next narrow feature bet:
+3. [ ] Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
+   - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
+   - Future step: integrate strict fixtures into live recommendations as an explicit opt-in mode after several successful live captures.
+4. Decide the next narrow feature bet:
    - odds/goal-environment features as a separate ablation over PPG, not stacked blindly after xG;
    - or DNP probability modeling if selection reliability is the bigger live-game bottleneck.
-6. Add higher-signal Cartola fixture features:
+5. Add higher-signal Cartola fixture features:
    - opponent defensive weakness,
    - points conceded by opponent and position,
    - home/away split priors.
-7. Add DNP probability modeling:
+6. Add DNP probability modeling:
    - predict `p_play`,
    - use `expected_points = predicted_points * p_play`.
-8. Add model comparison only after features improve:
+7. Add model comparison only after features improve:
    - HistGradientBoosting,
    - GradientBoosting,
    - maybe XGBoost/CatBoost later.
-9. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
+8. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:

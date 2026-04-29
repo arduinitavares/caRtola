@@ -220,6 +220,19 @@ Na v1, a recomendação fixa `fixture_mode=none`; `footystats_mode=ppg` é o mod
 recomendado para uso sem fixtures. `ppg_xg` permanece disponível como modo
 experimental.
 
+### Captura de evidências strict de fixtures
+
+Antes do fechamento do mercado, capture evidências strict de fixtures e gere o arquivo canônico strict de fixtures:
+
+```bash
+uv run --frozen python scripts/capture_strict_round_fixture.py \
+  --season 2026 \
+  --auto \
+  --current-year 2026
+```
+
+Este comando é separado de `scripts/run_live_round.py`. As recomendações live ainda usam `fixture_mode=none` por padrão; a captura strict de fixtures é trabalho de proveniência para uma futura integração de contexto de fixtures.
+
 ## ✅ Qualidade
 
 O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:

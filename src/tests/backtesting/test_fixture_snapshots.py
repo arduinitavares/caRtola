@@ -8,8 +8,10 @@ import pytest
 from cartola.backtesting.fixture_snapshots import (
     FROZEN_CLOCK_SKEW_TOLERANCE_SECONDS,
     capture_cartola_snapshot,
+    cartola_active_open_round,
     cartola_deadline_at,
     cartola_fixture_rows,
+    fetch_cartola_active_open_round,
     parse_http_date_utc,
 )
 
@@ -166,6 +168,77 @@ def test_cartola_deadline_at_rejects_missing_status_mercado() -> None:
 
     with pytest.raises(ValueError, match="status_mercado"):
         cartola_deadline_at(payload, season=2026, round_number=12)
+
+
+def test_cartola_deadline_at_rejects_closed_market_status() -> None:
+    payload = {
+        **FROZEN_DEADLINE_PAYLOAD,
+        "status_mercado": 2,
+    }
+
+    with pytest.raises(ValueError, match="Cartola market is not open"):
+        cartola_deadline_at(payload, season=2026, round_number=12)
+
+
+def test_cartola_active_open_round_parses_open_market_round() -> None:
+    assert cartola_active_open_round(FROZEN_DEADLINE_PAYLOAD) == 12
+
+
+def test_cartola_active_open_round_rejects_non_positive_round() -> None:
+    payload = {
+        **FROZEN_DEADLINE_PAYLOAD,
+        "rodada_atual": 0,
+    }
+
+    with pytest.raises(ValueError, match="rodada_atual must be a positive integer"):
+        cartola_active_open_round(payload)
+
+
+def test_cartola_active_open_round_rejects_closed_market() -> None:
+    payload = {
+        **FROZEN_DEADLINE_PAYLOAD,
+        "status_mercado": 2,
+    }
+
+    with pytest.raises(ValueError, match="Cartola market is not open"):
+        cartola_active_open_round(payload)
+
+
+def test_fetch_cartola_active_open_round_uses_market_status_endpoint() -> None:
+    urls: list[str] = []
+
+    def fake_fetch(url: str) -> object:
+        urls.append(url)
+        return _response(FROZEN_DEADLINE_PAYLOAD, url)
+
+    assert fetch_cartola_active_open_round(fetch=fake_fetch) == 12
+    assert urls == ["https://api.cartola.globo.com/mercado/status"]
+
+
+def test_capture_cartola_snapshot_rejects_closed_market_status_for_explicit_round(tmp_path: Path) -> None:
+    captured_at = datetime(2026, 6, 1, 18, 0, tzinfo=UTC)
+    closed_deadline_payload = {
+        **FROZEN_DEADLINE_PAYLOAD,
+        "status_mercado": 2,
+    }
+
+    def fake_fetch(url: str) -> object:
+        if url.endswith("/partidas/12"):
+            return _response(FROZEN_FIXTURE_PAYLOAD, url)
+        return _response(closed_deadline_payload, url)
+
+    with pytest.raises(ValueError, match="Cartola market is not open"):
+        capture_cartola_snapshot(
+            project_root=tmp_path,
+            season=2026,
+            round_number=12,
+            source="cartola_api",
+            fetch=fake_fetch,
+            now=lambda: captured_at,
+        )
+
+    round_dir = tmp_path / "data/01_raw/fixtures_snapshots/2026/rodada-12"
+    assert not list(round_dir.glob("captured_at=*"))
 
 
 def test_cartola_deadline_at_rejects_missing_fechamento_component() -> None:
