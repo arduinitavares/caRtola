@@ -52,12 +52,17 @@ class RecommendationConfig:
     footystats_dir: Path = Path("data/footystats")
     current_year: int | None = None
     allow_finalized_live_data: bool = False
+    output_run_id: str | None = None
+    live_workflow: Mapping[str, object] | None = None
     scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS
     formations: Mapping[str, Mapping[str, int]] = field(default_factory=lambda: DEFAULT_FORMATIONS)
 
     @property
     def output_path(self) -> Path:
-        return self.project_root / self.output_root / str(self.season) / f"round-{self.target_round}" / self.mode
+        base = self.project_root / self.output_root / str(self.season) / f"round-{self.target_round}" / self.mode
+        if self.output_run_id is None:
+            return base
+        return base / "runs" / self.output_run_id
 
     @property
     def selected_formation(self) -> Mapping[str, int]:
@@ -127,6 +132,15 @@ def _validate_mode_scope(config: RecommendationConfig) -> None:
         raise ValueError(f"Unsupported recommendation mode: {config.mode!r}")
     if config.target_round <= 0:
         raise ValueError("target_round must be a positive integer")
+    if config.output_run_id is not None:
+        run_id_path = Path(config.output_run_id)
+        if (
+            config.output_run_id in {"", ".", ".."}
+            or run_id_path.is_absolute()
+            or "/" in config.output_run_id
+            or "\\" in config.output_run_id
+        ):
+            raise ValueError(f"output_run_id must be a single path segment: {config.output_run_id!r}")
     if config.mode == "live":
         current_year = _resolved_current_year(config)
         if config.season != current_year:
@@ -137,6 +151,8 @@ def _validate_output_root(config: RecommendationConfig) -> None:
     project_root = config.project_root.resolve()
     protected_backtest_root = (project_root / "data" / "08_reporting" / "backtests").resolve()
     output_root = _resolve_output_root(config)
+    if project_root != output_root and project_root not in output_root.parents:
+        raise ValueError(f"Recommendation output_root must resolve inside project_root: output_root={config.output_root}")
     if output_root == protected_backtest_root or protected_backtest_root in output_root.parents:
         raise ValueError(
             "Recommendation output_root cannot be inside backtest reports: "
@@ -450,6 +466,7 @@ def _build_metadata(
         "finalized_live_data_detected": finalized_detected,
         "finalized_live_data_evidence": finalized_evidence,
         "allow_finalized_live_data": config.allow_finalized_live_data,
+        "live_workflow": dict(config.live_workflow) if config.live_workflow is not None else None,
         "optimizer_status": optimizer_status,
         "warnings": warnings,
         "generated_at_utc": _utc_now_z(),

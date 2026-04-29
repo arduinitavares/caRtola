@@ -332,6 +332,79 @@ def test_capture_force_refuses_raw_file_without_capture_metadata(tmp_path: Path)
         capture_market_round(config, fetch=_fetch_pair())
 
 
+def test_load_valid_live_capture_returns_capture_metadata(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+
+    from cartola.backtesting.market_capture import load_valid_live_capture
+
+    metadata = load_valid_live_capture(project_root=tmp_path, season=2026, target_round=14)
+
+    assert metadata.csv_path == tmp_path / "data/01_raw/2026/rodada-14.csv"
+    assert metadata.metadata_path == tmp_path / "data/01_raw/2026/rodada-14.capture.json"
+    assert metadata.target_round == 14
+    assert metadata.season == 2026
+    assert metadata.status_mercado == 1
+    assert metadata.deadline_timestamp == 1777748340
+    assert metadata.deadline_parse_status == "ok"
+    assert metadata.captured_at_utc == "2026-04-29T12:00:00Z"
+    assert len(metadata.csv_sha256) == 64
+
+
+def test_load_valid_live_capture_rejects_hash_mismatch(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+    csv_path = tmp_path / "data/01_raw/2026/rodada-14.csv"
+    csv_path.write_text(csv_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    from cartola.backtesting.market_capture import load_valid_live_capture
+
+    with pytest.raises(ValueError, match="not a previous valid live capture"):
+        load_valid_live_capture(project_root=tmp_path, season=2026, target_round=14)
+
+
+def test_load_valid_live_capture_rejects_csv_path_mismatch(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+    metadata_path = tmp_path / "data/01_raw/2026/rodada-14.capture.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["csv_path"] = str(tmp_path / "data/01_raw/2026/rodada-13.csv")
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    from cartola.backtesting.market_capture import load_valid_live_capture
+
+    with pytest.raises(ValueError, match="not a previous valid live capture"):
+        load_valid_live_capture(project_root=tmp_path, season=2026, target_round=14)
+
+
+def test_load_valid_live_capture_rejects_bad_captured_at(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+    metadata_path = tmp_path / "data/01_raw/2026/rodada-14.capture.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["captured_at_utc"] = "2026-04-29T12:00:00+00:00"
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    from cartola.backtesting.market_capture import load_valid_live_capture
+
+    with pytest.raises(ValueError, match="not a previous valid live capture"):
+        load_valid_live_capture(project_root=tmp_path, season=2026, target_round=14)
+
+
+def test_load_valid_live_capture_rejects_closed_market_metadata(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+    metadata_path = tmp_path / "data/01_raw/2026/rodada-14.capture.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["status_mercado"] = 2
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    from cartola.backtesting.market_capture import load_valid_live_capture
+
+    with pytest.raises(ValueError, match="not a previous valid live capture"):
+        load_valid_live_capture(project_root=tmp_path, season=2026, target_round=14)
+
+
 def test_capture_force_replaces_previous_valid_capture(tmp_path: Path) -> None:
     config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
     capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
