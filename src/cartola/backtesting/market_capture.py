@@ -238,7 +238,7 @@ def build_live_market_frame(market_payload: dict[str, Any], *, target_round: int
             row[scout] = 0
         rows.append(row)
 
-    return pd.DataFrame(rows, columns=list(RAW_OUTPUT_COLUMNS))
+    return pd.DataFrame(rows, columns=pd.Index(RAW_OUTPUT_COLUMNS))
 
 
 def _sha256_bytes(content: bytes) -> str:
