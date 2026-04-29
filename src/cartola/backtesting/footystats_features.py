@@ -279,9 +279,22 @@ def load_footystats_feature_rows_for_recommendation(
     away_ppg = _validated_ppg(df, "Pre-Match PPG (Away)")
     home_xg = _validated_xg(df, "Home Team Pre-Match xG") if footystats_mode == "ppg_xg" else None
     away_xg = _validated_xg(df, "Away Team Pre-Match xG") if footystats_mode == "ppg_xg" else None
-    statuses = _validated_statuses(df, "live_current")
+    statuses = _status_values(df)
     if require_complete_status and any(status != "complete" for status in statuses):
         raise ValueError("FootyStats recommendation rows require all visible statuses to be complete")
+    if not require_complete_status:
+        target_statuses = {
+            status
+            for status, game_week in zip(statuses, game_weeks.astype(int).tolist(), strict=True)
+            if int(game_week) == target_round
+        }
+        invalid_target_statuses = sorted(
+            status for status in target_statuses if status not in {"complete", "incomplete"}
+        )
+        if invalid_target_statuses:
+            raise ValueError(
+                "target-round FootyStats recommendation rows require status complete or incomplete"
+            )
 
     rows = _build_feature_rows(
         df,
@@ -360,12 +373,16 @@ def _validated_xg(df: pd.DataFrame, column: str) -> pd.Series:
 
 
 def _validated_statuses(df: pd.DataFrame, evaluation_scope: str) -> list[str]:
-    statuses = df["status"].map(lambda value: "" if pd.isna(value) else str(value).strip().lower()).tolist()
+    statuses = _status_values(df)
     if evaluation_scope == "live_current":
         invalid_statuses = sorted({status for status in statuses if status not in {"complete", "incomplete"}})
         if invalid_statuses:
             raise ValueError("live_current requires statuses to be only complete or incomplete")
     return statuses
+
+
+def _status_values(df: pd.DataFrame) -> list[str]:
+    return df["status"].map(lambda value: "" if pd.isna(value) else str(value).strip().lower()).tolist()
 
 
 def _validate_team_names_present(df: pd.DataFrame) -> None:

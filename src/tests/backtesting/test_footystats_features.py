@@ -419,6 +419,76 @@ def test_load_footystats_recommendation_rows_ignores_visible_unneeded_bad_rows(t
     assert result.rows[["rodada", "id_clube"]].to_dict("records") == [{"rodada": 1, "id_clube": 262}]
 
 
+def test_load_footystats_recommendation_rows_allows_prior_suspended_current_season_rows(
+    tmp_path: Path,
+) -> None:
+    _write_matches_csv(
+        tmp_path,
+        [
+            _match_row(week=1, status="suspended"),
+            _match_row(week=2, status="incomplete"),
+        ],
+    )
+    _write_cartola_round(tmp_path)
+    required_keys = pd.DataFrame(
+        [
+            {"rodada": rodada, "id_clube": club_id}
+            for rodada in (1, 2)
+            for club_id in (262, 275)
+        ]
+    )
+
+    result = load_footystats_feature_rows_for_recommendation(
+        season=SEASON,
+        project_root=tmp_path,
+        footystats_dir=Path("data/footystats"),
+        league_slug=LEAGUE_SLUG,
+        current_year=2026,
+        target_round=2,
+        footystats_mode="ppg",
+        require_complete_status=False,
+        required_keys=required_keys,
+    )
+
+    assert sorted(result.rows["rodada"].unique().tolist()) == [1, 2]
+
+
+def test_load_footystats_recommendation_rows_rejects_target_suspended_current_season_rows(
+    tmp_path: Path,
+) -> None:
+    _write_matches_csv(
+        tmp_path,
+        [
+            _match_row(week=1, status="complete"),
+            _match_row(week=2, status="suspended"),
+        ],
+    )
+    _write_cartola_round(tmp_path)
+    required_keys = pd.DataFrame(
+        [
+            {"rodada": rodada, "id_clube": club_id}
+            for rodada in (1, 2)
+            for club_id in (262, 275)
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="target-round FootyStats recommendation rows require status complete or incomplete",
+    ):
+        load_footystats_feature_rows_for_recommendation(
+            season=SEASON,
+            project_root=tmp_path,
+            footystats_dir=Path("data/footystats"),
+            league_slug=LEAGUE_SLUG,
+            current_year=2026,
+            target_round=2,
+            footystats_mode="ppg",
+            require_complete_status=False,
+            required_keys=required_keys,
+        )
+
+
 def test_load_footystats_recommendation_rows_ignores_future_ppg_xg_bad_rows(tmp_path: Path) -> None:
     future = _match_row(
         week=2,
