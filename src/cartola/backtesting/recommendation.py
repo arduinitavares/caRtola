@@ -12,6 +12,7 @@ from cartola.backtesting.config import (
     DEFAULT_SCOUT_COLUMNS,
     FootyStatsMode,
 )
+from cartola.backtesting.data import _entry_flag_mask
 
 RecommendationMode = Literal["live", "replay"]
 
@@ -66,15 +67,19 @@ def _visible_season_frame(season_df: pd.DataFrame, *, target_round: int) -> pd.D
     return season_df.loc[rodada.le(target_round)].copy()
 
 
-def _finalized_live_data_evidence(target_frame: pd.DataFrame) -> dict[str, int]:
+def _finalized_live_data_evidence(
+    target_frame: pd.DataFrame,
+    *,
+    scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS,
+) -> dict[str, int]:
     pontuacao = pd.to_numeric(target_frame.get("pontuacao", pd.Series(dtype=float)), errors="coerce")
     pontuacao_non_zero_count = int(pontuacao.fillna(0.0).ne(0.0).sum())
 
     entrou = target_frame.get("entrou_em_campo", pd.Series(dtype=bool))
-    entrou_true_count = int(entrou.fillna(False).astype(bool).sum())
+    entrou_true_count = int(_entry_flag_mask(entrou).sum())
 
     non_zero_scout_count = 0
-    for scout in DEFAULT_SCOUT_COLUMNS:
+    for scout in scout_columns:
         if scout in target_frame.columns:
             values = pd.to_numeric(target_frame[scout], errors="coerce").fillna(0.0)
             non_zero_scout_count += int(values.ne(0.0).sum())

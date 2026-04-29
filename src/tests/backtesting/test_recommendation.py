@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -10,6 +12,29 @@ from cartola.backtesting.recommendation import (
     _validate_mode_scope,
     _visible_season_frame,
 )
+
+
+def test_recommendation_config_output_path() -> None:
+    config = RecommendationConfig(
+        season=2025,
+        target_round=14,
+        mode="live",
+        project_root=Path("/tmp/cartola"),
+    )
+
+    assert config.output_path == Path("/tmp/cartola/data/08_reporting/recommendations/2025/round-14/live")
+
+
+def test_recommendation_config_selected_formation() -> None:
+    config = RecommendationConfig(
+        season=2025,
+        target_round=14,
+        mode="replay",
+        formation_name="3-4-3",
+        formations={"3-4-3": {"gol": 1, "zag": 3, "mei": 4, "ata": 3, "tec": 1}},
+    )
+
+    assert config.selected_formation == {"gol": 1, "zag": 3, "mei": 4, "ata": 3, "tec": 1}
 
 
 def _round_frame(
@@ -124,3 +149,45 @@ def test_finalized_evidence_detects_played_rows_and_non_zero_scouts() -> None:
     assert evidence["pontuacao_non_zero_count"] > 0
     assert evidence["entrou_em_campo_true_count"] > 0
     assert evidence["non_zero_scout_count"] > 0
+
+
+def test_finalized_evidence_parses_false_entry_strings() -> None:
+    target = pd.DataFrame(
+        {
+            "pontuacao": [0.0, 0.0, 0.0, 0.0],
+            "entrou_em_campo": ["False", "0", "", None],
+        }
+    )
+
+    evidence = _finalized_live_data_evidence(target)
+
+    assert evidence["entrou_em_campo_true_count"] == 0
+
+
+def test_finalized_evidence_parses_true_entry_strings() -> None:
+    target = pd.DataFrame(
+        {
+            "pontuacao": [0.0, 0.0],
+            "entrou_em_campo": ["True", "1"],
+        }
+    )
+
+    evidence = _finalized_live_data_evidence(target)
+
+    assert evidence["entrou_em_campo_true_count"] == 2
+
+
+def test_finalized_evidence_respects_custom_scout_columns() -> None:
+    target = pd.DataFrame(
+        {
+            "pontuacao": [0.0, 0.0],
+            "entrou_em_campo": [False, False],
+            "CUSTOM_SCOUT": [1, 2],
+        }
+    )
+
+    default_evidence = _finalized_live_data_evidence(target)
+    custom_evidence = _finalized_live_data_evidence(target, scout_columns=("CUSTOM_SCOUT",))
+
+    assert default_evidence["non_zero_scout_count"] == 0
+    assert custom_evidence["non_zero_scout_count"] == 2
