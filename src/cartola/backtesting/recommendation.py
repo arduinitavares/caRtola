@@ -9,10 +9,11 @@ from typing import Literal, Mapping
 import pandas as pd
 
 from cartola.backtesting.config import (
-    MARKET_OPEN_PRICE_COLUMN,
-    BacktestConfig,
     DEFAULT_FORMATIONS,
     DEFAULT_SCOUT_COLUMNS,
+    MARKET_OPEN_PRICE_COLUMN,
+    BacktestConfig,
+    FootyStatsEvaluationScope,
     FootyStatsMode,
 )
 from cartola.backtesting.data import _entry_flag_mask, load_season_data
@@ -91,7 +92,7 @@ def _resolved_current_year(config: RecommendationConfig) -> int:
     return config.current_year if config.current_year is not None else datetime.now(UTC).year
 
 
-def _footystats_scope(config: RecommendationConfig) -> str:
+def _footystats_scope(config: RecommendationConfig) -> FootyStatsEvaluationScope:
     if config.footystats_mode == "none":
         return "historical_candidate"
     if config.season == _resolved_current_year(config):
@@ -275,7 +276,7 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
 
     recommended_squad = _select_columns(selected, selected_columns)
     candidate_predictions = _select_columns(scored, candidate_columns)
-    summary = {
+    summary: dict[str, object] = {
         "season": config.season,
         "target_round": config.target_round,
         "mode": config.mode,
