@@ -165,20 +165,35 @@ def cartola_fixture_rows(payload: dict[str, Any], *, round_number: int) -> list[
     return rows
 
 
+def cartola_active_open_round(payload: dict[str, Any]) -> int:
+    rodada_atual = _integer_field(payload, "rodada_atual", context="Deadline payload rodada_atual")
+    if rodada_atual <= 0:
+        raise ValueError("rodada_atual must be a positive integer")
+
+    status_mercado = _integer_field(payload, "status_mercado", context="Deadline payload status_mercado")
+    if status_mercado != 1:
+        raise ValueError(
+            "Cartola market is not open: "
+            f"rodada_atual={rodada_atual} status_mercado={status_mercado}"
+        )
+
+    return rodada_atual
+
+
+def fetch_cartola_active_open_round(*, fetch: Fetch | None = None) -> int:
+    requester = fetch or _fetch_url
+    response = _capture_response(requester, CARTOLA_DEADLINE_ENDPOINT)
+    return cartola_active_open_round(response.payload)
+
+
 def cartola_deadline_at(payload: dict[str, Any], *, season: int, round_number: int) -> datetime:
     payload_season = _integer_field(payload, "temporada", context="Deadline payload temporada")
     if payload_season != season:
         raise ValueError(f"Deadline payload temporada {payload_season} does not match requested season {season}")
 
-    payload_round = _integer_field(payload, "rodada_atual", context="Deadline payload rodada_atual")
+    payload_round = cartola_active_open_round(payload)
     if payload_round != round_number:
         raise ValueError(f"Deadline payload rodada_atual {payload_round} does not match requested round {round_number}")
-    status_mercado = _integer_field(payload, "status_mercado", context="Deadline payload status_mercado")
-    if status_mercado != 1:
-        raise ValueError(
-            "Cartola market is not open: "
-            f"rodada_atual={payload_round} status_mercado={status_mercado}"
-        )
 
     fechamento = payload.get("fechamento")
     if not isinstance(fechamento, dict):
