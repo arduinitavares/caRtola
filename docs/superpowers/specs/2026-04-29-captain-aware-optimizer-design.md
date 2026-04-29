@@ -57,7 +57,7 @@ The 7 official formation counts are:
 In scope:
 
 - add all 7 formations;
-- add `captain_multiplier: float = 1.5`;
+- add fixed scoring-contract constants;
 - add one-solve-per-formation search;
 - add captain variables to the MILP;
 - compute captain policy diagnostics on the same selected squad;
@@ -77,7 +77,13 @@ Out of scope:
 
 ## Optimization Formulation
 
-`captain_multiplier` must be finite and `>= 1.0`. Reject NaN, infinity, and values below `1.0`.
+Public report paths must use the fixed v1 constant:
+
+```text
+CAPTAIN_MULTIPLIER = 1.5
+```
+
+Do not expose `captain_multiplier` as a public config field in v1. A private test/helper function may accept a multiplier only if its result cannot be serialized as a supported `cartola_standard_2026_v1` report.
 
 For each candidate `i`:
 
@@ -89,7 +95,7 @@ For each candidate `i`:
 The objective is always captain-aware:
 
 ```text
-maximize sum(x_i * e_i) + (captain_multiplier - 1.0) * sum(c_i * e_i)
+maximize sum(x_i * e_i) + (CAPTAIN_MULTIPLIER - 1.0) * sum(c_i * e_i)
 ```
 
 Subject to:
@@ -124,6 +130,15 @@ This is preferred over a single MILP with formation variables because:
 - runtime should remain small relative to model fitting.
 
 There is no public legacy fixed-formation mode in v1. A private helper may solve one formation for implementation/testing, but entry points use automatic all-formation search.
+
+Current public config fields that expose fixed/custom formation behavior must be removed, ignored with an error, or made private before this feature ships:
+
+- `BacktestConfig.formation_name`;
+- `BacktestConfig.formations`;
+- `RecommendationConfig.formation_name`;
+- `RecommendationConfig.formations`.
+
+Supported report paths must not accept custom formations or a single public `formation_name`. Private single-formation helper output must not be serializable as a standard report unless the all-formation search wrapper selected it as the winning formation.
 
 Tie-breaking across formations and equivalent squads must be deterministic:
 
@@ -224,16 +239,24 @@ The implementation must not add a public legacy mode for:
 
 Old raw 4-3-3 reports are not a compatibility target. Any tool that reads or compares reports must record `scoring_contract_version` and reject mixed contracts. It should not preserve old behavior by silently running disabled-captain or fixed-formation paths.
 
+Report readers must validate metadata before reading metrics:
+
+- load adjacent `run_metadata.json` before reading `summary.csv`, `round_results.csv`, or `diagnostics.csv`;
+- require `scoring_contract_version == "cartola_standard_2026_v1"`;
+- require `captain_scoring_enabled is true`;
+- require `captain_multiplier == 1.5`;
+- require `formation_search == "all_official_formations"`;
+- fail loudly when metadata is missing, malformed, or mismatched.
+
+Aggregate CSV/JSON outputs from ablations and compatibility audits must include the same contract fields. Missing contract fields are an error, not an old/default contract.
+
 ## Result Schema
 
-`SquadOptimizationResult` should add:
+`SquadOptimizationResult` should add predicted optimization fields only:
 
 - `predicted_points_base`;
 - `captain_bonus_predicted`;
 - `predicted_points_with_captain`;
-- `actual_points_base`;
-- `captain_bonus_actual`;
-- `actual_points_with_captain`;
 - `captain_multiplier`;
 - `scoring_contract_version`;
 - `captain_id`;
@@ -247,10 +270,18 @@ Old raw 4-3-3 reports are not a compatibility target. Any tool that reads or com
 Empty or infeasible results should set:
 
 - point totals to `0.0` for predicted base/bonus/total;
-- actual totals to `None` unless explicit actual scoring was computed;
 - captain fields to `None`;
 - `formation_scores` to per-formation status records when available;
 - `captain_policy_diagnostics` to an empty list.
+
+Actual scoring belongs in runner/recommendation evaluation helpers, not in the optimizer result. Those helpers receive selected rows plus an explicit actual score column and compute:
+
+- `actual_points_base`;
+- `captain_bonus_actual`;
+- `actual_points_with_captain`;
+- policy actual totals.
+
+Live mode does not call actual scoring helpers.
 
 `formation_scores` should be a JSON list of records:
 
@@ -328,6 +359,13 @@ where the bonus is non-zero only for the captain.
 - `captain_policy_definitions`;
 - existing data source and feature metadata.
 
+`summary.csv`, ablation CSVs, compatibility CSVs, and any aggregate report should include flat columns:
+
+- `scoring_contract_version`;
+- `captain_scoring_enabled`;
+- `captain_multiplier`;
+- `formation_search`.
+
 Terminal output for live recommendations should show:
 
 - formation;
@@ -372,7 +410,15 @@ Metadata must record the scoring contract so old raw-squad reports are not compa
 
 `metrics.py` must apply one scoring contract consistently.
 
-`round_results.actual_points` should be captain-adjusted active-contract totals. Random valid squad diagnostics must also choose a valid captain for each random squad and apply the same multiplier. Random squad captain can be selected by actual `pontuacao` for oracle-like random actual diagnostics, or by the same random-squad policy used by the metric. The selected policy must be named in diagnostics metadata.
+`round_results.actual_points` should be captain-adjusted active-contract totals. Random valid squad diagnostics must also choose a valid captain for each random squad and apply the same multiplier.
+
+V1 random baseline captain policy is fixed:
+
+```text
+random_baseline_captain_policy = "actual_best_non_tecnico"
+```
+
+For each random squad, choose the selected non-tecnico player with the highest actual `pontuacao` as captain. This keeps the random baseline an intentionally strong actual-point baseline. The policy must be recorded in diagnostics metadata.
 
 If random selection diagnostics are not made captain-aware in the first implementation, suppress them. Do not keep a raw no-captain random baseline beside captain-adjusted strategy totals.
 
@@ -386,7 +432,7 @@ For an oracle based on actual `pontuacao`, the optimizer should use `pontuacao` 
 
 ```text
 oracle_actual_points_with_captain =
-  oracle_actual_points_base + (captain_multiplier - 1.0) * oracle_captain_actual_points
+  oracle_actual_points_base + (CAPTAIN_MULTIPLIER - 1.0) * oracle_captain_actual_points
 ```
 
 If any required selected actual score is missing or non-finite, the actual/captain/oracle metrics must be null with a warning, not coerced to zero.
@@ -456,6 +502,7 @@ Backtest/replay tests:
 - missing actuals produce null actual/captain/oracle metrics with warnings;
 - oracle optimizer applies captain rules;
 - metadata records `captain_scoring_enabled`, `captain_multiplier`, and scoring contract version.
+- old reports without `run_metadata.json` or without `scoring_contract_version` fail loudly in ablation/report readers.
 
 Regression tests:
 
@@ -464,6 +511,7 @@ Regression tests:
 - FootyStats ablation output records and validates scoring contract before comparing runs;
 - random selection diagnostics are captain-aware or suppressed;
 - no public disabled-captain or fixed-formation legacy path is added;
+- public config APIs do not accept custom formations or fixed `formation_name` for supported report paths;
 - no FootyStats, fixture, strict snapshot, or live market capture path changes are required.
 
 ## Rollout
@@ -471,7 +519,7 @@ Regression tests:
 Suggested implementation order:
 
 1. Add all 7 formations and formation tests.
-2. Add scoring-contract constants and result fields.
+2. Add scoring-contract constants and remove/reject public fixed-formation config fields.
 3. Add captain-aware single-formation optimization.
 4. Add auto-formation search.
 5. Add captain policy diagnostics on selected squads.
