@@ -543,7 +543,7 @@ def test_extract_run_metrics_rejects_report_without_contract_metadata(tmp_path: 
     output_path = tmp_path / "run"
     _write_backtest_outputs(output_path, metadata={})
 
-    with pytest.raises(FileNotFoundError, match="run_metadata.json"):
+    with pytest.raises(FileNotFoundError, match=r"run_metadata\.json"):
         ablation.extract_run_metrics(output_path)
 
 

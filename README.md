@@ -38,6 +38,13 @@ O backtest tem três modos explícitos de fixtures:
 - `--fixture-mode exploratory`: carrega `data/01_raw/fixtures/{season}/partidas-*.csv` quando esses arquivos existem. As partidas exploratórias de 2025 são uma reconstrução histórica das partidas elegíveis no Cartola, gerada a partir da rodada oficial do TheSportsDB e alinhada com os clubes que efetivamente tiveram atletas em campo nos CSVs do Cartola. Isso é suficiente para medir o valor de features de contexto, mas não é uma simulação strict no-leakage e não substitui snapshots pré-fechamento do mercado. O arquivo `partidas-1.csv` fica vazio de propósito porque a rodada 1 de 2025 não tem clubes com `entrou_em_campo=True` nos dados históricos.
 - `--fixture-mode strict`: usa apenas snapshots pré-fechamento do mercado em `data/01_raw/fixtures_strict/{season}/`, com manifests válidos para as rodadas obrigatórias. Use este modo quando precisar de simulação strict no-leakage.
 
+Backtests e recomendações usam o contrato padrão Cartola 2026: todas as
+formações oficiais são avaliadas, um capitão não técnico é escolhido dentro do
+otimizador e os totais por rodada incluem o multiplicador de capitão de `1.5x`.
+Nos arquivos de jogadores selecionados, `predicted_points` continua sendo a
+previsão bruta por atleta, sem multiplicador; os totais com capitão aparecem nos
+campos `predicted_points_with_captain` e `actual_points_with_captain`.
+
 Os resultados são gravados em `data/08_reporting/backtests/2025/`:
 
 ```bash

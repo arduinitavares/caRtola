@@ -5,9 +5,14 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
 - GitHub Actions quality workflow with repo-local checks.
 - `scripts/pyrepo-check --all`: Ruff, ty, Bandit, pytest.
 - Walk-forward backtesting pipeline for Cartola.
-- Fixed-budget squad optimization.
+- Fixed-budget squad optimization with standard Cartola 2026 scoring.
 - Baseline, price, and RandomForest strategies.
-- ILP optimizer for Cartola formations.
+- ILP optimizer searches all official Cartola formations.
+- Captain-aware optimizer:
+  - selects one non-tecnico captain inside the MILP;
+  - applies the `1.5x` captain multiplier to round-level predicted and actual totals;
+  - keeps selected-player `predicted_points` as the raw per-athlete model score;
+  - reports EV, safe, and upside captain-policy diagnostics on the same selected squad.
 - Diagnostics CSVs: prediction quality, selection quality, random valid squad comparison, DNP rates, R²/correlation/MAE.
 - Leakage fixes:
   - uses `preco_pre_rodada`, not post-round `preco`;
@@ -73,6 +78,12 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - uses the captured `rodada_atual` as the recommendation target,
   - archives every recommendation under `runs/run_started_at=...`,
   - links recommendation metadata back to the capture CSV/hash/metadata.
+- Standard scoring metadata:
+  - `scoring_contract_version=cartola_standard_2026_v1`,
+  - `captain_scoring_enabled=True`,
+  - `captain_multiplier=1.5`,
+  - `formation_search=all_official_formations`,
+  - report readers reject old/mixed-contract backtest outputs.
 
 **Current Interpretation**
 The 2025 fixture-context result showed the first meaningful model lift: RF beat baseline and crossed the `player_r2 > 0.05` threshold, but that 2025 fixture data is still **exploratory reconstruction**, not strict historical proof. The strict system is now built for future/live capture, but we still need actual pre-lock snapshots to run strict evaluations.
@@ -143,6 +154,12 @@ Important distinction:
 The first recommendation workflow is now implemented. It is intentionally narrower than
 the backtest runner: it generates one target-round squad, does not use fixtures yet,
 and writes a replay/live audit trail under `data/08_reporting/recommendations/`.
+
+The optimizer now matches the standard Cartola 2026 lineup contract: 11 players
+plus one tecnico, with one of the 11 players marked as captain. The captain is
+not an extra slot and the tecnico cannot be captain. For v1 there is no public
+legacy scoring mode, no fixed-formation public config, and no configurable captain
+multiplier.
 
 **How To Run Now**
 No fixture context:
@@ -269,7 +286,7 @@ uv run --frozen scripts/pyrepo-check --all
 **Roadmap**
 1. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
 2. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
-3. [ ] Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
+3. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
    - Future step: integrate strict fixtures into live recommendations as an explicit opt-in mode after several successful live captures.
 4. Decide the next narrow feature bet:
