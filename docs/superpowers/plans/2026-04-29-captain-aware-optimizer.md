@@ -1405,7 +1405,7 @@ git commit -m "chore: remove fixed formation public surface"
 **Files:**
 - No planned source edits unless verification finds a defect.
 
-- [ ] **Step 1: Run focused live recommendation smoke in replay mode**
+- [x] **Step 1: Run focused live recommendation smoke in replay mode**
 
 Run:
 
@@ -1421,7 +1421,7 @@ uv run --frozen python scripts/recommend_squad.py \
 
 Expected: command succeeds and terminal shows formation, captain, predicted base, captain bonus, predicted total, actual total when available, and output path.
 
-- [ ] **Step 2: Inspect generated recommendation metadata**
+- [x] **Step 2: Inspect generated recommendation metadata**
 
 Run:
 
@@ -1445,7 +1445,7 @@ captain_multiplier 1.5
 formation_search all_official_formations
 ```
 
-- [ ] **Step 3: Run full quality gate**
+- [x] **Step 3: Run full quality gate**
 
 Run:
 
@@ -1455,7 +1455,7 @@ uv run --frozen scripts/pyrepo-check --all
 
 Expected: Ruff, ty, Bandit, and pytest all pass.
 
-- [ ] **Step 4: Handle verification failures without a generic catch-all commit**
+- [x] **Step 4: Handle verification failures without a generic catch-all commit**
 
 If Step 3 fails, return to the task that owns the failing area and add a focused fix commit using that task's file list and commit-message style. For example, a metrics failure returns to Task 6 and uses:
 
