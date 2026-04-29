@@ -1,7 +1,8 @@
+import inspect
+
 import pandas as pd
 import pytest
 
-import cartola.backtesting.optimizer as optimizer
 from cartola.backtesting.config import DEFAULT_FORMATIONS, BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER, SCORING_CONTRACT_VERSION
@@ -120,23 +121,45 @@ def test_optimizer_reports_per_formation_scores_for_infeasible_and_chosen_format
     )
 
 
-def test_optimizer_constructs_one_milp_per_default_formation(monkeypatch):
+def test_optimizer_breaks_exact_ties_with_lower_player_and_captain_ids():
+    rows = []
+    player_id = 1
+    for posicao, count in {
+        "gol": 2,
+        "lat": 2,
+        "zag": 4,
+        "mei": 6,
+        "ata": 4,
+        "tec": 2,
+    }.items():
+        for _ in range(count):
+            rows.append(_row(player_id, posicao, score=5.0, price=5.0))
+            player_id += 1
+    candidates = pd.DataFrame(rows).sample(frac=1, random_state=7).reset_index(drop=True)
+
+    results = [
+        optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
+        for _ in range(3)
+    ]
+
+    selected_ids = [tuple(result.selected["id_atleta"].astype(int)) for result in results]
+    captain_ids = [result.captain_id for result in results]
+    assert len(set(selected_ids)) == 1
+    assert len(set(captain_ids)) == 1
+    assert selected_ids[0] == (1, 5, 6, 7, 9, 10, 11, 12, 15, 16, 17, 19)
+    assert captain_ids[0] == 1
+
+
+def test_optimizer_reports_all_formations_without_exposing_fixed_formation_api():
     candidates = _candidates().loc[lambda frame: frame["posicao"] != "lat"].copy()
-    problem_names = []
-    original_problem = optimizer.pulp.LpProblem
-
-    def tracking_problem(name, sense):
-        problem_names.append(name)
-        return original_problem(name, sense)
-
-    monkeypatch.setattr(optimizer.pulp, "LpProblem", tracking_problem)
 
     result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
 
     assert result.status == "Optimal"
-    assert len(problem_names) == len(DEFAULT_FORMATIONS)
-    assert problem_names == [f"CartolaSquadOptimizer_{formation_name}" for formation_name in DEFAULT_FORMATIONS]
     assert len(result.formation_scores) == len(DEFAULT_FORMATIONS)
+    assert {score["formation"] for score in result.formation_scores} == set(DEFAULT_FORMATIONS)
+    assert any(score["solver_status"] == "Infeasible" for score in result.formation_scores)
+    assert "formation_name" not in inspect.signature(optimize_squad).parameters
 
 
 def test_optimizer_returns_empty_result_for_empty_candidates():

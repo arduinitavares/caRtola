@@ -10,6 +10,8 @@ import pulp
 from cartola.backtesting.config import DEFAULT_FORMATIONS, MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER, SCORING_CONTRACT_VERSION
 
+_PRIMARY_OBJECTIVE_TOLERANCE = 1e-6
+
 
 @dataclass(frozen=True)
 class SquadOptimizationResult:
@@ -88,12 +90,13 @@ def _optimize_formation(
     }
 
     problem = pulp.LpProblem(f"CartolaSquadOptimizer_{formation_name}", pulp.LpMaximize)
-    problem += pulp.lpSum(
+    primary_objective = pulp.lpSum(
         float(player_rows.loc[index, score_column]) * variable for index, variable in variables.items()
     ) + (CAPTAIN_MULTIPLIER - 1.0) * pulp.lpSum(
         float(player_rows.loc[index, score_column]) * captain_variable
         for index, captain_variable in captain_variables.items()
     )
+    problem += primary_objective
     problem += pulp.lpSum(
         float(player_rows.loc[index, MARKET_OPEN_PRICE_COLUMN]) * variable
         for index, variable in variables.items()
@@ -114,6 +117,12 @@ def _optimize_formation(
 
     status_code = problem.solve(pulp.PULP_CBC_CMD(msg=False))
     status = pulp.LpStatus[status_code]
+    if status == "Optimal":
+        primary_optimum = float(pulp.value(primary_objective))
+        problem += primary_objective >= primary_optimum - _PRIMARY_OBJECTIVE_TOLERANCE
+        problem.setObjective(_tie_break_objective(player_rows, variables, captain_variables))
+        status_code = problem.solve(pulp.PULP_CBC_CMD(msg=False))
+        status = pulp.LpStatus[status_code]
     if status != "Optimal":
         return _empty_result(
             status,
@@ -160,6 +169,24 @@ def _optimize_formation(
         captain_policy_diagnostics=[],
         infeasibility_reason=None,
     )
+
+
+def _tie_break_objective(
+    player_rows: pd.DataFrame,
+    variables: dict[int, pulp.LpVariable],
+    captain_variables: dict[int, pulp.LpVariable],
+) -> pulp.LpAffineExpression:
+    # The primary EV objective is constrained to its optimum before this objective is used.
+    # Maximizing negative IDs gives CBC a stable preference among otherwise equal squads.
+    captain_weight = 1.0 / (float(player_rows["id_atleta"].abs().max()) + 1.0)
+    selected_id_penalty = pulp.lpSum(
+        -float(player_rows.loc[index, "id_atleta"]) * variable for index, variable in variables.items()
+    )
+    captain_id_penalty = pulp.lpSum(
+        -captain_weight * float(player_rows.loc[index, "id_atleta"]) * variable
+        for index, variable in captain_variables.items()
+    )
+    return selected_id_penalty + captain_id_penalty
 
 
 def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
