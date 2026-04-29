@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import hashlib  # noqa: F401
-import json  # noqa: F401
-import shutil  # noqa: F401
-import uuid  # noqa: F401
+import hashlib
+import json
+import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +12,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
-from cartola.backtesting.data import load_round_file  # noqa: F401
+from cartola.backtesting.data import load_round_file
 
 CARTOLA_STATUS_ENDPOINT = "https://api.cartola.globo.com/mercado/status"
 CARTOLA_MARKET_ENDPOINT = "https://api.cartola.globo.com/atletas/mercado"
@@ -335,3 +335,178 @@ def _write_temp_csv_and_metadata(
     metadata["csv_sha256"] = _sha256_file(temp_csv)
     temp_metadata.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return temp_csv, temp_metadata
+
+
+def _validate_previous_capture(
+    final_csv: Path,
+    final_metadata: Path,
+    *,
+    config: MarketCaptureConfig,
+    target_round: int,
+) -> None:
+    if not final_csv.exists() or not final_metadata.exists():
+        raise ValueError("destination is not a previous valid live capture")
+    try:
+        metadata = json.loads(final_metadata.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("destination is not a previous valid live capture") from exc
+
+    if metadata.get("capture_version") != CAPTURE_VERSION:
+        raise ValueError("destination is not a previous valid live capture")
+    if metadata.get("season") != config.season or metadata.get("target_round") != target_round:
+        raise ValueError("destination is not a previous valid live capture")
+    if Path(str(metadata.get("csv_path"))) != final_csv:
+        raise ValueError("destination is not a previous valid live capture")
+    if metadata.get("csv_sha256") != _sha256_file(final_csv):
+        raise ValueError("destination is not a previous valid live capture")
+
+
+def _validate_temp_capture(temp_csv: Path, temp_metadata: Path, *, target_round: int, final_csv: Path) -> None:
+    loaded = load_round_file(temp_csv)
+    rounds = sorted(pd.to_numeric(loaded["rodada"], errors="raise").astype(int).unique().tolist())
+    if rounds != [target_round]:
+        raise ValueError(f"generated CSV rodada mismatch: {rounds}")
+
+    metadata = json.loads(temp_metadata.read_text(encoding="utf-8"))
+    if Path(str(metadata.get("csv_path"))) != final_csv:
+        raise ValueError("capture metadata csv_path does not point to final CSV")
+    if metadata.get("csv_sha256") != _sha256_file(temp_csv):
+        raise ValueError("capture metadata csv_sha256 does not match generated CSV")
+
+
+def _publish_pair(
+    *,
+    temp_csv: Path,
+    temp_metadata: Path,
+    final_csv: Path,
+    final_metadata: Path,
+    force: bool,
+    config: MarketCaptureConfig,
+    target_round: int,
+) -> None:
+    final_csv.parent.mkdir(parents=True, exist_ok=True)
+    if final_csv.exists() or final_metadata.exists():
+        if not force:
+            raise FileExistsError(f"destination already exists: {final_csv}")
+        _validate_previous_capture(final_csv, final_metadata, config=config, target_round=target_round)
+
+    backup_csv = final_csv.with_name(f"{final_csv.name}.bak-{uuid.uuid4().hex}") if final_csv.exists() else None
+    backup_metadata = (
+        final_metadata.with_name(f"{final_metadata.name}.bak-{uuid.uuid4().hex}")
+        if final_metadata.exists()
+        else None
+    )
+    publication_completed = False
+    rollback_completed = False
+    csv_backed_up = False
+    metadata_backed_up = False
+    csv_published = False
+    metadata_published = False
+    try:
+        if backup_csv is not None:
+            final_csv.replace(backup_csv)
+            csv_backed_up = True
+        if backup_metadata is not None:
+            final_metadata.replace(backup_metadata)
+            metadata_backed_up = True
+        temp_metadata.replace(final_metadata)
+        metadata_published = True
+        temp_csv.replace(final_csv)
+        csv_published = True
+        publication_completed = True
+    except Exception:
+        if final_csv.exists() and (csv_published or csv_backed_up):
+            final_csv.unlink()
+        if final_metadata.exists() and (metadata_published or metadata_backed_up):
+            final_metadata.unlink()
+        if metadata_backed_up and backup_metadata is not None and backup_metadata.exists():
+            backup_metadata.replace(final_metadata)
+        if csv_backed_up and backup_csv is not None and backup_csv.exists():
+            backup_csv.replace(final_csv)
+        rollback_completed = True
+        raise
+    finally:
+        if publication_completed or rollback_completed:
+            if backup_csv is not None and backup_csv.exists():
+                backup_csv.unlink()
+            if backup_metadata is not None and backup_metadata.exists():
+                backup_metadata.unlink()
+
+
+def capture_market_round(
+    config: MarketCaptureConfig,
+    *,
+    fetch: Fetch = fetch_cartola_json,
+    now: Clock = _utc_now,
+) -> MarketCaptureResult:
+    current_year = _validate_config_year(config)
+    status_response = fetch(CARTOLA_STATUS_ENDPOINT, config.timeout_seconds)
+    target_round = _target_round_from_status(config, status_response.payload)
+    status_mercado = _validate_open_market(status_response.payload)
+    final_csv = _final_csv_path(config, target_round)
+    final_metadata = _final_metadata_path(config, target_round)
+
+    if config.auto and not config.force and final_csv.exists() and final_metadata.exists():
+        _validate_previous_capture(final_csv, final_metadata, config=config, target_round=target_round)
+        metadata = json.loads(final_metadata.read_text(encoding="utf-8"))
+        return MarketCaptureResult(
+            csv_path=final_csv,
+            metadata_path=final_metadata,
+            target_round=target_round,
+            athlete_count=int(metadata["athlete_count"]),
+            status_mercado=int(metadata["status_mercado"]),
+            deadline_timestamp=metadata["deadline_timestamp"],
+            deadline_parse_status=str(metadata["deadline_parse_status"]),
+            reused_existing=True,
+        )
+
+    market_response = fetch(CARTOLA_MARKET_ENDPOINT, config.timeout_seconds)
+    frame = build_live_market_frame(market_response.payload, target_round=target_round)
+    deadline_timestamp, deadline_parse_status = deadline_metadata(status_response.payload)
+
+    season_dir = final_csv.parent
+    temp_dir = season_dir / f".tmp-market-capture-{uuid.uuid4().hex}"
+    try:
+        season_dir.mkdir(parents=True, exist_ok=True)
+        placeholder_metadata = _metadata(
+            config=config,
+            current_year=current_year,
+            target_round=target_round,
+            captured_at_utc=_utc_now_z(now),
+            status_response=status_response,
+            market_response=market_response,
+            status_mercado=status_mercado,
+            deadline_timestamp=deadline_timestamp,
+            deadline_parse_status=deadline_parse_status,
+            athlete_count=len(frame),
+            csv_path=final_csv,
+            csv_sha256="",
+        )
+        temp_csv, temp_metadata = _write_temp_csv_and_metadata(
+            temp_dir=temp_dir,
+            frame=frame,
+            metadata=placeholder_metadata,
+        )
+        _validate_temp_capture(temp_csv, temp_metadata, target_round=target_round, final_csv=final_csv)
+        _publish_pair(
+            temp_csv=temp_csv,
+            temp_metadata=temp_metadata,
+            final_csv=final_csv,
+            final_metadata=final_metadata,
+            force=config.force,
+            config=config,
+            target_round=target_round,
+        )
+    finally:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+
+    return MarketCaptureResult(
+        csv_path=final_csv,
+        metadata_path=final_metadata,
+        target_round=target_round,
+        athlete_count=len(frame),
+        status_mercado=status_mercado,
+        deadline_timestamp=deadline_timestamp,
+        deadline_parse_status=deadline_parse_status,
+    )

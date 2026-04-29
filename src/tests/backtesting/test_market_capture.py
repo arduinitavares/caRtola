@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
 from cartola.backtesting.data import load_round_file
-from cartola.backtesting.market_capture import build_live_market_frame, deadline_metadata
+from cartola.backtesting.market_capture import (
+    CAPTURE_VERSION,
+    CapturedJsonResponse,
+    MarketCaptureConfig,
+    build_live_market_frame,
+    capture_market_round,
+    deadline_metadata,
+)
 
 
 def _status_payload(*, rodada_atual: int = 14, status_mercado: int = 1) -> dict[str, object]:
@@ -67,6 +75,32 @@ def _market_payload(*, stale_round: int = 13) -> dict[str, object]:
             },
         ],
     }
+
+
+def _captured(payload: dict[str, object], url: str) -> CapturedJsonResponse:
+    return CapturedJsonResponse(
+        payload=payload,
+        status_code=200,
+        final_url=url,
+        body_sha256="payload-sha256",
+    )
+
+
+def _fetch_pair(
+    status_payload: dict[str, object] | None = None,
+    market_payload: dict[str, object] | None = None,
+):
+    status_payload = _status_payload() if status_payload is None else status_payload
+    market_payload = _market_payload() if market_payload is None else market_payload
+
+    def fetch(url: str, timeout: float) -> object:
+        if url.endswith("/mercado/status"):
+            return _captured(status_payload, url)
+        if url.endswith("/atletas/mercado"):
+            return _captured(market_payload, url)
+        raise AssertionError(f"unexpected URL {url}")
+
+    return fetch
 
 
 def test_build_live_market_frame_replaces_stale_round_and_sanitizes_outcomes() -> None:
@@ -178,3 +212,250 @@ def test_fetch_cartola_json_rejects_invalid_json(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(ValueError, match="not valid JSON"):
         fetch_cartola_json("https://api.cartola.globo.com/mercado/status", 12.0)
+
+
+def test_capture_refuses_wrong_current_year(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(
+        season=2025,
+        target_round=14,
+        current_year=2026,
+        project_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="season 2025 must equal current_year 2026"):
+        capture_market_round(config, fetch=lambda url, timeout: _captured({}, url))
+
+
+def test_capture_refuses_closed_market(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(
+        season=2026,
+        target_round=14,
+        current_year=2026,
+        project_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="status_mercado 2"):
+        capture_market_round(config, fetch=_fetch_pair(status_payload=_status_payload(status_mercado=2)))
+
+
+def test_capture_refuses_target_round_mismatch(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(
+        season=2026,
+        target_round=13,
+        current_year=2026,
+        project_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        capture_market_round(config, fetch=_fetch_pair(status_payload=_status_payload(rodada_atual=14)))
+
+
+def test_capture_publishes_csv_and_metadata_atomically_enough(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(
+        season=2026,
+        target_round=14,
+        current_year=2026,
+        project_root=tmp_path,
+    )
+
+    result = capture_market_round(
+        config,
+        fetch=_fetch_pair(),
+        now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.csv_path == tmp_path / "data/01_raw/2026/rodada-14.csv"
+    assert result.metadata_path == tmp_path / "data/01_raw/2026/rodada-14.capture.json"
+    assert result.athlete_count == 2
+    assert result.deadline_timestamp == 1777748340
+    assert result.deadline_parse_status == "ok"
+    assert result.csv_path.exists()
+    assert result.metadata_path.exists()
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["capture_version"] == CAPTURE_VERSION
+    assert metadata["csv_path"] == str(result.csv_path)
+    assert metadata["csv_sha256"]
+    assert metadata["status_endpoint"] == "https://api.cartola.globo.com/mercado/status"
+    assert metadata["status_final_url"] == "https://api.cartola.globo.com/mercado/status"
+    assert metadata["status_http_status"] == 200
+    assert metadata["status_response_sha256"]
+    assert metadata["market_endpoint"] == "https://api.cartola.globo.com/atletas/mercado"
+    assert metadata["market_final_url"] == "https://api.cartola.globo.com/atletas/mercado"
+    assert metadata["market_http_status"] == 200
+    assert metadata["market_response_sha256"]
+    assert metadata["deadline_parse_status"] == "ok"
+    assert metadata["deadline_timestamp"] == 1777748340
+    loaded = load_round_file(result.csv_path)
+    assert loaded["rodada"].tolist() == [14, 14]
+    assert not list((tmp_path / "data/01_raw/2026").glob(".tmp-market-capture-*"))
+
+
+def test_capture_does_not_publish_when_generated_csv_validation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    final_csv = tmp_path / "data/01_raw/2026/rodada-14.csv"
+    final_metadata = tmp_path / "data/01_raw/2026/rodada-14.capture.json"
+
+    def fail_load_round_file(path: Path) -> object:
+        raise ValueError("bad generated csv")
+
+    monkeypatch.setattr("cartola.backtesting.market_capture.load_round_file", fail_load_round_file)
+
+    with pytest.raises(ValueError, match="bad generated csv"):
+        capture_market_round(config, fetch=_fetch_pair())
+
+    assert not final_csv.exists()
+    assert not final_metadata.exists()
+    assert not list((tmp_path / "data/01_raw/2026").glob(".tmp-market-capture-*"))
+
+
+def test_capture_refuses_existing_csv_without_force(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data/01_raw/2026"
+    season_dir.mkdir(parents=True)
+    (season_dir / "rodada-14.csv").write_text("not,a,capture\n", encoding="utf-8")
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        capture_market_round(config, fetch=_fetch_pair())
+
+
+def test_capture_force_refuses_raw_file_without_capture_metadata(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data/01_raw/2026"
+    season_dir.mkdir(parents=True)
+    (season_dir / "rodada-14.csv").write_text("not,a,capture\n", encoding="utf-8")
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path, force=True)
+
+    with pytest.raises(ValueError, match="not a previous valid live capture"):
+        capture_market_round(config, fetch=_fetch_pair())
+
+
+def test_capture_force_replaces_previous_valid_capture(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+
+    forced = capture_market_round(
+        MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path, force=True),
+        fetch=_fetch_pair(market_payload=_market_payload(stale_round=12)),
+        now=lambda: datetime(2026, 4, 29, 12, 5, tzinfo=UTC),
+    )
+
+    assert forced.csv_path.exists()
+    assert json.loads(forced.metadata_path.read_text(encoding="utf-8"))["captured_at_utc"] == "2026-04-29T12:05:00Z"
+
+
+def test_capture_force_restores_previous_capture_when_csv_publication_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    initial = capture_market_round(
+        config,
+        fetch=_fetch_pair(),
+        now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC),
+    )
+    old_csv_text = initial.csv_path.read_text(encoding="utf-8")
+    old_metadata_text = initial.metadata_path.read_text(encoding="utf-8")
+    old_metadata_hash = json.loads(old_metadata_text)["csv_sha256"]
+    original_replace = Path.replace
+
+    def fail_final_csv_replace(self: Path, target: str | Path) -> Path:
+        if self.name == "round.csv" and Path(target) == initial.csv_path:
+            raise RuntimeError("publish failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_final_csv_replace)
+
+    with pytest.raises(RuntimeError, match="publish failed"):
+        capture_market_round(
+            MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path, force=True),
+            fetch=_fetch_pair(market_payload=_market_payload(stale_round=12)),
+            now=lambda: datetime(2026, 4, 29, 12, 5, tzinfo=UTC),
+        )
+
+    restored_metadata_text = initial.metadata_path.read_text(encoding="utf-8")
+    assert initial.csv_path.read_text(encoding="utf-8") == old_csv_text
+    assert restored_metadata_text == old_metadata_text
+    assert json.loads(restored_metadata_text)["csv_sha256"] == old_metadata_hash
+    assert not list((tmp_path / "data/01_raw/2026").glob(".tmp-market-capture-*"))
+
+
+def test_capture_force_preserves_backups_when_rollback_restoration_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    initial = capture_market_round(
+        config,
+        fetch=_fetch_pair(),
+        now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC),
+    )
+    season_dir = initial.csv_path.parent
+    original_replace = Path.replace
+
+    def fail_publish_and_rollback_csv(self: Path, target: str | Path) -> Path:
+        target_path = Path(target)
+        if self.name == "round.csv" and target_path == initial.csv_path:
+            raise RuntimeError("publish failed")
+        if self.name.startswith("rodada-14.csv.bak-") and target_path == initial.csv_path:
+            raise RuntimeError("rollback failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_and_rollback_csv)
+
+    with pytest.raises(RuntimeError):
+        capture_market_round(
+            MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path, force=True),
+            fetch=_fetch_pair(market_payload=_market_payload(stale_round=12)),
+            now=lambda: datetime(2026, 4, 29, 12, 5, tzinfo=UTC),
+        )
+
+    assert list(season_dir.glob("*.bak-*"))
+    assert not list(season_dir.glob(".tmp-market-capture-*"))
+
+
+def test_capture_force_preserves_originals_when_csv_backup_creation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    initial = capture_market_round(
+        config,
+        fetch=_fetch_pair(),
+        now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC),
+    )
+    old_csv_text = initial.csv_path.read_text(encoding="utf-8")
+    old_metadata_text = initial.metadata_path.read_text(encoding="utf-8")
+    original_replace = Path.replace
+
+    def fail_csv_backup(self: Path, target: str | Path) -> Path:
+        if self == initial.csv_path and Path(target).name.startswith("rodada-14.csv.bak-"):
+            raise RuntimeError("backup failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_csv_backup)
+
+    with pytest.raises(RuntimeError, match="backup failed"):
+        capture_market_round(
+            MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path, force=True),
+            fetch=_fetch_pair(market_payload=_market_payload(stale_round=12)),
+            now=lambda: datetime(2026, 4, 29, 12, 5, tzinfo=UTC),
+        )
+
+    assert initial.csv_path.read_text(encoding="utf-8") == old_csv_text
+    assert initial.metadata_path.read_text(encoding="utf-8") == old_metadata_text
+    assert "2026-04-29T12:05:00Z" not in initial.metadata_path.read_text(encoding="utf-8")
+    assert not list(initial.csv_path.parent.glob(".tmp-market-capture-*"))
+
+
+def test_capture_auto_reuses_existing_valid_capture(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+
+    result = capture_market_round(
+        MarketCaptureConfig(season=2026, auto=True, current_year=2026, project_root=tmp_path),
+        fetch=_fetch_pair(),
+    )
+
+    assert result.reused_existing is True
