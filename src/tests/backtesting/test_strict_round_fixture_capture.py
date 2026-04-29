@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -177,6 +178,62 @@ def test_run_generation_failure_preserves_capture_context(tmp_path: Path, monkey
     assert isinstance(exc_info.value.original, FileExistsError)
 
 
+def test_run_generation_permission_failure_preserves_capture_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = _capture_result(tmp_path)
+
+    def fake_capture(**kwargs: object) -> CaptureResult:
+        return capture
+
+    def fail_generate(**kwargs: object) -> StrictFixtureLoadResult:
+        raise PermissionError("snapshot unreadable")
+
+    monkeypatch.setattr(strict_round_fixture_capture, "capture_cartola_snapshot", fake_capture)
+    monkeypatch.setattr(strict_round_fixture_capture, "generate_strict_fixture", fail_generate)
+
+    with pytest.raises(StrictFixtureGenerationError, match="snapshot unreadable") as exc_info:
+        run_strict_round_fixture_capture(
+            StrictRoundFixtureCaptureConfig(
+                season=2026,
+                round_number=12,
+                current_year=2026,
+                project_root=tmp_path,
+            )
+        )
+
+    assert exc_info.value.capture_result is capture
+    assert isinstance(exc_info.value.original, PermissionError)
+
+
+def test_run_generation_json_failure_preserves_capture_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = _capture_result(tmp_path)
+
+    def fake_capture(**kwargs: object) -> CaptureResult:
+        return capture
+
+    def fail_generate(**kwargs: object) -> StrictFixtureLoadResult:
+        raise json.JSONDecodeError("invalid snapshot", "{}", 1)
+
+    monkeypatch.setattr(strict_round_fixture_capture, "capture_cartola_snapshot", fake_capture)
+    monkeypatch.setattr(strict_round_fixture_capture, "generate_strict_fixture", fail_generate)
+
+    with pytest.raises(StrictFixtureGenerationError, match="invalid snapshot") as exc_info:
+        run_strict_round_fixture_capture(
+            StrictRoundFixtureCaptureConfig(
+                season=2026,
+                round_number=12,
+                current_year=2026,
+                project_root=tmp_path,
+            )
+        )
+
+    assert exc_info.value.capture_result is capture
+    assert isinstance(exc_info.value.original, json.JSONDecodeError)
+
+
 def test_run_capture_failure_preserves_attempted_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_active_fetch(*, fetch: object | None = None) -> int:
         return 12
@@ -203,6 +260,32 @@ def test_run_capture_failure_preserves_attempted_round(tmp_path: Path, monkeypat
 
     assert exc_info.value.round_number == 12
     assert isinstance(exc_info.value.original, ValueError)
+
+
+def test_run_capture_permission_failure_preserves_attempted_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_capture(**kwargs: object) -> CaptureResult:
+        raise PermissionError("snapshot directory denied")
+
+    def fail_generate(**kwargs: object) -> StrictFixtureLoadResult:
+        raise AssertionError("generator should not run")
+
+    monkeypatch.setattr(strict_round_fixture_capture, "capture_cartola_snapshot", fail_capture)
+    monkeypatch.setattr(strict_round_fixture_capture, "generate_strict_fixture", fail_generate)
+
+    with pytest.raises(StrictFixtureCaptureError, match="snapshot directory denied") as exc_info:
+        run_strict_round_fixture_capture(
+            StrictRoundFixtureCaptureConfig(
+                season=2026,
+                round_number=13,
+                current_year=2026,
+                project_root=tmp_path,
+            )
+        )
+
+    assert exc_info.value.round_number == 13
+    assert isinstance(exc_info.value.original, PermissionError)
 
 
 def _capture_result(project_root: Path, *, round_number: int = 12) -> CaptureResult:

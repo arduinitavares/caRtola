@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -155,9 +156,8 @@ def _result_from_capture_and_fixture(
 
 
 _CAPTURE_ERRORS: tuple[type[Exception], ...] = (
-    FileExistsError,
-    FileNotFoundError,
+    OSError,
     ValueError,
     requests.RequestException,
 )
-_GENERATION_ERRORS: tuple[type[Exception], ...] = (FileExistsError, FileNotFoundError, ValueError)
+_GENERATION_ERRORS: tuple[type[Exception], ...] = (OSError, json.JSONDecodeError, ValueError)
