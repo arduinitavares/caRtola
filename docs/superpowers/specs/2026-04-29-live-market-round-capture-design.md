@@ -156,7 +156,7 @@ Overwrite rules:
 
 ## Integration With Recommendation
 
-After capture, the existing live command should work without additional flags:
+After capture, the existing live command works without additional flags:
 
 ```bash
 uv run --frozen python scripts/recommend_squad.py \
@@ -176,8 +176,8 @@ The recommendation command remains prediction-only. It does not silently fetch l
 
 Rules:
 
-- `--auto` without `--force` is idempotent: if both the CSV and matching metadata already exist for the active round, it exits successfully without rewriting.
-- `--auto --force` follows the same overwrite rules as manual capture.
+- `--auto` without `--force` follows the same overwrite rules as manual capture: any existing final CSV or final metadata fails the command.
+- `--auto --force` fetches a fresh market response and may replace only a previous valid live capture with compatible metadata.
 - `--auto` does not schedule itself, send notifications, or run recommendations in v1.
 
 A later command can wrap capture plus recommendation, but this design keeps the base capture operation explicit and testable.
