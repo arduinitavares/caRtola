@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -306,3 +307,61 @@ def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowe
     assert "pontuacao" not in result.recommended_squad.columns
     assert "entrou_em_campo" not in result.candidate_predictions.columns
     assert result.metadata["finalized_live_data_detected"] is True
+
+
+def test_live_mode_rejects_finalized_target_round_without_escape_hatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4))
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+    )
+
+    with pytest.raises(ValueError, match="appears finalized"):
+        run_recommendation(config)
+
+
+def test_run_recommendation_writes_expected_output_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    season_df = _season_frame(range(1, 4), target_round=3, live_target=True)
+
+    def fake_load_footystats(**kwargs: object):
+        from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
+
+        return FootyStatsPPGLoadResult(
+            rows=_footystats_rows(range(1, 4)),
+            source_path=tmp_path / "data/footystats/source.csv",
+            source_sha256="sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    monkeypatch.setattr(
+        "cartola.backtesting.recommendation.load_footystats_feature_rows_for_recommendation",
+        fake_load_footystats,
+    )
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+    )
+
+    run_recommendation(config)
+
+    output_path = tmp_path / "data/08_reporting/recommendations/2026/round-3/live"
+    assert (output_path / "recommended_squad.csv").exists()
+    assert (output_path / "candidate_predictions.csv").exists()
+    assert (output_path / "recommendation_summary.json").exists()
+    assert (output_path / "run_metadata.json").exists()
+    summary = json.loads((output_path / "recommendation_summary.json").read_text(encoding="utf-8"))
+    metadata = json.loads((output_path / "run_metadata.json").read_text(encoding="utf-8"))
+    assert summary["actual_points"] is None
+    assert metadata["training_rounds"] == [1, 2]
+    assert metadata["footystats_matches_source_sha256"] == "sha"
