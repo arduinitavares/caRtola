@@ -10,11 +10,12 @@ This design upgrades the recommendation and backtest optimizer so live squads ma
 
 - search all 7 official Cartola formations;
 - select the captain inside the same optimizer that selects the squad;
-- default captain scoring to enabled for live recommendations;
+- enable captain scoring for every supported optimizer/report path;
+- use automatic formation search for every supported optimizer/report path;
 - report safe/upside captain diagnostics on the same optimized squad;
 - evaluate replay/backtest actuals with the captain multiplier.
 
-No new data source, captain model, fixture data, or captain compatibility audit is required. Existing compatibility, ablation, and summary readers must still record or respect the scoring contract so mixed-contract metrics are not compared silently.
+No new data source, captain model, fixture data, or captain compatibility audit is required. Existing compatibility, ablation, and summary readers must move to the new scoring contract instead of preserving old raw 4-3-3 behavior. Old reports are historical artifacts and must not be aggregated with new reports unless a tool explicitly checks the recorded scoring contract.
 
 ## Current Code Context
 
@@ -36,7 +37,7 @@ The v1 optimizer uses these rules:
 - tecnico cannot be captain;
 - captain is not an extra slot;
 - standard captain multiplier is `1.5`;
-- some leagues can disable captain scoring, so `captain_mode` must exist;
+- leagues without captain scoring are out of scope for v1;
 - Reserva de Luxo and bench substitution are out of scope for v1.
 
 The 7 official formation counts are:
@@ -56,11 +57,9 @@ The 7 official formation counts are:
 In scope:
 
 - add all 7 formations;
-- add `captain_mode: "enabled" | "disabled"`;
 - add `captain_multiplier: float = 1.5`;
-- add `formation_mode: "auto" | "fixed"`;
 - add one-solve-per-formation search;
-- add captain variables to the MILP when captain mode is enabled;
+- add captain variables to the MILP;
 - compute captain policy diagnostics on the same selected squad;
 - update recommendation, backtest, replay, oracle, metadata, and terminal/report output.
 
@@ -71,16 +70,12 @@ Out of scope:
 - Reserva de Luxo;
 - bench selection;
 - tecnico rule reconstruction from club average plus win bonus;
+- leagues without captain scoring;
+- fixed-formation legacy reports;
+- raw no-captain legacy reports;
 - strict fixture integration into live recommendation.
 
 ## Optimization Formulation
-
-Config types:
-
-```python
-CaptainMode = Literal["enabled", "disabled"]
-FormationMode = Literal["auto", "fixed"]
-```
 
 `captain_multiplier` must be finite and `>= 1.0`. Reject NaN, infinity, and values below `1.0`.
 
@@ -91,7 +86,7 @@ For each candidate `i`:
 - `e_i` is the pre-round expected Cartola score from the active score column;
 - `price_i` is `preco_pre_rodada`.
 
-For captain-enabled mode:
+The objective is always captain-aware:
 
 ```text
 maximize sum(x_i * e_i) + (captain_multiplier - 1.0) * sum(c_i * e_i)
@@ -107,13 +102,6 @@ c_i <= x_i for every candidate
 c_i == 0 when posicao == "tec"
 ```
 
-For captain-disabled mode:
-
-```text
-maximize sum(x_i * e_i)
-sum(c_i) == 0
-```
-
 The budget constraint must use only `x_i`; captaincy does not consume budget.
 
 The captain term is a bonus, not a full extra score. With the default multiplier:
@@ -126,7 +114,7 @@ Actual scoring must be computed outside the optimizer from explicit actual-score
 
 ## Formation Search
 
-V1 should solve one MILP per allowed formation and choose the best optimal result by `predicted_points_with_captain` when captain is enabled, or by `predicted_points_base` when captain is disabled.
+V1 solves one MILP per official formation and chooses the best optimal result by `predicted_points_with_captain`.
 
 This is preferred over a single MILP with formation variables because:
 
@@ -135,12 +123,7 @@ This is preferred over a single MILP with formation variables because:
 - infeasible formations can be reported directly;
 - runtime should remain small relative to model fitting.
 
-The selected formation in config should support:
-
-- `formation_mode="auto"`: search all available formations;
-- `formation_mode="fixed"` with `formation_name`: solve only that formation.
-
-Live recommendation should default to `formation_mode="auto"`.
+There is no public legacy fixed-formation mode in v1. A private helper may solve one formation for implementation/testing, but entry points use automatic all-formation search.
 
 Tie-breaking across formations and equivalent squads must be deterministic:
 
@@ -213,32 +196,33 @@ The recommendation output should also include the top 3 selected non-tecnico cap
 
 CSV outputs should not serialize this nested object into a single opaque column unless the CSV is explicitly a metadata summary. Per-policy detail belongs in JSON or in a separate normalized `captain_policy_diagnostics.csv`.
 
-## Compatibility And Defaults
+## Standard Scoring Contract
 
-Defaults are entry-point-specific:
+V1 has one supported scoring contract:
 
-| Entry point | `captain_mode` default | `formation_mode` default | Reason |
-| --- | --- | --- | --- |
-| live recommendation | `enabled` | `auto` | match standard Cartola gameplay |
-| replay recommendation | `enabled` | `auto` | evaluate the lineup a user would now play |
-| normal backtest CLI | `disabled` unless explicitly requested for a new scoring contract | `fixed` unless explicitly requested | avoid silently changing historical reports |
-| FootyStats ablation | explicit, recorded config required | explicit, recorded config required | prevent mixed-contract comparisons |
-| compatibility audit | `disabled` and `fixed` unless audit is expanded to record scoring contract | `fixed` | keep legacy compatibility metrics stable |
+```text
+scoring_contract_version = "cartola_standard_2026_v1"
+captain_scoring_enabled = true
+captain_multiplier = 1.5
+formation_search = "all_official_formations"
+```
 
-When backtests or ablations run with `captain_mode="enabled"` or `formation_mode="auto"`, outputs must include:
+This contract applies to:
 
-- `scoring_contract_version`;
-- `captain_mode`;
-- `captain_multiplier`;
-- `formation_mode`;
-- `allowed_formations`.
+- live recommendation;
+- replay recommendation;
+- normal backtests;
+- FootyStats ablations;
+- compatibility audits that execute smoke backtests;
+- summaries and diagnostics.
 
-Ablation and audit report readers must either:
+The implementation must not add a public legacy mode for:
 
-- include these fields in their CSV/JSON reports and refuse to aggregate mixed contracts; or
-- run with `captain_mode="disabled"` and `formation_mode="fixed"` to preserve legacy comparability.
+- no-captain scoring;
+- fixed `4-3-3` reporting;
+- raw selected-squad totals as the primary round score.
 
-This is not a data compatibility issue. It is a metric comparability issue: captain-aware totals and fixed-formation raw totals are different scoring contracts.
+Old raw 4-3-3 reports are not a compatibility target. Any tool that reads or compares reports must record `scoring_contract_version` and reject mixed contracts. It should not preserve old behavior by silently running disabled-captain or fixed-formation paths.
 
 ## Result Schema
 
@@ -250,8 +234,8 @@ This is not a data compatibility issue. It is a metric comparability issue: capt
 - `actual_points_base`;
 - `captain_bonus_actual`;
 - `actual_points_with_captain`;
-- `captain_mode`;
 - `captain_multiplier`;
+- `scoring_contract_version`;
 - `captain_id`;
 - `captain_name`;
 - `captain_position`;
@@ -309,8 +293,8 @@ where the bonus is non-zero only for the captain.
 `recommendation_summary.json` should include:
 
 - `formation`;
-- `formation_mode`;
-- `captain_mode`;
+- `formation_search`;
+- `captain_scoring_enabled`;
 - `captain_multiplier`;
 - `captain_id`;
 - `captain_name`;
@@ -337,9 +321,9 @@ where the bonus is non-zero only for the captain.
 `run_metadata.json` should include:
 
 - `scoring_contract_version`;
-- `formation_mode`;
+- `formation_search`;
 - `allowed_formations`;
-- `captain_mode`;
+- `captain_scoring_enabled`;
 - `captain_multiplier`;
 - `captain_policy_definitions`;
 - existing data source and feature metadata.
@@ -373,12 +357,12 @@ Backtest round rows should record explicit base and captain-adjusted fields:
 - `actual_points_with_safe_captain`;
 - `actual_points_with_upside_captain`.
 
-Summary and diagnostics should use `actual_points_with_captain` as the primary real Cartola score when `captain_mode="enabled"`.
+Summary and diagnostics should use `actual_points_with_captain` as the primary real Cartola score.
 
 If existing round-level output columns named `predicted_points` and `actual_points` remain in `round_results.csv`, `summary.csv`, diagnostics, and recommendation summaries, they must be aliases for the active scoring contract:
 
-- captain enabled: total with captain;
-- captain disabled: base score.
+- `predicted_points`: total with captain;
+- `actual_points`: total with captain.
 
 This alias rule does not apply to selected-player rows. Selected-player `predicted_points` remains a per-athlete raw prediction and selected-player `pontuacao` remains a per-athlete actual score.
 
@@ -388,13 +372,9 @@ Metadata must record the scoring contract so old raw-squad reports are not compa
 
 `metrics.py` must apply one scoring contract consistently.
 
-When `captain_mode="enabled"`:
+`round_results.actual_points` should be captain-adjusted active-contract totals. Random valid squad diagnostics must also choose a valid captain for each random squad and apply the same multiplier. Random squad captain can be selected by actual `pontuacao` for oracle-like random actual diagnostics, or by the same random-squad policy used by the metric. The selected policy must be named in diagnostics metadata.
 
-- `round_results.actual_points` should be captain-adjusted active-contract totals;
-- random valid squad diagnostics must also choose a valid captain for each random squad and apply the same multiplier;
-- random squad captain can be selected by actual `pontuacao` for oracle-like random actual diagnostics, or by the same random-squad policy used by the metric. The selected policy must be named in diagnostics metadata.
-
-If random selection diagnostics are not made captain-aware in the first implementation, suppress them or rename them so they are not compared against captain-adjusted strategy totals.
+If random selection diagnostics are not made captain-aware in the first implementation, suppress them. Do not keep a raw no-captain random baseline beside captain-adjusted strategy totals.
 
 Prediction diagnostics remain player-level and continue to compare raw per-athlete predicted score columns against raw per-athlete `pontuacao`.
 
@@ -435,33 +415,16 @@ The optimizer must reject or fail cleanly on:
 
 Duplicate `id_atleta` handling should remain deterministic: deduplicate before creating selected/captain variables, preserving the current first-row behavior unless a separate dedupe policy is specified.
 
-## Defaults
-
-Recommended live recommendation defaults:
+## Constants
 
 ```text
-captain_mode = "enabled"
+scoring_contract_version = "cartola_standard_2026_v1"
+captain_scoring_enabled = true
 captain_multiplier = 1.5
-formation_mode = "auto"
+formation_search = "all_official_formations"
 ```
 
-Recommended legacy report defaults:
-
-```text
-captain_mode = "disabled"
-formation_mode = "fixed"
-formation_name = "4-3-3"
-```
-
-Backtest, audit, and ablation commands may opt into captain-aware/auto-formation mode, but then they must record the scoring contract and avoid aggregating mixed contracts.
-
-For leagues without captain scoring:
-
-```text
-captain_mode = "disabled"
-```
-
-In disabled mode, the system may still suggest a non-scored captain for UI completion, but it must be labeled `captain_scoring_enabled=false` and must not affect the objective or metrics.
+These are the only v1 constants. If a future feature supports leagues without captain scoring or fixed-formation experiments, that must be a separate design and implementation, not a hidden legacy path in this one.
 
 ## Testing Requirements
 
@@ -474,7 +437,6 @@ Optimizer tests:
 - captain budget is not counted separately;
 - predicted total equals base plus `(multiplier - 1) * captain_score`;
 - negative expected points select the least-negative captain;
-- disabled mode matches legacy base objective;
 - some formations infeasible but at least one feasible returns best feasible;
 - all formations infeasible fails loudly;
 - tie-breaking is deterministic.
@@ -493,15 +455,15 @@ Backtest/replay tests:
 - policy diagnostics compare EV/safe/upside on the same squad;
 - missing actuals produce null actual/captain/oracle metrics with warnings;
 - oracle optimizer applies captain rules;
-- metadata records `captain_mode`, `captain_multiplier`, and scoring contract version.
+- metadata records `captain_scoring_enabled`, `captain_multiplier`, and scoring contract version.
 
 Regression tests:
 
-- existing `captain_mode="disabled"` behavior matches the old optimizer objective;
 - selected-player `predicted_points` remains raw per-athlete score and is not captain-adjusted;
-- compatibility audit output either records scoring contract or uses disabled/fixed defaults;
+- compatibility audit output records scoring contract when it runs smoke backtests;
 - FootyStats ablation output records and validates scoring contract before comparing runs;
-- random selection diagnostics are captain-aware or suppressed under captain-enabled mode;
+- random selection diagnostics are captain-aware or suppressed;
+- no public disabled-captain or fixed-formation legacy path is added;
 - no FootyStats, fixture, strict snapshot, or live market capture path changes are required.
 
 ## Rollout
@@ -509,7 +471,7 @@ Regression tests:
 Suggested implementation order:
 
 1. Add all 7 formations and formation tests.
-2. Add captain config fields and result fields.
+2. Add scoring-contract constants and result fields.
 3. Add captain-aware single-formation optimization.
 4. Add auto-formation search.
 5. Add captain policy diagnostics on selected squads.
@@ -523,5 +485,5 @@ Suggested implementation order:
 - Replay/backtest actual points include the selected captain multiplier.
 - Safe/upside policy diagnostics use the same selected squad as EV.
 - Formation auto-search can choose any of the 7 official formations.
-- Captain mode can be disabled and then reverts to the legacy base objective.
+- No legacy no-captain or fixed-formation path is exposed.
 - Metadata makes the scoring contract explicit.
