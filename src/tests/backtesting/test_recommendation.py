@@ -11,6 +11,7 @@ from cartola.backtesting.recommendation import (
     _finalized_live_data_evidence,
     _validate_mode_scope,
     _visible_season_frame,
+    run_recommendation,
 )
 
 
@@ -191,3 +192,117 @@ def test_finalized_evidence_respects_custom_scout_columns() -> None:
 
     assert default_evidence["non_zero_scout_count"] == 0
     assert custom_evidence["non_zero_scout_count"] == 2
+
+
+def test_run_recommendation_ignores_future_cartola_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 6), target_round=3, live_target=True)
+    load_calls: list[dict[str, object]] = []
+
+    def fake_load_footystats(**kwargs: object):
+        load_calls.append(kwargs)
+        from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
+
+        return FootyStatsPPGLoadResult(
+            rows=_footystats_rows(range(1, 4)),
+            source_path=tmp_path / "data/footystats/source.csv",
+            source_sha256="sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    monkeypatch.setattr(
+        "cartola.backtesting.recommendation.load_footystats_feature_rows_for_recommendation",
+        fake_load_footystats,
+    )
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+    )
+
+    result = run_recommendation(config)
+
+    assert result.metadata["visible_max_round"] == 3
+    assert result.metadata["training_rounds"] == [1, 2]
+    required_keys = load_calls[0]["required_keys"]
+    assert int(required_keys["rodada"].max()) == 3
+    assert result.candidate_predictions["rodada"].eq(3).all()
+
+
+def test_run_recommendation_replay_reports_actual_points(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4))
+
+    def fake_load_footystats(**kwargs: object):
+        from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
+
+        return FootyStatsPPGLoadResult(
+            rows=_footystats_rows(range(1, 4)),
+            source_path=tmp_path / "data/footystats/source.csv",
+            source_sha256="sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    monkeypatch.setattr(
+        "cartola.backtesting.recommendation.load_footystats_feature_rows_for_recommendation",
+        fake_load_footystats,
+    )
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="replay",
+        project_root=tmp_path,
+        current_year=2026,
+    )
+
+    result = run_recommendation(config)
+
+    assert result.summary["actual_points"] is not None
+    assert "pontuacao" in result.recommended_squad.columns
+    assert result.summary["optimizer_status"] == "Optimal"
+
+
+def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4))
+
+    def fake_load_footystats(**kwargs: object):
+        from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
+
+        return FootyStatsPPGLoadResult(
+            rows=_footystats_rows(range(1, 4)),
+            source_path=tmp_path / "data/footystats/source.csv",
+            source_sha256="sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    monkeypatch.setattr(
+        "cartola.backtesting.recommendation.load_footystats_feature_rows_for_recommendation",
+        fake_load_footystats,
+    )
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+        allow_finalized_live_data=True,
+    )
+
+    result = run_recommendation(config)
+
+    assert result.summary["actual_points"] is None
+    assert "pontuacao" not in result.recommended_squad.columns
+    assert "entrou_em_campo" not in result.candidate_predictions.columns
+    assert result.metadata["finalized_live_data_detected"] is True
