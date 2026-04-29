@@ -4,16 +4,23 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 from cartola.backtesting.config import FootyStatsMode
 from cartola.backtesting.market_capture import (
+    CARTOLA_STATUS_ENDPOINT,
     LiveCaptureMetadata,
     MarketCaptureConfig,
     capture_market_round,
+    fetch_cartola_json,
     load_valid_live_capture,
 )
-from cartola.backtesting.recommendation import RecommendationConfig, RecommendationResult, run_recommendation
+from cartola.backtesting.recommendation import (
+    RecommendationConfig,
+    RecommendationResult,
+    _validate_output_root,
+    run_recommendation,
+)
 
 CapturePolicy = Literal["fresh", "missing", "skip"]
 WorkflowStatus = Literal["ok", "failed"]
@@ -166,13 +173,85 @@ def _capture_fresh(config: LiveWorkflowConfig) -> tuple[int, LiveCaptureMetadata
     return result.target_round, capture
 
 
+def _int_payload_field(payload: dict[str, Any], field_name: str) -> int:
+    value = payload.get(field_name)
+    if value is None or isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+
+
+def _active_open_round(config: LiveWorkflowConfig) -> int:
+    response = fetch_cartola_json(CARTOLA_STATUS_ENDPOINT, config.timeout_seconds)
+    target_round = _int_payload_field(response.payload, "rodada_atual")
+    if target_round <= 0:
+        raise ValueError("rodada_atual must be a positive integer")
+    status_mercado = _int_payload_field(response.payload, "status_mercado")
+    if status_mercado != 1:
+        raise ValueError(f"Cartola market is not open: rodada_atual={target_round} status_mercado={status_mercado}")
+    return target_round
+
+
+def _capture_missing(config: LiveWorkflowConfig) -> tuple[int, LiveCaptureMetadata]:
+    target_round = _active_open_round(config)
+    try:
+        capture = load_valid_live_capture(
+            project_root=config.project_root,
+            season=config.season,
+            target_round=target_round,
+        )
+        return target_round, capture
+    except FileNotFoundError:
+        result = capture_market_round(
+            MarketCaptureConfig(
+                season=config.season,
+                auto=True,
+                force=False,
+                current_year=config.current_year,
+                project_root=config.project_root,
+                timeout_seconds=config.timeout_seconds,
+            )
+        )
+        capture = load_valid_live_capture(
+            project_root=config.project_root,
+            season=config.season,
+            target_round=result.target_round,
+        )
+        return result.target_round, capture
+
+
+def _capture_skip(config: LiveWorkflowConfig) -> tuple[int, LiveCaptureMetadata]:
+    target_round = _active_open_round(config)
+    capture = load_valid_live_capture(
+        project_root=config.project_root,
+        season=config.season,
+        target_round=target_round,
+    )
+    return target_round, capture
+
+
+def _resolve_capture(config: LiveWorkflowConfig) -> tuple[int, LiveCaptureMetadata]:
+    if config.capture_policy == "fresh":
+        return _capture_fresh(config)
+    if config.capture_policy == "missing":
+        return _capture_missing(config)
+    if config.capture_policy == "skip":
+        return _capture_skip(config)
+    raise ValueError(f"Unsupported capture policy: {config.capture_policy}")
+
+
+def _assert_archive_available(output_path: Path) -> None:
+    if output_path.exists():
+        raise FileExistsError(f"recommendation archive already exists: {output_path}")
+
+
 def run_live_round(config: LiveWorkflowConfig, *, now: Clock = lambda: datetime.now(UTC)) -> LiveWorkflowResult:
     _validate_current_year(config)
     run_started_at_utc, output_run_id = _run_started_at(now)
-    if config.capture_policy != "fresh":
-        raise ValueError(f"Unsupported capture policy: {config.capture_policy}")
 
-    target_round, capture = _capture_fresh(config)
+    target_round, capture = _resolve_capture(config)
     capture_age = _capture_age_seconds(capture.captured_at_utc, now)
     live_workflow = _live_workflow_link(
         config=config,
@@ -197,7 +276,20 @@ def run_live_round(config: LiveWorkflowConfig, *, now: Clock = lambda: datetime.
         output_run_id=output_run_id,
         live_workflow=live_workflow,
     )
-    recommendation = run_recommendation(recommendation_config)
+    _validate_output_root(recommendation_config)
+    _assert_archive_available(recommendation_config.output_path)
+    try:
+        recommendation = run_recommendation(recommendation_config)
+    except Exception as exc:
+        metadata = _workflow_metadata(
+            live_workflow=live_workflow,
+            recommendation=None,
+            status="failed",
+            error_stage="recommendation",
+            error=exc,
+        )
+        _write_workflow_metadata(recommendation_config.output_path, metadata)
+        raise
     metadata = _workflow_metadata(live_workflow=live_workflow, recommendation=recommendation, status="ok")
     _write_workflow_metadata(recommendation_config.output_path, metadata)
     return LiveWorkflowResult(
