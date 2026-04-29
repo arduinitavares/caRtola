@@ -35,7 +35,10 @@ def validate_report_contract(output_path: Path) -> dict[str, object]:
     metadata_path = output_path / "run_metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(f"Missing run_metadata.json beside report outputs: {metadata_path}")
-    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in run_metadata.json: {metadata_path}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"run_metadata.json must contain an object: {metadata_path}")
     return validate_contract_mapping(payload)

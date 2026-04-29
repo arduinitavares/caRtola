@@ -31,7 +31,7 @@ def test_contract_fields_are_flat_report_columns() -> None:
 
 
 def test_validate_report_contract_rejects_missing_metadata(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="run_metadata.json"):
+    with pytest.raises(FileNotFoundError, match=r"run_metadata\.json"):
         validate_report_contract(tmp_path)
 
 
@@ -53,7 +53,15 @@ def test_validate_contract_mapping_rejects_mismatched_values() -> None:
 def test_validate_report_contract_rejects_non_object_metadata(tmp_path: Path) -> None:
     (tmp_path / "run_metadata.json").write_text(json.dumps(["cartola_standard_2026_v1"]) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="must contain an object"):
+    with pytest.raises(ValueError, match=r"run_metadata\.json must contain an object"):
+        validate_report_contract(tmp_path)
+
+
+def test_validate_report_contract_rejects_malformed_metadata_with_path(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "run_metadata.json"
+    metadata_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=rf"Invalid JSON in run_metadata\.json: {metadata_path}"):
         validate_report_contract(tmp_path)
 
 
