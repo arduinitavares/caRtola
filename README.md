@@ -158,6 +158,19 @@ uv run --frozen python scripts/run_live_round.py \
   --current-year 2026
 ```
 
+### Capture strict fixture evidence
+
+Before market lock, capture strict fixture evidence and generate the canonical strict fixture file:
+
+```bash
+uv run --frozen python scripts/capture_strict_round_fixture.py \
+  --season 2026 \
+  --auto \
+  --current-year 2026
+```
+
+This command is separate from `scripts/run_live_round.py`. Live recommendations still default to `fixture_mode=none`; strict fixture capture is provenance work for future fixture-context integration.
+
 Por padrão, esse comando usa `--capture-policy fresh`: ele atualiza a rodada aberta
 com a primitiva segura de captura live e depois gera a recomendação para a rodada
 capturada. Use `--capture-policy missing` para reutilizar uma captura live válida
