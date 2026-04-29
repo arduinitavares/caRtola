@@ -27,6 +27,34 @@ def test_recommendation_config_output_path() -> None:
     assert config.output_path == Path("/tmp/cartola/data/08_reporting/recommendations/2025/round-14/live")
 
 
+def test_recommendation_config_output_path_includes_output_run_id() -> None:
+    config = RecommendationConfig(
+        season=2026,
+        target_round=14,
+        mode="live",
+        project_root=Path("/tmp/cartola"),
+        output_run_id="run_started_at=20260429T123456000000Z",
+    )
+
+    assert config.output_path == Path(
+        "/tmp/cartola/data/08_reporting/recommendations/2026/round-14/live/runs/"
+        "run_started_at=20260429T123456000000Z"
+    )
+
+
+@pytest.mark.parametrize("output_run_id", ["", ".", "..", "../escape", "/tmp/escape", "foo/bar", "foo\\bar"])
+def test_recommendation_config_rejects_output_run_id_with_path_separator(output_run_id: str) -> None:
+    config = RecommendationConfig(
+        season=2026,
+        target_round=14,
+        mode="live",
+        output_run_id=output_run_id,
+    )
+
+    with pytest.raises(ValueError, match="output_run_id"):
+        _validate_mode_scope(config)
+
+
 def test_recommendation_config_selected_formation() -> None:
     config = RecommendationConfig(
         season=2025,
@@ -524,3 +552,54 @@ def test_run_recommendation_writes_expected_output_files(tmp_path: Path, monkeyp
     assert summary["actual_points"] is None
     assert metadata["training_rounds"] == [1, 2]
     assert metadata["footystats_matches_source_sha256"] == "sha"
+
+
+def test_run_recommendation_writes_live_workflow_metadata_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4), target_round=3, live_target=True)
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    live_workflow = {
+        "capture_policy": "fresh",
+        "target_round": 3,
+        "capture_csv_path": str(tmp_path / "data/01_raw/2026/rodada-3.csv"),
+        "capture_metadata_path": str(tmp_path / "data/01_raw/2026/rodada-3.capture.json"),
+        "capture_csv_sha256": "a" * 64,
+        "recommendation_output_path": str(
+            tmp_path
+            / "data/08_reporting/recommendations/2026/round-3/live/runs/run_started_at=20260429T123456000000Z"
+        ),
+    }
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+        footystats_mode="none",
+        output_run_id="run_started_at=20260429T123456000000Z",
+        live_workflow=live_workflow,
+    )
+
+    result = run_recommendation(config)
+
+    metadata_path = config.output_path / "run_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["live_workflow"] == live_workflow
+    assert result.metadata["live_workflow"] == live_workflow
+
+
+def test_run_recommendation_rejects_absolute_output_root_outside_project(tmp_path: Path) -> None:
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        output_root=Path("/tmp/outside-cartola-recommendations"),
+        current_year=2026,
+        footystats_mode="none",
+    )
+
+    with pytest.raises(ValueError, match="inside project_root"):
+        run_recommendation(config)
