@@ -173,7 +173,12 @@ def cartola_deadline_at(payload: dict[str, Any], *, season: int, round_number: i
     payload_round = _integer_field(payload, "rodada_atual", context="Deadline payload rodada_atual")
     if payload_round != round_number:
         raise ValueError(f"Deadline payload rodada_atual {payload_round} does not match requested round {round_number}")
-    _integer_field(payload, "status_mercado", context="Deadline payload status_mercado")
+    status_mercado = _integer_field(payload, "status_mercado", context="Deadline payload status_mercado")
+    if status_mercado != 1:
+        raise ValueError(
+            "Cartola market is not open: "
+            f"rodada_atual={payload_round} status_mercado={status_mercado}"
+        )
 
     fechamento = payload.get("fechamento")
     if not isinstance(fechamento, dict):
