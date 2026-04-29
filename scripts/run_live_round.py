@@ -86,7 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     stderr = Console(stderr=True)
     try:
         result = run_live_round(config)
-    except ValueError as error:
+    except (FileExistsError, FileNotFoundError, ValueError) as error:
         _print_error(stderr, error)
         return 1
     _print_success(stdout, result.workflow_metadata)

@@ -97,3 +97,33 @@ def test_main_prints_expected_error_without_traceback(
     assert "Live round failed" in captured.err
     assert "current_year 2026" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_main_prints_missing_skip_capture_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_run_live_round(config: LiveWorkflowConfig) -> LiveWorkflowResult:
+        raise FileNotFoundError("live capture files missing for season=2026 target_round=14")
+
+    monkeypatch.setattr(run_live_round_cli, "run_live_round", fake_run_live_round)
+
+    exit_code = main(
+        [
+            "--season",
+            "2026",
+            "--project-root",
+            str(tmp_path),
+            "--current-year",
+            "2026",
+            "--capture-policy",
+            "skip",
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Live round failed" in captured.err
+    assert "live capture files missing" in captured.err
+    assert "Traceback" not in captured.err
