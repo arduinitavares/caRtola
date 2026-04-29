@@ -158,6 +158,13 @@ uv run --frozen python scripts/run_live_round.py \
   --current-year 2026
 ```
 
+Por padrão, esse comando usa `--capture-policy fresh`: ele atualiza a rodada aberta
+com a primitiva segura de captura live e depois gera a recomendação para a rodada
+capturada. Use `--capture-policy missing` para reutilizar uma captura live válida
+quando ela já existir, ou `--capture-policy skip` para exigir uma captura existente
+sem buscar `atletas/mercado`. Cada execução fica arquivada em uma pasta
+`runs/run_started_at=...` e o `run_metadata.json` aponta para a captura usada.
+
 ### Capture strict fixture evidence
 
 Before market lock, capture strict fixture evidence and generate the canonical strict fixture file:
@@ -170,13 +177,6 @@ uv run --frozen python scripts/capture_strict_round_fixture.py \
 ```
 
 This command is separate from `scripts/run_live_round.py`. Live recommendations still default to `fixture_mode=none`; strict fixture capture is provenance work for future fixture-context integration.
-
-Por padrão, esse comando usa `--capture-policy fresh`: ele atualiza a rodada aberta
-com a primitiva segura de captura live e depois gera a recomendação para a rodada
-capturada. Use `--capture-policy missing` para reutilizar uma captura live válida
-quando ela já existir, ou `--capture-policy skip` para exigir uma captura existente
-sem buscar `atletas/mercado`. Cada execução fica arquivada em uma pasta
-`runs/run_started_at=...` e o `run_metadata.json` aponta para a captura usada.
 
 Se preferir rodar em duas etapas, capture a rodada aberta do mercado:
 
