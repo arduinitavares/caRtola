@@ -445,6 +445,8 @@ def test_orchestration_supports_ppg_to_ppg_xg_and_records_both_sources(
     assert first.treatment_config is not None
     assert first.control_config["footystats_mode"] == "ppg"
     assert first.treatment_config["footystats_mode"] == "ppg_xg"
+    assert first.control_footystats_mode == "ppg"
+    assert first.treatment_footystats_mode == "ppg_xg"
 
 
 def test_metric_extraction_failure_marks_paired_comparison_failed(
@@ -821,6 +823,8 @@ def _report_result(tmp_path: Path) -> ablation.FootyStatsPPGAblationResult:
         control_status="ok",
         treatment_status="ok",
         metric_status="ok",
+        control_footystats_mode="none",
+        treatment_footystats_mode="ppg",
         control_output_path=str(output_root / "runs" / "2024" / "footystats_mode=none" / "2024"),
         treatment_output_path=str(output_root / "runs" / "2024" / "footystats_mode=ppg" / "2024"),
         control_summary_path=str(output_root / "runs" / "2024" / "footystats_mode=none" / "2024" / "summary.csv"),
@@ -856,6 +860,8 @@ def _report_result(tmp_path: Path) -> ablation.FootyStatsPPGAblationResult:
         control_status="ok",
         treatment_status="ok",
         metric_status="failed",
+        control_footystats_mode="none",
+        treatment_footystats_mode="ppg",
         control_output_path=str(output_root / "runs" / "2025" / "footystats_mode=none" / "2025"),
         treatment_output_path=str(output_root / "runs" / "2025" / "footystats_mode=ppg" / "2025"),
         control_summary_path=str(output_root / "runs" / "2025" / "footystats_mode=none" / "2025" / "summary.csv"),
@@ -910,6 +916,10 @@ def test_write_reports_creates_csv_and_json_report_artifacts(tmp_path: Path) -> 
     csv = pd.read_csv(csv_path, keep_default_na=False)
     assert csv["season"].astype(str).tolist() == ["2024", "2025", "aggregate"]
     assert "metric_status" in csv.columns
+    assert csv.loc[0, "control_footystats_mode"] == "none"
+    assert csv.loc[0, "treatment_footystats_mode"] == "ppg"
+    assert csv.loc[1, "control_footystats_mode"] == "none"
+    assert csv.loc[1, "treatment_footystats_mode"] == "ppg"
 
     report = json.loads(json_path.read_text())
     assert report["config"]["fixture_mode"] == "none"

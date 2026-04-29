@@ -27,6 +27,8 @@ CSV_COLUMNS = (
     "control_status",
     "treatment_status",
     "metric_status",
+    "control_footystats_mode",
+    "treatment_footystats_mode",
     "control_output_path",
     "treatment_output_path",
     "control_baseline_avg_points",
@@ -86,6 +88,8 @@ class SeasonAblationRecord:
     control_status: str = "skipped"
     treatment_status: str = "skipped"
     metric_status: str = "skipped"
+    control_footystats_mode: str | None = None
+    treatment_footystats_mode: str | None = None
     control_output_path: str | None = None
     treatment_output_path: str | None = None
     control_summary_path: str | None = None
@@ -325,6 +329,8 @@ def run_footystats_ablation(config: FootyStatsPPGAblationConfig) -> FootyStatsPP
         )
         record = SeasonAblationRecord(
             season=season,
+            control_footystats_mode=config.control_footystats_mode,
+            treatment_footystats_mode=config.treatment_footystats_mode,
             control_output_path=str(control_config.output_path),
             treatment_output_path=str(treatment_config.output_path),
             control_summary_path=str(control_config.output_path / "summary.csv"),
