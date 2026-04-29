@@ -1,62 +1,108 @@
 import pandas as pd
+import pytest
 
-from cartola.backtesting.config import BacktestConfig
+from cartola.backtesting.config import DEFAULT_FORMATIONS, BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
+from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER, SCORING_CONTRACT_VERSION
 
 
-def _candidates():
+def _row(player_id: int, posicao: str, score: float, price: float = 5.0) -> dict[str, object]:
+    return {
+        "id_atleta": player_id,
+        "apelido": f"{posicao}-{player_id}",
+        "posicao": posicao,
+        "clube": f"club-{posicao}",
+        "preco": 999.0,
+        "preco_pre_rodada": price,
+        "predicted_points": score,
+        "pontuacao": score - 1.0,
+    }
+
+
+def _candidates() -> pd.DataFrame:
     rows = []
     player_id = 1
-    for pos, count in {"gol": 2, "lat": 3, "zag": 3, "mei": 4, "ata": 4, "tec": 2}.items():
-        for offset in range(count):
-            rows.append(
-                {
-                    "id_atleta": player_id,
-                    "apelido": f"{pos}-{offset}",
-                    "posicao": pos,
-                    "preco": 5.0 + offset,
-                    "preco_pre_rodada": 5.0 + offset,
-                    "predicted_points": 10.0 - offset,
-                    "pontuacao": 7.0 - offset,
-                }
-            )
+    scores = {
+        "gol": [8.0, 7.0],
+        "lat": [5.0, 4.8, 4.6],
+        "zag": [7.5, 7.0, 6.5, 6.0],
+        "mei": [18.0, 17.0, 16.0, 15.0, 14.0, 4.0],
+        "ata": [11.0, 10.0, 9.0, 3.0],
+        "tec": [40.0, 6.0],
+    }
+    for posicao, position_scores in scores.items():
+        for score in position_scores:
+            rows.append(_row(player_id, posicao, score))
             player_id += 1
     return pd.DataFrame(rows)
 
 
-def test_optimizer_selects_legal_433_squad_under_budget():
+def test_optimizer_searches_all_formations_and_returns_captain_aware_scores():
     result = optimize_squad(_candidates(), score_column="predicted_points", config=BacktestConfig(budget=80))
 
     assert result.status == "Optimal"
     assert result.selected_count == 12
+    assert result.formation_name == "3-5-2"
     assert result.selected.groupby("posicao").size().to_dict() == {
-        "ata": 3,
+        "ata": 2,
         "gol": 1,
-        "lat": 2,
-        "mei": 3,
+        "mei": 5,
         "tec": 1,
-        "zag": 2,
+        "zag": 3,
     }
-    assert result.budget_used <= 80
+    assert result.selected["is_captain"].sum() == 1
+    captain = result.selected.loc[result.selected["is_captain"]].iloc[0]
+    assert captain["posicao"] != "tec"
+    assert result.captain_id == captain["id_atleta"]
+    assert result.captain_name == captain["apelido"]
+    assert result.captain_position == captain["posicao"]
+    assert result.captain_club == captain["clube"]
+    assert result.captain_predicted_points == pytest.approx(captain["predicted_points"])
+    assert result.scoring_contract_version == SCORING_CONTRACT_VERSION
+    assert result.captain_multiplier == CAPTAIN_MULTIPLIER
+
+    expected_base = float(result.selected["predicted_points"].sum())
+    expected_bonus = (CAPTAIN_MULTIPLIER - 1.0) * float(captain["predicted_points"])
+    assert result.predicted_points_base == pytest.approx(expected_base)
+    assert result.captain_bonus_predicted == pytest.approx(expected_bonus)
+    assert result.predicted_points_with_captain == pytest.approx(expected_base + expected_bonus)
+    assert result.predicted_points == pytest.approx(result.predicted_points_with_captain)
+
+    assert len(result.formation_scores) == len(DEFAULT_FORMATIONS)
+    assert {score["formation"] for score in result.formation_scores} == set(DEFAULT_FORMATIONS)
+    chosen_score = next(score for score in result.formation_scores if score["formation"] == result.formation_name)
+    assert chosen_score["solver_status"] == "Optimal"
+    assert chosen_score["captain_id"] == result.captain_id
+    assert result.captain_policy_diagnostics == []
 
 
-def test_optimizer_reports_infeasible_budget():
-    result = optimize_squad(_candidates(), score_column="predicted_points", config=BacktestConfig(budget=1))
-
-    assert result.status == "Infeasible"
-    assert result.selected.empty
-
-
-def test_optimizer_uses_pre_round_price_for_budget():
+def test_optimizer_never_captains_unselected_phantom_player_or_tecnico():
     candidates = _candidates()
-    candidates["preco"] = 100.0
-    candidates["preco_pre_rodada"] = 5.0
+    phantom = _row(999, "ata", score=1000.0, price=500.0)
+    candidates = pd.concat([candidates, pd.DataFrame([phantom])], ignore_index=True)
 
     result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
 
     assert result.status == "Optimal"
-    assert result.selected_count == 12
-    assert result.budget_used == 60.0
+    assert result.captain_id != 999
+    assert 999 not in set(result.selected["id_atleta"])
+    assert result.captain_position != "tec"
+    assert result.captain_predicted_points == pytest.approx(18.0)
+
+
+def test_optimizer_reports_per_formation_scores_for_infeasible_and_chosen_formations():
+    candidates = _candidates().loc[lambda frame: frame["posicao"] != "lat"].copy()
+
+    result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
+
+    assert result.status == "Optimal"
+    assert result.formation_name in {"3-4-3", "3-5-2"}
+    assert len(result.formation_scores) == len(DEFAULT_FORMATIONS)
+    assert any(score["solver_status"] == "Infeasible" for score in result.formation_scores)
+    assert any(
+        score["formation"] == result.formation_name and score["solver_status"] == "Optimal"
+        for score in result.formation_scores
+    )
 
 
 def test_optimizer_returns_empty_result_for_empty_candidates():
@@ -67,8 +113,24 @@ def test_optimizer_returns_empty_result_for_empty_candidates():
     assert result.selected_count == 0
     assert result.budget_used == 0
     assert result.predicted_points == 0
-    assert result.actual_points == 0
-    assert result.formation_name == "4-3-3"
+    assert result.predicted_points_base == 0
+    assert result.captain_bonus_predicted == 0
+    assert result.predicted_points_with_captain == 0
+    assert result.formation_name == ""
+    assert result.captain_id is None
+    assert result.scoring_contract_version == SCORING_CONTRACT_VERSION
+    assert result.captain_multiplier == CAPTAIN_MULTIPLIER
+
+
+def test_optimizer_reports_infeasible_budget_with_formation_scores():
+    result = optimize_squad(_candidates(), score_column="predicted_points", config=BacktestConfig(budget=1))
+
+    assert result.status == "Infeasible"
+    assert result.selected.empty
+    assert result.selected_count == 0
+    assert len(result.formation_scores) == len(DEFAULT_FORMATIONS)
+    assert {score["solver_status"] for score in result.formation_scores} == {"Infeasible"}
+    assert all(score["infeasibility_reason"] for score in result.formation_scores)
 
 
 def test_optimizer_deduplicates_candidates_by_player_before_solving():
@@ -87,3 +149,28 @@ def test_optimizer_deduplicates_candidates_by_player_before_solving():
         result.selected.loc[result.selected["id_atleta"] == duplicate.iloc[0]["id_atleta"], "preco_pre_rodada"].iloc[0]
         == 5.0
     )
+    assert result.selected.loc[result.selected["id_atleta"] == duplicate.iloc[0]["id_atleta"], "predicted_points"].iloc[
+        0
+    ] == pytest.approx(8.0)
+
+
+def test_optimizer_uses_pre_round_price_for_budget():
+    candidates = _candidates()
+    candidates["preco"] = 100.0
+    candidates["preco_pre_rodada"] = 5.0
+
+    result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
+
+    assert result.status == "Optimal"
+    assert result.selected_count == 12
+    assert result.budget_used == 60.0
+
+
+@pytest.mark.parametrize("column", ["preco_pre_rodada", "predicted_points"])
+def test_optimizer_rejects_non_numeric_solver_columns(column):
+    candidates = _candidates()
+    candidates[column] = candidates[column].astype(object)
+    candidates.loc[0, column] = "bad"
+
+    with pytest.raises(ValueError, match=column):
+        optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
