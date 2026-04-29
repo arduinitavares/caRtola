@@ -1,8 +1,10 @@
 import inspect
 
 import pandas as pd
+import pulp
 import pytest
 
+import cartola.backtesting.optimizer as optimizer
 from cartola.backtesting.config import DEFAULT_FORMATIONS, BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER, SCORING_CONTRACT_VERSION
@@ -150,6 +152,26 @@ def test_optimizer_breaks_exact_ties_with_lower_player_and_captain_ids():
     assert captain_ids[0] == 1
 
 
+def test_tie_break_objective_penalizes_captain_variables_separately():
+    player_rows = pd.DataFrame({"id_atleta": [10, 20]})
+    selected_vars = {
+        0: pulp.LpVariable("selected_0", cat=pulp.LpBinary),
+        1: pulp.LpVariable("selected_1", cat=pulp.LpBinary),
+    }
+    captain_vars = {
+        0: pulp.LpVariable("captain_0", cat=pulp.LpBinary),
+        1: pulp.LpVariable("captain_1", cat=pulp.LpBinary),
+    }
+
+    expression = optimizer._tie_break_objective(player_rows, selected_vars, captain_vars)
+    coefficients = dict(expression.items())
+
+    assert coefficients[selected_vars[0]] == pytest.approx(-10.0)
+    assert coefficients[selected_vars[1]] == pytest.approx(-20.0)
+    assert coefficients[captain_vars[0]] < 0.0
+    assert coefficients[captain_vars[1]] < coefficients[captain_vars[0]]
+
+
 def test_optimizer_reports_all_formations_without_exposing_fixed_formation_api():
     candidates = _candidates().loc[lambda frame: frame["posicao"] != "lat"].copy()
 
@@ -221,6 +243,14 @@ def test_optimizer_uses_pre_round_price_for_budget():
     assert result.status == "Optimal"
     assert result.selected_count == 12
     assert result.budget_used == 60.0
+
+
+@pytest.mark.parametrize("column", ["id_atleta", "apelido", "posicao", "preco_pre_rodada", "predicted_points"])
+def test_optimizer_rejects_missing_required_columns(column):
+    candidates = _candidates().drop(columns=[column])
+
+    with pytest.raises(ValueError, match=column):
+        optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
 
 
 @pytest.mark.parametrize("column", ["preco_pre_rodada", "predicted_points"])

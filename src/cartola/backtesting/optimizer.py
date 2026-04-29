@@ -183,8 +183,8 @@ def _tie_break_objective(
         -float(player_rows.loc[index, "id_atleta"]) * variable for index, variable in variables.items()
     )
     captain_id_penalty = pulp.lpSum(
-        -captain_weight * float(player_rows.loc[index, "id_atleta"]) * variable
-        for index, variable in captain_variables.items()
+        -captain_weight * float(player_rows.loc[index, "id_atleta"]) * captain_variable
+        for index, captain_variable in captain_variables.items()
     )
     return selected_id_penalty + captain_id_penalty
 
