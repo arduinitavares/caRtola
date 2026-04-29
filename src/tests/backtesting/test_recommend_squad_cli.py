@@ -50,7 +50,74 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
         return RecommendationResult(
             recommended_squad=None,
             candidate_predictions=None,
-            summary={"predicted_points": 42.0, "output_directory": str(config.output_path)},
+            summary={
+                "actual_points": 38.25,
+                "budget": 100.0,
+                "budget_used": 97.55,
+                "mode": "replay",
+                "output_directory": str(config.output_path),
+                "predicted_points": 42.0,
+                "season": 2026,
+                "selected_count": 12,
+                "target_round": 14,
+            },
+            metadata={},
+        )
+
+    monkeypatch.setattr(recommend_squad, "run_recommendation", fake_run_recommendation)
+
+    exit_code = main(
+        [
+            "--season",
+            "2026",
+            "--target-round",
+            "14",
+            "--mode",
+            "replay",
+            "--project-root",
+            str(tmp_path),
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed == [
+        RecommendationConfig(
+            season=2026,
+            target_round=14,
+            mode="replay",
+            project_root=tmp_path,
+            current_year=2026,
+        )
+    ]
+    output = capsys.readouterr().out
+    assert "Recommendation complete" in output
+    assert "Predicted points" in output
+    assert "42.00" in output
+    assert "Actual points" in output
+    assert "38.25" in output
+    assert "Delta" in output
+    assert "-3.75" in output
+    assert "Budget used" in output
+
+
+def test_main_prints_live_summary_without_actual_points(monkeypatch, tmp_path: Path, capsys) -> None:
+    def fake_run_recommendation(config: RecommendationConfig) -> RecommendationResult:
+        return RecommendationResult(
+            recommended_squad=None,
+            candidate_predictions=None,
+            summary={
+                "actual_points": None,
+                "budget": 100.0,
+                "budget_used": 99.0,
+                "mode": "live",
+                "output_directory": str(config.output_path),
+                "predicted_points": 51.25,
+                "season": 2026,
+                "selected_count": 12,
+                "target_round": 14,
+            },
             metadata={},
         )
 
@@ -72,13 +139,38 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
     )
 
     assert exit_code == 0
-    assert observed == [
-        RecommendationConfig(
-            season=2026,
-            target_round=14,
-            mode="live",
-            project_root=tmp_path,
-            current_year=2026,
-        )
-    ]
-    assert "Recommendation complete" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Recommendation complete" in output
+    assert "Predicted points" in output
+    assert "51.25" in output
+    assert "Actual points" in output
+    assert "n/a (live mode)" in output
+
+
+def test_main_prints_expected_error_without_traceback(monkeypatch, tmp_path: Path, capsys) -> None:
+    def fake_run_recommendation(config: RecommendationConfig) -> RecommendationResult:
+        raise ValueError("Target round 14 not found in season 2026 data.")
+
+    monkeypatch.setattr(recommend_squad, "run_recommendation", fake_run_recommendation)
+
+    exit_code = main(
+        [
+            "--season",
+            "2026",
+            "--target-round",
+            "14",
+            "--mode",
+            "live",
+            "--project-root",
+            str(tmp_path),
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Recommendation failed" in captured.err
+    assert "Target round 14 not found in season 2026 data." in captured.err
+    assert "Save data/01_raw/2026/rodada-14.csv before running live mode." in captured.err
+    assert "Traceback" not in captured.err
