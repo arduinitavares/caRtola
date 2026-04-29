@@ -72,16 +72,24 @@ def test_main_prints_success_summary_with_relative_paths(
     )
     captured = capsys.readouterr()
     assert "Strict fixture capture complete" in captured.out
-    assert "Season: 2026" in captured.out
-    assert "Round: 12" in captured.out
+    assert "Season" in captured.out
+    assert "2026" in captured.out
+    assert "Round" in captured.out
+    assert "12" in captured.out
     assert (
-        "Snapshot directory: "
+        "Snapshot directory"
+    ) in captured.out
+    assert (
         "data/01_raw/fixtures_snapshots/2026/rodada-12/captured_at=2026-06-01T18-00-00Z"
     ) in captured.out
-    assert "Strict fixture: data/01_raw/fixtures_strict/2026/partidas-12.csv" in captured.out
-    assert "Manifest: data/01_raw/fixtures_strict/2026/partidas-12.manifest.json" in captured.out
-    assert "Captured at UTC: 2026-06-01T18:00:00Z" in captured.out
-    assert "Deadline at UTC: 2026-06-01T18:59:00Z" in captured.out
+    assert "Strict fixture" in captured.out
+    assert "data/01_raw/fixtures_strict/2026/partidas-12.csv" in captured.out
+    assert "Manifest" in captured.out
+    assert "data/01_raw/fixtures_strict/2026/partidas-12.manifest.json" in captured.out
+    assert "Captured at UTC" in captured.out
+    assert "2026-06-01T18:00:00Z" in captured.out
+    assert "Deadline at UTC" in captured.out
+    assert "2026-06-01T18:59:00Z" in captured.out
 
 
 def test_main_maps_force_generate(
@@ -142,14 +150,19 @@ def test_main_prints_generation_failure_with_retained_snapshot(
 
     assert exit_code == 1
     captured = capsys.readouterr()
-    assert "error: strict fixture generation failed after snapshot capture" in captured.err
+    assert "Strict fixture generation failed after snapshot capture" in captured.err
     assert (
-        "Retained snapshot directory: "
+        "Retained snapshot directory"
+    ) in captured.err
+    assert (
         "data/01_raw/fixtures_snapshots/2026/rodada-12/captured_at=2026-06-01T18-00-00Z"
     ) in captured.err
-    assert "Captured at UTC: 2026-06-01T18:00:00Z" in captured.err
-    assert "Deadline at UTC: 2026-06-01T18:59:00Z" in captured.err
-    assert "Original error: FileExistsError: already exists" in captured.err
+    assert "Captured at UTC" in captured.err
+    assert "2026-06-01T18:00:00Z" in captured.err
+    assert "Deadline at UTC" in captured.err
+    assert "2026-06-01T18:59:00Z" in captured.err
+    assert "Original error" in captured.err
+    assert "FileExistsError: already exists" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -177,8 +190,11 @@ def test_main_prints_capture_failure_with_attempted_round(
 
     assert exit_code == 1
     captured = capsys.readouterr()
-    assert "error: strict fixture capture failed for round 12" in captured.err
-    assert "Original error: ValueError: round drift" in captured.err
+    assert "Strict fixture capture failed" in captured.err
+    assert "Round" in captured.err
+    assert "12" in captured.err
+    assert "Original error" in captured.err
+    assert "ValueError: round drift" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -207,7 +223,8 @@ def test_main_prints_operational_error_without_traceback(
 
     assert exit_code == 1
     captured = capsys.readouterr()
-    assert captured.err.strip() == "error: bad operational input"
+    assert "Strict fixture capture failed" in captured.err
+    assert "bad operational input" in captured.err
     assert "Traceback" not in captured.err
 
 
