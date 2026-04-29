@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cartola.backtesting.market_capture import build_live_market_frame
+import pytest
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
 from cartola.backtesting.data import load_round_file
+from cartola.backtesting.market_capture import build_live_market_frame, deadline_metadata
 
 
 def _status_payload(*, rodada_atual: int = 14, status_mercado: int = 1) -> dict[str, object]:
@@ -94,3 +95,25 @@ def test_build_live_market_frame_loads_through_round_loader(tmp_path: Path) -> N
     assert loaded["preco_pre_rodada"].tolist() == [10.45, 15.0]
     assert loaded["pontuacao"].tolist() == [0.0, 0.0]
     assert loaded["entrou_em_campo"].tolist() == [False, False]
+
+
+def test_build_live_market_frame_rejects_missing_club_mapping() -> None:
+    payload = _market_payload()
+    del payload["clubes"]["264"]
+
+    with pytest.raises(ValueError, match="no matching club payload"):
+        build_live_market_frame(payload, target_round=14)
+
+
+def test_build_live_market_frame_rejects_missing_required_athlete_field() -> None:
+    payload = _market_payload()
+    del payload["atletas"][0]["preco_num"]
+
+    with pytest.raises(ValueError, match="preco_num"):
+        build_live_market_frame(payload, target_round=14)
+
+
+def test_deadline_metadata_reports_ok_missing_and_invalid() -> None:
+    assert deadline_metadata(_status_payload()) == (1777748340, "ok")
+    assert deadline_metadata({"rodada_atual": 14, "status_mercado": 1}) == (None, "missing")
+    assert deadline_metadata({"fechamento": {"timestamp": "bad"}}) == (None, "invalid")
