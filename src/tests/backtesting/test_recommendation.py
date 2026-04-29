@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
+from cartola.backtesting.recommendation import (
+    RecommendationConfig,
+    _finalized_live_data_evidence,
+    _validate_mode_scope,
+    _visible_season_frame,
+)
 
 
 def _round_frame(
@@ -72,3 +79,48 @@ def _footystats_rows(rounds: range, clubs: range = range(1, 19)) -> pd.DataFrame
                 }
             )
     return pd.DataFrame(rows)
+
+
+def test_visible_season_frame_excludes_future_rounds() -> None:
+    season_df = _season_frame(range(1, 6), target_round=3, live_target=True)
+
+    visible = _visible_season_frame(season_df, target_round=3)
+
+    assert sorted(visible["rodada"].unique().tolist()) == [1, 2, 3]
+    assert 4 not in visible["rodada"].unique()
+    assert 5 not in visible["rodada"].unique()
+
+
+def test_live_mode_requires_current_year() -> None:
+    config = RecommendationConfig(season=2025, target_round=10, mode="live", current_year=2026)
+
+    with pytest.raises(ValueError, match="live mode requires season 2025 to equal current_year 2026"):
+        _validate_mode_scope(config)
+
+
+def test_replay_mode_allows_historical_season() -> None:
+    config = RecommendationConfig(season=2025, target_round=10, mode="replay", current_year=2026)
+
+    _validate_mode_scope(config)
+
+
+def test_finalized_evidence_ignores_zero_filled_live_rows() -> None:
+    target = _round_frame(14, finalized=False, zero_filled_scouts=True)
+
+    evidence = _finalized_live_data_evidence(target)
+
+    assert evidence == {
+        "pontuacao_non_zero_count": 0,
+        "entrou_em_campo_true_count": 0,
+        "non_zero_scout_count": 0,
+    }
+
+
+def test_finalized_evidence_detects_played_rows_and_non_zero_scouts() -> None:
+    target = _round_frame(14, finalized=True)
+
+    evidence = _finalized_live_data_evidence(target)
+
+    assert evidence["pontuacao_non_zero_count"] > 0
+    assert evidence["entrou_em_campo_true_count"] > 0
+    assert evidence["non_zero_scout_count"] > 0
