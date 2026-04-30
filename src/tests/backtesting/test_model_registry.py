@@ -17,6 +17,12 @@ def test_model_registry_contains_exact_v1_models() -> None:
 
 
 def test_random_forest_spec_matches_contract() -> None:
+    assert MODEL_SPECS["random_forest"].parameters == {
+        "estimator": RandomForestRegressor,
+        "n_estimators": 200,
+        "min_samples_leaf": 3,
+    }
+
     model = create_point_predictor(
         model_id="random_forest",
         random_seed=7,
@@ -33,6 +39,12 @@ def test_random_forest_spec_matches_contract() -> None:
 
 
 def test_extra_trees_spec_matches_contract() -> None:
+    assert MODEL_SPECS["extra_trees"].parameters == {
+        "estimator": ExtraTreesRegressor,
+        "n_estimators": 200,
+        "min_samples_leaf": 3,
+    }
+
     model = create_point_predictor(
         model_id="extra_trees",
         random_seed=7,
@@ -49,6 +61,14 @@ def test_extra_trees_spec_matches_contract() -> None:
 
 
 def test_hist_gradient_boosting_uses_dense_one_hot() -> None:
+    assert MODEL_SPECS["hist_gradient_boosting"].parameters == {
+        "estimator": HistGradientBoostingRegressor,
+        "max_iter": 200,
+        "learning_rate": 0.05,
+        "min_samples_leaf": 20,
+        "l2_regularization": 0.0,
+    }
+
     model = create_point_predictor(
         model_id="hist_gradient_boosting",
         random_seed=7,
@@ -70,6 +90,11 @@ def test_hist_gradient_boosting_uses_dense_one_hot() -> None:
 
 
 def test_ridge_spec_matches_contract() -> None:
+    assert MODEL_SPECS["ridge"].parameters == {
+        "estimator": Ridge,
+        "alpha": 1.0,
+    }
+
     model = create_point_predictor(
         model_id="ridge",
         random_seed=7,

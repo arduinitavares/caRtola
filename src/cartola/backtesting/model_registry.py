@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 import pandas as pd
+from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.linear_model import Ridge
 
 from cartola.backtesting.models import (
     ExtraTreesPointPredictor,
@@ -27,24 +29,46 @@ class PointPredictor(Protocol):
 class ModelSpec:
     predictor_type: type[PointPredictor]
     supports_n_jobs: bool
+    parameters: dict[str, object]
 
 
 MODEL_SPECS: dict[ModelId, ModelSpec] = {
     "random_forest": ModelSpec(
         predictor_type=RandomForestPointPredictor,
         supports_n_jobs=True,
+        parameters={
+            "estimator": RandomForestRegressor,
+            "n_estimators": 200,
+            "min_samples_leaf": 3,
+        },
     ),
     "extra_trees": ModelSpec(
         predictor_type=ExtraTreesPointPredictor,
         supports_n_jobs=True,
+        parameters={
+            "estimator": ExtraTreesRegressor,
+            "n_estimators": 200,
+            "min_samples_leaf": 3,
+        },
     ),
     "hist_gradient_boosting": ModelSpec(
         predictor_type=HistGradientBoostingPointPredictor,
         supports_n_jobs=False,
+        parameters={
+            "estimator": HistGradientBoostingRegressor,
+            "max_iter": 200,
+            "learning_rate": 0.05,
+            "min_samples_leaf": 20,
+            "l2_regularization": 0.0,
+        },
     ),
     "ridge": ModelSpec(
         predictor_type=RidgePointPredictor,
         supports_n_jobs=False,
+        parameters={
+            "estimator": Ridge,
+            "alpha": 1.0,
+        },
     ),
 }
 
