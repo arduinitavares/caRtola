@@ -11,6 +11,8 @@ from cartola.backtesting.features import (
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
 )
 from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
+from cartola.backtesting import features as features_module
+from cartola.backtesting import runner as runner_module
 from cartola.backtesting.runner import run_backtest
 from cartola.backtesting.scoring_contract import contract_fields
 from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
@@ -87,6 +89,113 @@ def _tiny_footystats_rows(rounds: range, clubs: range = range(1, 19)) -> pd.Data
                 }
             )
     return pd.DataFrame(rows)
+
+
+def test_round_frame_store_training_frame_matches_public_builder(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = _tiny_fixtures(range(1, 6))
+    footystats_rows = _tiny_footystats_rows(range(1, 6))
+    store = runner_module.RoundFrameStore(
+        season_df=season_df,
+        fixtures=fixtures,
+        footystats_rows=footystats_rows,
+        matchup_context_mode="cartola_matchup_v1",
+    )
+    store.build_all([1, 2, 3, 4, 5])
+
+    cached = store.training_frame(
+        target_round=5,
+        playable_statuses=("Provavel",),
+        empty_columns=[
+            *runner_module.MARKET_COLUMNS,
+            *runner_module.feature_columns_for_config(
+                BacktestConfig(
+                    project_root=tmp_path,
+                    fixture_mode="exploratory",
+                    footystats_mode="ppg",
+                    matchup_context_mode="cartola_matchup_v1",
+                )
+            ),
+            "target",
+        ],
+    )
+    public = runner_module.build_training_frame(
+        season_df,
+        5,
+        playable_statuses=("Provavel",),
+        fixtures=fixtures,
+        footystats_rows=footystats_rows,
+        matchup_context_mode="cartola_matchup_v1",
+    )
+
+    assert_frame_equal(
+        cached.sort_index(axis=1).reset_index(drop=True),
+        public.sort_index(axis=1).reset_index(drop=True),
+        check_dtype=False,
+    )
+    assert store.prediction_frames_built == 5
+
+
+def test_round_frame_store_returns_deep_copies_for_candidates_and_training():
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 4)], ignore_index=True)
+    store = runner_module.RoundFrameStore(
+        season_df=season_df,
+        fixtures=None,
+        footystats_rows=None,
+        matchup_context_mode="none",
+    )
+    store.build_all([1, 2, 3])
+
+    candidate = store.prediction_frame(3)
+    candidate.loc[:, "baseline_score"] = 999.0
+    candidate.loc[candidate.index[0], "apelido"] = "mutated"
+
+    candidate_again = store.prediction_frame(3)
+    assert "baseline_score" not in candidate_again.columns
+    assert "mutated" not in set(candidate_again["apelido"])
+
+    training = store.training_frame(
+        target_round=3,
+        playable_statuses=("Provavel",),
+        empty_columns=[*runner_module.MARKET_COLUMNS, *runner_module.feature_columns_for_config(BacktestConfig()), "target"],
+    )
+    training.loc[:, "random_forest_score"] = 123.0
+    training.loc[training.index[0], "apelido"] = "training-mutated"
+
+    training_again = store.training_frame(
+        target_round=3,
+        playable_statuses=("Provavel",),
+        empty_columns=[*runner_module.MARKET_COLUMNS, *runner_module.feature_columns_for_config(BacktestConfig()), "target"],
+    )
+    assert "random_forest_score" not in training_again.columns
+    assert "training-mutated" not in set(training_again["apelido"])
+
+
+def test_round_frame_store_preserves_target_round_temporal_boundary():
+    base = pd.concat([_tiny_round(round_number) for round_number in range(1, 5)], ignore_index=True)
+    spiked = base.copy()
+    spiked.loc[spiked["rodada"].eq(4), "pontuacao"] = 9999.0
+
+    base_store = runner_module.RoundFrameStore(
+        season_df=base,
+        fixtures=None,
+        footystats_rows=None,
+        matchup_context_mode="none",
+    )
+    spiked_store = runner_module.RoundFrameStore(
+        season_df=spiked,
+        fixtures=None,
+        footystats_rows=None,
+        matchup_context_mode="none",
+    )
+    base_store.build_all([1, 2, 3, 4])
+    spiked_store.build_all([1, 2, 3, 4])
+
+    assert_frame_equal(
+        base_store.prediction_frame(3).sort_index(axis=1).reset_index(drop=True),
+        spiked_store.prediction_frame(3).sort_index(axis=1).reset_index(drop=True),
+        check_dtype=False,
+    )
 
 
 def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
