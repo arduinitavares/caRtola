@@ -4,15 +4,17 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
+from cartola.backtesting import runner as runner_module
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
 from cartola.backtesting.features import (
     FOOTYSTATS_PPG_FEATURE_COLUMNS,
     FOOTYSTATS_XG_FEATURE_COLUMNS,
+    MARKET_COLUMNS,
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
+    build_training_frame,
+    feature_columns_for_config,
 )
 from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
-from cartola.backtesting import features as features_module
-from cartola.backtesting import runner as runner_module
 from cartola.backtesting.runner import run_backtest
 from cartola.backtesting.scoring_contract import contract_fields
 from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
@@ -107,8 +109,8 @@ def test_round_frame_store_training_frame_matches_public_builder(tmp_path):
         target_round=5,
         playable_statuses=("Provavel",),
         empty_columns=[
-            *runner_module.MARKET_COLUMNS,
-            *runner_module.feature_columns_for_config(
+            *MARKET_COLUMNS,
+            *feature_columns_for_config(
                 BacktestConfig(
                     project_root=tmp_path,
                     fixture_mode="exploratory",
@@ -119,7 +121,7 @@ def test_round_frame_store_training_frame_matches_public_builder(tmp_path):
             "target",
         ],
     )
-    public = runner_module.build_training_frame(
+    public = build_training_frame(
         season_df,
         5,
         playable_statuses=("Provavel",),
@@ -157,7 +159,7 @@ def test_round_frame_store_returns_deep_copies_for_candidates_and_training():
     training = store.training_frame(
         target_round=3,
         playable_statuses=("Provavel",),
-        empty_columns=[*runner_module.MARKET_COLUMNS, *runner_module.feature_columns_for_config(BacktestConfig()), "target"],
+        empty_columns=[*MARKET_COLUMNS, *feature_columns_for_config(BacktestConfig()), "target"],
     )
     training.loc[:, "random_forest_score"] = 123.0
     training.loc[training.index[0], "apelido"] = "training-mutated"
@@ -165,7 +167,7 @@ def test_round_frame_store_returns_deep_copies_for_candidates_and_training():
     training_again = store.training_frame(
         target_round=3,
         playable_statuses=("Provavel",),
-        empty_columns=[*runner_module.MARKET_COLUMNS, *runner_module.feature_columns_for_config(BacktestConfig()), "target"],
+        empty_columns=[*MARKET_COLUMNS, *feature_columns_for_config(BacktestConfig()), "target"],
     )
     assert "random_forest_score" not in training_again.columns
     assert "training-mutated" not in set(training_again["apelido"])
