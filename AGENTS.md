@@ -39,9 +39,14 @@ Steps:
 - FootyStats compatibility audit:
   `uv run --frozen python scripts/audit_footystats_compatibility.py --current-year 2026`
 - FootyStats PPG is the current recommended no-fixture feature mode. Keep `ppg_xg` experimental unless a fresh ablation justifies changing the default.
+- Backtests and recommendations use the `cartola_standard_2026_v1` scoring contract: all official formations are searched, a non-tecnico captain is selected with a `1.5x` multiplier, and report totals should use the captain-aware point fields.
 
 ## Live Recommendation Workflow
 
+- Preferred one-command live workflow:
+  `uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --footystats-mode ppg --current-year 2026`
+- `scripts/run_live_round.py` defaults to `--capture-policy fresh`; use `missing` to reuse a valid live capture when present, or `skip` to require one without fetching `atletas/mercado`.
+- One-command live recommendation outputs are archived under `data/08_reporting/recommendations/{season}/round-{target_round}/live/runs/run_started_at=.../`.
 - Capture the open market round before a live recommendation:
   `uv run --frozen python scripts/capture_market_round.py --season 2026 --auto --current-year 2026`
 - Generate a live squad recommendation:
@@ -49,6 +54,14 @@ Steps:
 - Replay a completed current-season round:
   `uv run --frozen python scripts/recommend_squad.py --season 2026 --target-round 10 --mode replay --budget 100 --footystats-mode ppg --current-year 2026`
 - Recommendation outputs are written under `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/`.
+- `recommended_squad.csv` keeps per-player `predicted_points` raw; use `predicted_points_with_captain` and `actual_points_with_captain` for captain-adjusted totals when present.
+
+## Strict Fixture Capture
+
+- Capture strict pre-lock fixture evidence for the open market round:
+  `uv run --frozen python scripts/capture_strict_round_fixture.py --season 2026 --auto --current-year 2026`
+- The command writes raw evidence under `data/01_raw/fixtures_snapshots/{season}/` and canonical strict fixture CSV/manifests under `data/01_raw/fixtures_strict/{season}/`.
+- This is provenance only for now; live recommendations still use `fixture_mode=none` unless strict fixture integration is explicitly added later.
 
 ## Cautions
 
