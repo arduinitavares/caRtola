@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -73,6 +74,13 @@ FLOAT_NORMALIZATION_EXCLUDED_COLUMNS: set[str] = {
     "rounds",
 }
 
+THREAD_ENV_KEYS: tuple[str, ...] = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
+
 
 @dataclass(frozen=True)
 class BacktestMetadata:
@@ -82,6 +90,11 @@ class BacktestMetadata:
     cache_enabled: bool
     prediction_frames_built: int
     wall_clock_seconds: float
+    backtest_jobs: int
+    backtest_workers_effective: int
+    model_n_jobs_effective: int
+    parallel_backend: str
+    thread_env: dict[str, str | None]
     scoring_contract_version: str
     captain_scoring_enabled: bool
     captain_multiplier: float
@@ -237,6 +250,14 @@ def run_backtest(
     max_round = _max_round(data)
     model_feature_columns = feature_columns_for_config(config)
     empty_training_columns = list(dict.fromkeys([*MARKET_COLUMNS, *model_feature_columns, "target"]))
+    target_rounds = list(range(config.start_round, max_round + 1))
+    worker_rounds = [
+        round_number
+        for round_number in target_rounds
+        if round_number not in excluded_rounds and round_number in cached_round_set
+    ]
+    model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
+    backtest_workers_effective = 1 if config.jobs == 1 else min(config.jobs, len(worker_rounds)) if worker_rounds else 0
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
@@ -244,6 +265,11 @@ def run_backtest(
         cache_enabled=True,
         prediction_frames_built=round_frame_store.prediction_frames_built,
         wall_clock_seconds=0.0,
+        backtest_jobs=config.jobs,
+        backtest_workers_effective=backtest_workers_effective,
+        model_n_jobs_effective=model_n_jobs_effective,
+        parallel_backend="sequential" if config.jobs == 1 else "threads",
+        thread_env=_thread_env(),
         scoring_contract_version=SCORING_CONTRACT_VERSION,
         captain_scoring_enabled=CAPTAIN_SCORING_ENABLED,
         captain_multiplier=CAPTAIN_MULTIPLIER,
@@ -439,6 +465,16 @@ def _detected_rounds(data: pd.DataFrame) -> list[int]:
         int(round_number)
         for round_number in pd.to_numeric(data["rodada"], errors="raise").dropna().unique()
     )
+
+
+def _effective_model_n_jobs(backtest_jobs: int) -> int:
+    if backtest_jobs == 1:
+        return -1
+    return 1
+
+
+def _thread_env() -> dict[str, str | None]:
+    return {key: os.environ.get(key) for key in THREAD_ENV_KEYS}
 
 
 def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:

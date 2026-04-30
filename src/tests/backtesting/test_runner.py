@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -19,6 +20,26 @@ from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, F
 from cartola.backtesting.runner import run_backtest
 from cartola.backtesting.scoring_contract import contract_fields
 from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
+
+
+def test_effective_model_n_jobs() -> None:
+    assert runner_module._effective_model_n_jobs(1) == -1
+    assert runner_module._effective_model_n_jobs(2) == 1
+    assert runner_module._effective_model_n_jobs(4) == 1
+
+
+def test_thread_env_records_explicit_keys(monkeypatch) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.setenv("MKL_NUM_THREADS", "2")
+    monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
+    monkeypatch.setenv("BLIS_NUM_THREADS", "1")
+
+    assert runner_module._thread_env() == {
+        "OMP_NUM_THREADS": None,
+        "MKL_NUM_THREADS": "2",
+        "OPENBLAS_NUM_THREADS": None,
+        "BLIS_NUM_THREADS": "1",
+    }
 
 
 def _tiny_round(round_number: int) -> pd.DataFrame:
@@ -265,6 +286,35 @@ def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
     assert metadata["wall_clock_seconds"] >= 0.0
     for field, expected_value in contract_fields().items():
         assert metadata[field] == expected_value
+
+
+def test_run_backtest_records_parallel_metadata_defaults(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+
+    result = run_backtest(BacktestConfig(project_root=tmp_path, start_round=5, budget=100), season_df=season_df)
+
+    assert result.metadata.backtest_jobs == 1
+    assert result.metadata.backtest_workers_effective == 1
+    assert result.metadata.model_n_jobs_effective == -1
+    assert result.metadata.parallel_backend == "sequential"
+    assert set(result.metadata.thread_env) == {
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+    }
+
+    metadata = json.loads((tmp_path / "data/08_reporting/backtests/2025/run_metadata.json").read_text())
+    assert metadata["backtest_jobs"] == 1
+    assert metadata["backtest_workers_effective"] == 1
+    assert metadata["model_n_jobs_effective"] == -1
+    assert metadata["parallel_backend"] == "sequential"
+    assert set(metadata["thread_env"]) == {
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+    }
 
 
 def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):
