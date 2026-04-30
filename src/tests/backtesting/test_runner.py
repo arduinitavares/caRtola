@@ -305,6 +305,85 @@ def test_run_backtest_builds_each_detected_round_prediction_frame_once(tmp_path,
     assert sorted(calls) == [1, 2, 3, 4, 5, 6]
 
 
+def test_evaluate_target_round_returns_round_records_and_frames(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
+    store = runner_module.RoundFrameStore(
+        season_df=season_df,
+        fixtures=None,
+        footystats_rows=None,
+        matchup_context_mode=config.matchup_context_mode,
+    )
+    store.build_all([1, 2, 3, 4, 5])
+
+    result = runner_module._evaluate_target_round(
+        round_number=5,
+        config=config,
+        round_frame_store=store,
+        cached_round_set={1, 2, 3, 4, 5},
+        model_feature_columns=feature_columns_for_config(config),
+        empty_training_columns=[*MARKET_COLUMNS, *feature_columns_for_config(config), "target"],
+        model_n_jobs_effective=-1,
+    )
+
+    assert isinstance(result, runner_module.RoundEvaluationResult)
+    assert {record["strategy"] for record in result.round_records} == {"baseline", "random_forest", "price"}
+    assert all(record["rodada"] == 5 for record in result.round_records)
+    assert all(record["solver_status"] == "Optimal" for record in result.round_records)
+    assert len(result.selected_frames) == 3
+    assert len(result.prediction_frames) == 1
+    assert set(result.prediction_frames[0]["rodada"]) == {5}
+    assert {"baseline_score", "random_forest_score", "price_score"}.issubset(result.prediction_frames[0].columns)
+    assert not (tmp_path / "data/08_reporting/backtests/2025").exists()
+
+
+def test_evaluate_target_round_passes_effective_model_n_jobs(tmp_path, monkeypatch):
+    observed_n_jobs: list[int] = []
+
+    class RecordingRandomForestPointPredictor:
+        def __init__(
+            self,
+            random_seed: int = 123,
+            feature_columns: list[str] | None = None,
+            n_jobs: int = -1,
+        ) -> None:
+            self.random_seed = random_seed
+            self.feature_columns = feature_columns
+            observed_n_jobs.append(n_jobs)
+
+        def fit(self, frame: pd.DataFrame) -> "RecordingRandomForestPointPredictor":
+            return self
+
+        def predict(self, frame: pd.DataFrame) -> pd.Series:
+            return pd.Series(frame["prior_points_mean"].astype(float), index=frame.index)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.RandomForestPointPredictor",
+        RecordingRandomForestPointPredictor,
+    )
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, jobs=2)
+    store = runner_module.RoundFrameStore(
+        season_df=season_df,
+        fixtures=None,
+        footystats_rows=None,
+        matchup_context_mode=config.matchup_context_mode,
+    )
+    store.build_all([1, 2, 3, 4, 5])
+
+    runner_module._evaluate_target_round(
+        round_number=5,
+        config=config,
+        round_frame_store=store,
+        cached_round_set={1, 2, 3, 4, 5},
+        model_feature_columns=feature_columns_for_config(config),
+        empty_training_columns=[*MARKET_COLUMNS, *feature_columns_for_config(config), "target"],
+        model_n_jobs_effective=1,
+    )
+
+    assert observed_n_jobs == [1]
+
+
 def test_run_backtest_records_empty_for_missing_non_excluded_round(tmp_path):
     season_df = pd.concat([_tiny_round(1), _tiny_round(3)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=2, budget=100)
@@ -991,9 +1070,15 @@ def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path, 
     class NoisyRandomForestPointPredictor:
         calls = 0
 
-        def __init__(self, random_seed: int = 123, feature_columns: list[str] | None = None) -> None:
+        def __init__(
+            self,
+            random_seed: int = 123,
+            feature_columns: list[str] | None = None,
+            n_jobs: int = -1,
+        ) -> None:
             self.random_seed = random_seed
             self.feature_columns = feature_columns
+            self.n_jobs = n_jobs
 
         def fit(self, frame: pd.DataFrame) -> "NoisyRandomForestPointPredictor":
             return self

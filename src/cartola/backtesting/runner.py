@@ -132,6 +132,13 @@ class BacktestResult:
 
 
 @dataclass(frozen=True)
+class RoundEvaluationResult:
+    round_records: list[dict[str, object]]
+    selected_frames: list[pd.DataFrame]
+    prediction_frames: list[pd.DataFrame]
+
+
+@dataclass(frozen=True)
 class FixtureLoadForRun:
     fixtures: pd.DataFrame | None
     source_directory: str | None
@@ -300,79 +307,18 @@ def run_backtest(
     for round_number in range(config.start_round, max_round + 1):
         if round_number in excluded_rounds:
             continue
-        if round_number not in cached_round_set:
-            _record_skipped_round(round_rows, round_number, "Empty")
-            continue
-
-        training = round_frame_store.training_frame(
-            target_round=round_number,
-            playable_statuses=config.playable_statuses,
-            empty_columns=empty_training_columns,
+        evaluation = _evaluate_target_round(
+            round_number=round_number,
+            config=config,
+            round_frame_store=round_frame_store,
+            cached_round_set=cached_round_set,
+            model_feature_columns=model_feature_columns,
+            empty_training_columns=empty_training_columns,
+            model_n_jobs_effective=metadata.model_n_jobs_effective,
         )
-        candidates = round_frame_store.prediction_frame(round_number)
-        candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy(deep=True)
-
-        if training.empty or candidates.empty:
-            _record_skipped_round(round_rows, round_number, "TrainingEmpty" if training.empty else "Empty")
-            continue
-
-        scored_candidates = candidates.copy()
-        baseline_model = BaselinePredictor().fit(training)
-        forest_model = RandomForestPointPredictor(
-            random_seed=config.random_seed,
-            feature_columns=model_feature_columns,
-        ).fit(training)
-        scored_candidates["baseline_score"] = baseline_model.predict(scored_candidates)
-        scored_candidates["random_forest_score"] = forest_model.predict(scored_candidates)
-        scored_candidates["price_score"] = scored_candidates[MARKET_OPEN_PRICE_COLUMN].astype(float)
-        prediction_frames.append(scored_candidates.copy())
-
-        for strategy, score_column in _strategies().items():
-            strategy_candidates = scored_candidates.copy()
-            strategy_candidates["predicted_points"] = strategy_candidates[score_column]
-            result = optimize_squad(strategy_candidates, score_column="predicted_points", config=config)
-            actual_scores = _actual_scores_for_result(
-                result.selected,
-                round_number=round_number,
-                strategy=strategy,
-                solver_status=result.status,
-            )
-            policy_diagnostics = _policy_diagnostics_for_result(
-                result.selected,
-                round_number=round_number,
-                strategy=strategy,
-                solver_status=result.status,
-            )
-            policy_summary = _policy_round_summary(policy_diagnostics)
-            actual_points_with_captain = actual_scores["actual_points_with_captain"]
-            round_rows.append(
-                {
-                    "rodada": round_number,
-                    "strategy": strategy,
-                    "solver_status": result.status,
-                    "formation": result.formation_name,
-                    "selected_count": result.selected_count,
-                    "budget_used": result.budget_used,
-                    "predicted_points": result.predicted_points_with_captain,
-                    "predicted_points_base": result.predicted_points_base,
-                    "captain_bonus_predicted": result.captain_bonus_predicted,
-                    "predicted_points_with_captain": result.predicted_points_with_captain,
-                    "actual_points": actual_points_with_captain,
-                    "actual_points_base": actual_scores["actual_points_base"],
-                    "captain_bonus_actual": actual_scores["captain_bonus_actual"],
-                    "actual_points_with_captain": actual_points_with_captain,
-                    "captain_id": result.captain_id,
-                    "captain_name": result.captain_name,
-                    **policy_summary,
-                }
-            )
-
-            if not result.selected.empty:
-                selected = result.selected.copy()
-                apply_captain_policy_flags(selected, policy_diagnostics)
-                selected["rodada"] = round_number
-                selected["strategy"] = strategy
-                selected_frames.append(selected)
+        round_rows.extend(evaluation.round_records)
+        selected_frames.extend(evaluation.selected_frames)
+        prediction_frames.extend(evaluation.prediction_frames)
 
     round_results = pd.DataFrame(round_rows, columns=pd.Index(ROUND_RESULT_COLUMNS))
     selected_players = _concat_or_empty(selected_frames)
@@ -474,6 +420,110 @@ def _effective_model_n_jobs(backtest_jobs: int) -> int:
 
 def _thread_env() -> dict[str, str | None]:
     return {key: os.environ.get(key) for key in THREAD_ENV_KEYS}
+
+
+def _evaluate_target_round(
+    *,
+    round_number: int,
+    config: BacktestConfig,
+    round_frame_store: RoundFrameStore,
+    cached_round_set: set[int],
+    model_feature_columns: list[str],
+    empty_training_columns: list[str],
+    model_n_jobs_effective: int,
+) -> RoundEvaluationResult:
+    round_records: list[dict[str, object]] = []
+    selected_frames: list[pd.DataFrame] = []
+    prediction_frames: list[pd.DataFrame] = []
+
+    if round_number not in cached_round_set:
+        _record_skipped_round(round_records, round_number, "Empty")
+        return RoundEvaluationResult(
+            round_records=round_records,
+            selected_frames=selected_frames,
+            prediction_frames=prediction_frames,
+        )
+
+    training = round_frame_store.training_frame(
+        target_round=round_number,
+        playable_statuses=config.playable_statuses,
+        empty_columns=empty_training_columns,
+    )
+    candidates = round_frame_store.prediction_frame(round_number)
+    candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy(deep=True)
+
+    if training.empty or candidates.empty:
+        _record_skipped_round(round_records, round_number, "TrainingEmpty" if training.empty else "Empty")
+        return RoundEvaluationResult(
+            round_records=round_records,
+            selected_frames=selected_frames,
+            prediction_frames=prediction_frames,
+        )
+
+    scored_candidates = candidates.copy()
+    baseline_model = BaselinePredictor().fit(training)
+    forest_model = RandomForestPointPredictor(
+        random_seed=config.random_seed,
+        feature_columns=model_feature_columns,
+        n_jobs=model_n_jobs_effective,
+    ).fit(training)
+    scored_candidates["baseline_score"] = baseline_model.predict(scored_candidates)
+    scored_candidates["random_forest_score"] = forest_model.predict(scored_candidates)
+    scored_candidates["price_score"] = scored_candidates[MARKET_OPEN_PRICE_COLUMN].astype(float)
+    prediction_frames.append(scored_candidates.copy())
+
+    for strategy, score_column in _strategies().items():
+        strategy_candidates = scored_candidates.copy()
+        strategy_candidates["predicted_points"] = strategy_candidates[score_column]
+        result = optimize_squad(strategy_candidates, score_column="predicted_points", config=config)
+        actual_scores = _actual_scores_for_result(
+            result.selected,
+            round_number=round_number,
+            strategy=strategy,
+            solver_status=result.status,
+        )
+        policy_diagnostics = _policy_diagnostics_for_result(
+            result.selected,
+            round_number=round_number,
+            strategy=strategy,
+            solver_status=result.status,
+        )
+        policy_summary = _policy_round_summary(policy_diagnostics)
+        actual_points_with_captain = actual_scores["actual_points_with_captain"]
+        round_records.append(
+            {
+                "rodada": round_number,
+                "strategy": strategy,
+                "solver_status": result.status,
+                "formation": result.formation_name,
+                "selected_count": result.selected_count,
+                "budget_used": result.budget_used,
+                "predicted_points": result.predicted_points_with_captain,
+                "predicted_points_base": result.predicted_points_base,
+                "captain_bonus_predicted": result.captain_bonus_predicted,
+                "predicted_points_with_captain": result.predicted_points_with_captain,
+                "actual_points": actual_points_with_captain,
+                "actual_points_base": actual_scores["actual_points_base"],
+                "captain_bonus_actual": actual_scores["captain_bonus_actual"],
+                "actual_points_with_captain": actual_points_with_captain,
+                "captain_id": result.captain_id,
+                "captain_name": result.captain_name,
+                **policy_summary,
+            }
+        )
+
+        if not result.selected.empty:
+            selected = result.selected.copy()
+            apply_captain_policy_flags(selected, policy_diagnostics)
+            selected["rodada"] = round_number
+            selected["strategy"] = strategy
+            selected_frames.append(selected)
+
+    return RoundEvaluationResult(
+        round_records=round_records,
+        selected_frames=selected_frames,
+        prediction_frames=prediction_frames,
+    )
 
 
 def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:
