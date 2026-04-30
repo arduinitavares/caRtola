@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -241,6 +242,62 @@ def test_write_reports_outputs_csv_and_json(tmp_path: Path) -> None:
     assert payload["config"]["current_year"] == 2026
     assert payload["decision"]["status"] == "exploratory_only"
     assert payload["seasons"][0]["season"] == 2025
+
+
+def test_run_matchup_fixture_audit_audits_requested_seasons_and_writes_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audited_seasons: list[int] = []
+
+    def fake_audit_one_season(season: int, config: audit.MatchupFixtureAuditConfig) -> audit.SeasonMatchupFixtureRecord:
+        audited_seasons.append(season)
+        assert config.current_year == 2026
+        return _record(season, comparable=season == 2025)
+
+    monkeypatch.setattr(audit, "audit_one_season", fake_audit_one_season)
+
+    result = audit.run_matchup_fixture_audit(
+        audit.MatchupFixtureAuditConfig(seasons=(2024, 2025), project_root=tmp_path),
+        clock=lambda: datetime(2026, 4, 30, tzinfo=UTC),
+    )
+
+    assert audited_seasons == [2024, 2025]
+    assert result.config.current_year == 2026
+    assert result.csv_path == tmp_path / "data/08_reporting/fixtures/matchup_fixture_coverage.csv"
+    assert result.json_path == tmp_path / "data/08_reporting/fixtures/matchup_fixture_coverage.json"
+    assert result.decision["status"] == "exploratory_only"
+    assert result.records[1].season == 2025
+
+
+def test_main_prints_success_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_run_matchup_fixture_audit(
+        config: audit.MatchupFixtureAuditConfig,
+    ) -> audit.MatchupFixtureAuditRunResult:
+        assert config.seasons == (2025,)
+        return audit.MatchupFixtureAuditRunResult(
+            config=config,
+            records=[_record(2025, comparable=True)],
+            csv_path=tmp_path / "matchup_fixture_coverage.csv",
+            json_path=tmp_path / "matchup_fixture_coverage.json",
+            decision={"status": "exploratory_only", "recommended_next_step": "keep testing"},
+        )
+
+    monkeypatch.setattr(audit, "run_matchup_fixture_audit", fake_run_matchup_fixture_audit)
+
+    assert audit.main(["--seasons", "2025", "--current-year", "2026"]) == 0
+
+    captured = capsys.readouterr()
+    assert "Matchup fixture coverage audit complete" in captured.out
+    assert "CSV: " in captured.out
+    assert "matchup_fixture_coverage.csv" in captured.out
+    assert "JSON: " in captured.out
+    assert "matchup_fixture_coverage.json" in captured.out
+    assert "Decision: exploratory_only" in captured.out
 
 
 def _season_df() -> pd.DataFrame:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import traceback as traceback_module
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Sequence
@@ -150,6 +150,15 @@ class SeasonMatchupFixtureRecord:
         row["source_manifests"] = self.source_manifests
         row["error_detail"] = None if self.error_detail is None else asdict(self.error_detail)
         return row
+
+
+@dataclass(frozen=True)
+class MatchupFixtureAuditRunResult:
+    config: MatchupFixtureAuditConfig
+    records: list[SeasonMatchupFixtureRecord]
+    csv_path: Path
+    json_path: Path
+    decision: dict[str, object]
 
 
 def parse_seasons(value: str) -> tuple[int, ...]:
@@ -345,6 +354,34 @@ def write_audit_reports(
     return csv_path, json_path
 
 
+def run_matchup_fixture_audit(
+    config: MatchupFixtureAuditConfig,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> MatchupFixtureAuditRunResult:
+    resolved_config = replace(config, current_year=config.resolved_current_year(clock))
+    generated_at = _generated_at_utc(clock)
+    records = [audit_one_season(season, resolved_config) for season in resolved_config.seasons]
+    csv_path, json_path = write_audit_reports(records, resolved_config, generated_at_utc=generated_at)
+    return MatchupFixtureAuditRunResult(
+        config=resolved_config,
+        records=records,
+        csv_path=csv_path,
+        json_path=json_path,
+        decision=build_decision(records),
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    config = config_from_args(parse_args(argv))
+    result = run_matchup_fixture_audit(config)
+    print("Matchup fixture coverage audit complete")
+    print(f"CSV: {result.csv_path}")
+    print(f"JSON: {result.json_path}")
+    print(f"Decision: {result.decision['status']}")
+    return 0
+
+
 def load_round_fixture_context(
     project_root: str | Path,
     *,
@@ -394,6 +431,13 @@ def _config_json(config: MatchupFixtureAuditConfig) -> dict[str, object]:
         "complete_round_threshold": config.complete_round_threshold,
         "current_year": config.current_year,
     }
+
+
+def _generated_at_utc(clock: Callable[[], datetime] | None = None) -> str:
+    now = clock() if clock is not None else datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    return now.astimezone(UTC).isoformat()
 
 
 def _empty_context_frame() -> pd.DataFrame:
