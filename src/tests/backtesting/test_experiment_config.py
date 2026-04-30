@@ -63,6 +63,25 @@ def test_feature_pack_to_modes() -> None:
     )
 
 
+def test_feature_pack_to_modes_rejects_unknown_pack() -> None:
+    with pytest.raises(ValueError, match="Unsupported feature_pack"):
+        feature_pack_to_modes("bad_pack")  # type: ignore[arg-type]
+
+
+def test_build_child_run_specs_rejects_unknown_group() -> None:
+    with pytest.raises(ValueError, match="Unsupported experiment group"):
+        build_child_run_specs(
+            group="bad_group",  # type: ignore[arg-type]
+            seasons=(2025,),
+            start_round=5,
+            budget=100.0,
+            project_root=Path("/repo"),
+            output_root=Path("data/08_reporting/experiments/model_feature/test"),
+            current_year=2026,
+            jobs=12,
+        )
+
+
 def test_experiment_rejects_live_year() -> None:
     with pytest.raises(ValueError, match="Experiment seasons must be before current_year"):
         build_child_run_specs(

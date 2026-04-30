@@ -4,7 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, cast
+from typing import Any, Iterable, Literal, Mapping, cast
 
 from cartola.backtesting.config import BacktestConfig, FixtureMode, FootyStatsMode, MatchupContextMode
 from cartola.backtesting.model_registry import MODEL_SPECS, ModelId
@@ -75,13 +75,33 @@ _FEATURE_PACKS: Mapping[FeaturePackId, FeaturePack] = {
 }
 
 
-def feature_pack_to_modes(feature_pack: FeaturePackId) -> FeaturePack:
-    return _FEATURE_PACKS[feature_pack]
+def _supported_values(values: Iterable[str]) -> str:
+    return ", ".join(sorted(values))
+
+
+def _validate_feature_pack(feature_pack: str) -> FeaturePackId:
+    if feature_pack not in _FEATURE_PACKS:
+        raise ValueError(
+            f"Unsupported feature_pack: {feature_pack}. Supported values: {_supported_values(_FEATURE_PACKS)}"
+        )
+    return cast(FeaturePackId, feature_pack)
+
+
+def _validate_experiment_group(group: str) -> ExperimentGroup:
+    if group not in _GROUP_FIXTURE_MODES:
+        raise ValueError(
+            f"Unsupported experiment group: {group}. Supported values: {_supported_values(_GROUP_FIXTURE_MODES)}"
+        )
+    return cast(ExperimentGroup, group)
+
+
+def feature_pack_to_modes(feature_pack: str) -> FeaturePack:
+    return _FEATURE_PACKS[_validate_feature_pack(feature_pack)]
 
 
 def build_child_run_specs(
     *,
-    group: ExperimentGroup,
+    group: str,
     seasons: tuple[int, ...],
     start_round: int,
     budget: float,
@@ -93,13 +113,14 @@ def build_child_run_specs(
     if any(season >= current_year for season in seasons):
         raise ValueError("Experiment seasons must be before current_year")
 
-    fixture_mode = _GROUP_FIXTURE_MODES[group]
+    experiment_group = _validate_experiment_group(group)
+    fixture_mode = _GROUP_FIXTURE_MODES[experiment_group]
     specs: list[ChildRunSpec] = []
 
     for season in seasons:
         for model_id in MODEL_SPECS:
             model_parameters = MODEL_SPECS[model_id].parameters
-            for feature_pack_id in _GROUP_FEATURE_PACKS[group]:
+            for feature_pack_id in _GROUP_FEATURE_PACKS[experiment_group]:
                 feature_pack = feature_pack_to_modes(feature_pack_id)
                 child_output_path = (
                     project_root
@@ -123,7 +144,7 @@ def build_child_run_specs(
                     _output_path_override=child_output_path,
                 )
                 config_identity = {
-                    "group": group,
+                    "group": experiment_group,
                     "season": season,
                     "model_id": model_id,
                     "feature_pack": feature_pack_id,
@@ -139,7 +160,7 @@ def build_child_run_specs(
                 }
                 specs.append(
                     ChildRunSpec(
-                        group=group,
+                        group=experiment_group,
                         season=season,
                         model_id=model_id,
                         feature_pack=feature_pack_id,
