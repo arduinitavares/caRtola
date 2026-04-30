@@ -320,16 +320,16 @@ def test_evaluate_target_round_returns_round_records_and_frames(tmp_path):
         round_number=5,
         config=config,
         round_frame_store=store,
-        cached_round_set={1, 2, 3, 4, 5},
         model_feature_columns=feature_columns_for_config(config),
         empty_training_columns=[*MARKET_COLUMNS, *feature_columns_for_config(config), "target"],
         model_n_jobs_effective=-1,
     )
 
     assert isinstance(result, runner_module.RoundEvaluationResult)
-    assert {record["strategy"] for record in result.round_records} == {"baseline", "random_forest", "price"}
-    assert all(record["rodada"] == 5 for record in result.round_records)
-    assert all(record["solver_status"] == "Optimal" for record in result.round_records)
+    assert result.round_number == 5
+    assert {record["strategy"] for record in result.round_rows} == {"baseline", "random_forest", "price"}
+    assert all(record["rodada"] == 5 for record in result.round_rows)
+    assert all(record["solver_status"] == "Optimal" for record in result.round_rows)
     assert len(result.selected_frames) == 3
     assert len(result.prediction_frames) == 1
     assert set(result.prediction_frames[0]["rodada"]) == {5}
@@ -375,7 +375,6 @@ def test_evaluate_target_round_passes_effective_model_n_jobs(tmp_path, monkeypat
         round_number=5,
         config=config,
         round_frame_store=store,
-        cached_round_set={1, 2, 3, 4, 5},
         model_feature_columns=feature_columns_for_config(config),
         empty_training_columns=[*MARKET_COLUMNS, *feature_columns_for_config(config), "target"],
         model_n_jobs_effective=1,

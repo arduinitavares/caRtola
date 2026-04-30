@@ -133,7 +133,8 @@ class BacktestResult:
 
 @dataclass(frozen=True)
 class RoundEvaluationResult:
-    round_records: list[dict[str, object]]
+    round_number: int
+    round_rows: list[dict[str, object]]
     selected_frames: list[pd.DataFrame]
     prediction_frames: list[pd.DataFrame]
 
@@ -307,16 +308,18 @@ def run_backtest(
     for round_number in range(config.start_round, max_round + 1):
         if round_number in excluded_rounds:
             continue
+        if round_number not in cached_round_set:
+            _record_skipped_round(round_rows, round_number, "Empty")
+            continue
         evaluation = _evaluate_target_round(
             round_number=round_number,
             config=config,
             round_frame_store=round_frame_store,
-            cached_round_set=cached_round_set,
             model_feature_columns=model_feature_columns,
             empty_training_columns=empty_training_columns,
             model_n_jobs_effective=metadata.model_n_jobs_effective,
         )
-        round_rows.extend(evaluation.round_records)
+        round_rows.extend(evaluation.round_rows)
         selected_frames.extend(evaluation.selected_frames)
         prediction_frames.extend(evaluation.prediction_frames)
 
@@ -427,22 +430,13 @@ def _evaluate_target_round(
     round_number: int,
     config: BacktestConfig,
     round_frame_store: RoundFrameStore,
-    cached_round_set: set[int],
     model_feature_columns: list[str],
     empty_training_columns: list[str],
     model_n_jobs_effective: int,
 ) -> RoundEvaluationResult:
-    round_records: list[dict[str, object]] = []
+    round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
     prediction_frames: list[pd.DataFrame] = []
-
-    if round_number not in cached_round_set:
-        _record_skipped_round(round_records, round_number, "Empty")
-        return RoundEvaluationResult(
-            round_records=round_records,
-            selected_frames=selected_frames,
-            prediction_frames=prediction_frames,
-        )
 
     training = round_frame_store.training_frame(
         target_round=round_number,
@@ -453,9 +447,10 @@ def _evaluate_target_round(
     candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy(deep=True)
 
     if training.empty or candidates.empty:
-        _record_skipped_round(round_records, round_number, "TrainingEmpty" if training.empty else "Empty")
+        _record_skipped_round(round_rows, round_number, "TrainingEmpty" if training.empty else "Empty")
         return RoundEvaluationResult(
-            round_records=round_records,
+            round_number=round_number,
+            round_rows=round_rows,
             selected_frames=selected_frames,
             prediction_frames=prediction_frames,
         )
@@ -490,7 +485,7 @@ def _evaluate_target_round(
         )
         policy_summary = _policy_round_summary(policy_diagnostics)
         actual_points_with_captain = actual_scores["actual_points_with_captain"]
-        round_records.append(
+        round_rows.append(
             {
                 "rodada": round_number,
                 "strategy": strategy,
@@ -520,7 +515,8 @@ def _evaluate_target_round(
             selected_frames.append(selected)
 
     return RoundEvaluationResult(
-        round_records=round_records,
+        round_number=round_number,
+        round_rows=round_rows,
         selected_frames=selected_frames,
         prediction_frames=prediction_frames,
     )
