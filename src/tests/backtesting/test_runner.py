@@ -95,6 +95,19 @@ def _write_tiny_fixture_files(root: Path, rounds: range) -> None:
         round_fixtures.to_csv(fixture_dir / f"partidas-{round_number}.csv", index=False)
 
 
+def _semantic_metadata(metadata: object) -> dict[str, object]:
+    values = dict(metadata.__dict__)
+    for key in [
+        "wall_clock_seconds",
+        "backtest_jobs",
+        "backtest_workers_effective",
+        "model_n_jobs_effective",
+        "parallel_backend",
+    ]:
+        values.pop(key, None)
+    return values
+
+
 def _tiny_footystats_rows(rounds: range, clubs: range = range(1, 19)) -> pd.DataFrame:
     rows = []
     for round_number in rounds:
@@ -460,21 +473,93 @@ def test_run_backtest_records_parallel_metadata_defaults(tmp_path):
     }
 
 
-def test_run_backtest_records_requested_jobs_but_sequential_metadata_before_threading(tmp_path):
+def test_run_backtest_jobs_2_matches_jobs_1_outputs(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
+
+    sequential = run_backtest(
+        BacktestConfig(project_root=tmp_path / "sequential", start_round=5, budget=100, jobs=1),
+        season_df=season_df,
+    )
+    parallel = run_backtest(
+        BacktestConfig(project_root=tmp_path / "parallel", start_round=5, budget=100, jobs=2),
+        season_df=season_df,
+    )
+
+    assert_frame_equal(sequential.round_results, parallel.round_results, check_dtype=False, atol=1e-10, rtol=0)
+    assert_frame_equal(sequential.selected_players, parallel.selected_players, check_dtype=False, atol=1e-10, rtol=0)
+    assert_frame_equal(sequential.player_predictions, parallel.player_predictions, check_dtype=False, atol=1e-10, rtol=0)
+    assert_frame_equal(sequential.summary, parallel.summary, check_dtype=False, atol=1e-10, rtol=0)
+    assert_frame_equal(sequential.diagnostics, parallel.diagnostics, check_dtype=False, atol=1e-10, rtol=0)
+    assert _semantic_metadata(sequential.metadata) == _semantic_metadata(parallel.metadata)
+    assert parallel.metadata.backtest_jobs == 2
+    assert parallel.metadata.backtest_workers_effective == 2
+    assert parallel.metadata.model_n_jobs_effective == 1
+    assert parallel.metadata.parallel_backend == "threads"
+
+
+def test_run_backtest_jobs_above_worker_rounds_records_effective_workers(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
 
-    result = run_backtest(BacktestConfig(project_root=tmp_path, start_round=5, budget=100, jobs=2), season_df=season_df)
+    result = run_backtest(
+        BacktestConfig(project_root=tmp_path, start_round=5, budget=100, jobs=4),
+        season_df=season_df,
+    )
 
-    assert result.metadata.backtest_jobs == 2
+    assert result.metadata.backtest_jobs == 4
     assert result.metadata.backtest_workers_effective == 1
-    assert result.metadata.model_n_jobs_effective == -1
-    assert result.metadata.parallel_backend == "sequential"
+    assert result.metadata.model_n_jobs_effective == 1
+    assert result.metadata.parallel_backend == "threads"
 
     metadata = json.loads((tmp_path / "data/08_reporting/backtests/2025/run_metadata.json").read_text())
-    assert metadata["backtest_jobs"] == 2
+    assert metadata["backtest_jobs"] == 4
     assert metadata["backtest_workers_effective"] == 1
-    assert metadata["model_n_jobs_effective"] == -1
-    assert metadata["parallel_backend"] == "sequential"
+    assert metadata["model_n_jobs_effective"] == 1
+    assert metadata["parallel_backend"] == "threads"
+
+
+def test_run_backtest_missing_round_is_not_submitted_to_worker(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(1), _tiny_round(3)], ignore_index=True)
+    called_rounds: list[int] = []
+    original = runner_module._evaluate_target_round
+
+    def recording_evaluate_target_round(**kwargs: object) -> object:
+        called_rounds.append(int(kwargs["round_number"]))
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner_module, "_evaluate_target_round", recording_evaluate_target_round)
+
+    result = run_backtest(
+        BacktestConfig(project_root=tmp_path, start_round=2, budget=100, jobs=2),
+        season_df=season_df,
+    )
+
+    assert called_rounds == [3]
+    round_2 = result.round_results[result.round_results["rodada"].eq(2)]
+    assert set(round_2["strategy"]) == {"baseline", "random_forest", "price"}
+    assert round_2["solver_status"].eq("Empty").all()
+    assert 2 not in set(result.player_predictions.get("rodada", pd.Series(dtype=int)).dropna().astype(int).tolist())
+
+
+def test_parallel_worker_failure_preserves_round_context(tmp_path, monkeypatch) -> None:
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
+    original = runner_module._evaluate_target_round
+
+    def failing_evaluate_target_round(**kwargs: object) -> object:
+        round_number = int(kwargs["round_number"])
+        if round_number == 5:
+            raise ValueError("boom")
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner_module, "_evaluate_target_round", failing_evaluate_target_round)
+
+    with pytest.raises(runner_module.BacktestRoundEvaluationError, match="round 5") as exc_info:
+        run_backtest(
+            BacktestConfig(project_root=tmp_path, start_round=5, budget=100, jobs=2),
+            season_df=season_df,
+        )
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert not (tmp_path / "data/08_reporting/backtests/2025/round_results.csv").exists()
 
 
 def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):

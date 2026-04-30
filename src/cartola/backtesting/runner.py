@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from threading import Lock
 from time import perf_counter
@@ -147,6 +148,12 @@ class RoundEvaluationResult:
     prediction_frames: list[pd.DataFrame]
 
 
+class BacktestRoundEvaluationError(RuntimeError):
+    def __init__(self, round_number: int, message: str) -> None:
+        super().__init__(f"Failed to evaluate round {round_number}: {message}")
+        self.round_number = round_number
+
+
 @dataclass(frozen=True)
 class FixtureLoadForRun:
     fixtures: pd.DataFrame | None
@@ -273,6 +280,17 @@ def run_backtest(
     max_round = _max_round(data)
     model_feature_columns = feature_columns_for_config(config)
     empty_training_columns = list(dict.fromkeys([*MARKET_COLUMNS, *model_feature_columns, "target"]))
+    target_rounds = list(range(config.start_round, max_round + 1))
+    skipped_results, worker_rounds = _target_round_work(
+        target_rounds=target_rounds,
+        excluded_rounds=excluded_rounds,
+        cached_round_set=cached_round_set,
+    )
+    model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
+    backtest_workers_effective = (
+        1 if config.jobs == 1 else min(config.jobs, len(worker_rounds)) if worker_rounds else 0
+    )
+    parallel_backend = "sequential" if config.jobs == 1 else "threads"
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
@@ -281,9 +299,9 @@ def run_backtest(
         prediction_frames_built=round_frame_store.prediction_frames_built,
         wall_clock_seconds=0.0,
         backtest_jobs=config.jobs,
-        backtest_workers_effective=1,
-        model_n_jobs_effective=-1,
-        parallel_backend="sequential",
+        backtest_workers_effective=backtest_workers_effective,
+        model_n_jobs_effective=model_n_jobs_effective,
+        parallel_backend=parallel_backend,
         thread_env=_thread_env(),
         scoring_contract_version=SCORING_CONTRACT_VERSION,
         captain_scoring_enabled=CAPTAIN_SCORING_ENABLED,
@@ -313,20 +331,18 @@ def run_backtest(
         footystats_duplicate_join_keys_by_round=footystats_diagnostics.duplicate_join_keys_by_round,
         footystats_extra_club_rows_by_round=footystats_diagnostics.extra_club_rows_by_round,
     )
-    for round_number in range(config.start_round, max_round + 1):
-        if round_number in excluded_rounds:
-            continue
-        if round_number not in cached_round_set:
-            _record_skipped_round(round_rows, round_number, "Empty")
-            continue
-        evaluation = _evaluate_target_round(
-            round_number=round_number,
+    round_results_for_targets = [
+        *skipped_results,
+        *_run_round_workers(
             config=config,
+            worker_rounds=worker_rounds,
             round_frame_store=round_frame_store,
-            model_feature_columns=model_feature_columns,
             empty_training_columns=empty_training_columns,
-            model_n_jobs_effective=metadata.model_n_jobs_effective,
-        )
+            model_feature_columns=model_feature_columns,
+            model_n_jobs_effective=model_n_jobs_effective,
+        ),
+    ]
+    for evaluation in sorted(round_results_for_targets, key=lambda item: item.round_number):
         round_rows.extend(evaluation.round_rows)
         selected_frames.extend(evaluation.selected_frames)
         prediction_frames.extend(evaluation.prediction_frames)
@@ -439,6 +455,83 @@ def _effective_model_n_jobs(backtest_jobs: int) -> int:
 
 def _thread_env() -> dict[str, str | None]:
     return {key: os.environ.get(key) for key in THREAD_ENV_KEYS}
+
+
+def _target_round_work(
+    *,
+    target_rounds: list[int],
+    excluded_rounds: list[int],
+    cached_round_set: set[int],
+) -> tuple[list[RoundEvaluationResult], list[int]]:
+    skipped_results: list[RoundEvaluationResult] = []
+    worker_rounds: list[int] = []
+    excluded_round_set = set(excluded_rounds)
+    for round_number in target_rounds:
+        if round_number in excluded_round_set:
+            continue
+        if round_number not in cached_round_set:
+            round_rows: list[dict[str, object]] = []
+            _record_skipped_round(round_rows, round_number, "Empty")
+            skipped_results.append(
+                RoundEvaluationResult(
+                    round_number=round_number,
+                    round_rows=round_rows,
+                    selected_frames=[],
+                    prediction_frames=[],
+                )
+            )
+            continue
+        worker_rounds.append(round_number)
+    return skipped_results, worker_rounds
+
+
+def _run_round_workers(
+    *,
+    config: BacktestConfig,
+    worker_rounds: list[int],
+    round_frame_store: RoundFrameStore,
+    empty_training_columns: list[str],
+    model_feature_columns: list[str],
+    model_n_jobs_effective: int,
+) -> list[RoundEvaluationResult]:
+    if config.jobs == 1:
+        return [
+            _evaluate_target_round(
+                round_number=round_number,
+                config=config,
+                round_frame_store=round_frame_store,
+                empty_training_columns=empty_training_columns,
+                model_feature_columns=model_feature_columns,
+                model_n_jobs_effective=model_n_jobs_effective,
+            )
+            for round_number in worker_rounds
+        ]
+
+    if not worker_rounds:
+        return []
+
+    max_workers = min(config.jobs, len(worker_rounds))
+    results: list[RoundEvaluationResult] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_round = {
+            executor.submit(
+                _evaluate_target_round,
+                round_number=round_number,
+                config=config,
+                round_frame_store=round_frame_store,
+                empty_training_columns=empty_training_columns,
+                model_feature_columns=model_feature_columns,
+                model_n_jobs_effective=model_n_jobs_effective,
+            ): round_number
+            for round_number in worker_rounds
+        }
+        for future in as_completed(future_to_round):
+            round_number = future_to_round[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                raise BacktestRoundEvaluationError(round_number, str(exc)) from exc
+    return results
 
 
 def _evaluate_target_round(
