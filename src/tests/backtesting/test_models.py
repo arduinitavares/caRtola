@@ -36,8 +36,20 @@ def test_random_forest_point_predictor_fit_predict_smoke() -> None:
     model = RandomForestPointPredictor(random_seed=7, feature_columns=FEATURE_COLUMNS).fit(train)
     predictions = model.predict(predict)
 
+    assert model.n_jobs == -1
     assert len(predictions) == len(predict)
     assert predictions.notna().all()
+
+
+def test_random_forest_point_predictor_sets_n_jobs() -> None:
+    model = RandomForestPointPredictor(
+        random_seed=7,
+        feature_columns=FEATURE_COLUMNS,
+        n_jobs=1,
+    )
+
+    assert model.n_jobs == 1
+    assert model.pipeline.named_steps["model"].n_jobs == 1
 
 
 def test_random_forest_point_predictor_uses_explicit_feature_columns() -> None:

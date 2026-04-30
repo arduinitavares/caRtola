@@ -38,11 +38,17 @@ class BaselinePredictor:
 
 
 class RandomForestPointPredictor:
-    def __init__(self, random_seed: int = 123, feature_columns: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        random_seed: int = 123,
+        feature_columns: list[str] | None = None,
+        n_jobs: int = -1,
+    ) -> None:
         if feature_columns is None:
             raise ValueError("feature_columns must be provided")
 
         self.feature_columns = feature_columns
+        self.n_jobs = n_jobs
         numeric_features = [column for column in self.feature_columns if column != "posicao"]
         categorical_features = ["posicao"] if "posicao" in self.feature_columns else []
 
@@ -72,7 +78,7 @@ class RandomForestPointPredictor:
                         n_estimators=200,
                         min_samples_leaf=3,
                         random_state=random_seed,
-                        n_jobs=-1,
+                        n_jobs=n_jobs,
                     ),
                 ),
             ]
