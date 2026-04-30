@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import traceback as traceback_module
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -32,6 +33,29 @@ CONTEXT_COLUMNS: tuple[str, ...] = (
     "source_manifest",
     "source_sha256",
     "source_manifest_sha256",
+)
+
+CSV_COLUMNS: tuple[str, ...] = (
+    "season",
+    "season_status",
+    "metrics_comparable",
+    "fixture_status",
+    "round_file_count",
+    "min_round",
+    "max_round",
+    "detected_rounds",
+    "expected_club_round_count",
+    "fixture_context_row_count",
+    "missing_context_count",
+    "duplicate_context_count",
+    "extra_context_count",
+    "strict_context_count",
+    "exploratory_context_count",
+    "fixture_sources",
+    "error_stage",
+    "error_type",
+    "error_message",
+    "notes",
 )
 
 
@@ -88,6 +112,44 @@ class SeasonMatchupFixtureRecord:
     error_message: str | None = None
     notes: list[str] = field(default_factory=list)
     error_detail: ErrorDetail | None = None
+
+    def to_csv_row(self) -> dict[str, object]:
+        return {
+            "season": self.season,
+            "season_status": self.season_status,
+            "metrics_comparable": self.metrics_comparable,
+            "fixture_status": self.fixture_status,
+            "round_file_count": self.round_file_count,
+            "min_round": self.min_round,
+            "max_round": self.max_round,
+            "detected_rounds": ",".join(str(round_number) for round_number in self.detected_rounds),
+            "expected_club_round_count": self.expected_club_round_count,
+            "fixture_context_row_count": self.fixture_context_row_count,
+            "missing_context_count": self.missing_context_count,
+            "duplicate_context_count": self.duplicate_context_count,
+            "extra_context_count": self.extra_context_count,
+            "strict_context_count": self.strict_context_count,
+            "exploratory_context_count": self.exploratory_context_count,
+            "fixture_sources": ",".join(self.fixture_sources),
+            "error_stage": self.error_stage,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+            "notes": "; ".join(self.notes),
+        }
+
+    def to_json_object(self) -> dict[str, object]:
+        row = self.to_csv_row()
+        row["detected_rounds"] = self.detected_rounds
+        row["fixture_sources"] = self.fixture_sources
+        row["notes"] = self.notes
+        row["rounds"] = self.rounds
+        row["missing_context_keys"] = self.missing_context_keys
+        row["duplicate_context_keys"] = self.duplicate_context_keys
+        row["extra_context_keys"] = self.extra_context_keys
+        row["source_files"] = self.source_files
+        row["source_manifests"] = self.source_manifests
+        row["error_detail"] = None if self.error_detail is None else asdict(self.error_detail)
+        return row
 
 
 def parse_seasons(value: str) -> tuple[int, ...]:
@@ -235,6 +297,54 @@ def audit_one_season(season: int, config: MatchupFixtureAuditConfig) -> SeasonMa
     return record
 
 
+def build_decision(records: list[SeasonMatchupFixtureRecord]) -> dict[str, object]:
+    comparable = {record.season for record in records if record.metrics_comparable}
+    requested = {record.season for record in records}
+    core = {2023, 2024, 2025}
+    if core.issubset(comparable):
+        status = "ready_for_matchup_context"
+        next_step = "implement matchup_context_mode=cartola_matchup_v1"
+    elif 2025 in comparable:
+        status = "exploratory_only"
+        next_step = "keep matchup context exploratory until 2023-2024 fixture coverage is fixed"
+    else:
+        status = "coverage_blocked"
+        next_step = "fix or import fixture coverage before feature work"
+
+    return {
+        "status": status,
+        "comparable_seasons": sorted(comparable),
+        "requested_seasons": sorted(requested),
+        "recommended_next_step": next_step,
+    }
+
+
+def write_audit_reports(
+    records: list[SeasonMatchupFixtureRecord],
+    config: MatchupFixtureAuditConfig,
+    *,
+    generated_at_utc: str,
+) -> tuple[Path, Path]:
+    output_dir = config.output_root if config.output_root.is_absolute() else config.project_root / config.output_root
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "matchup_fixture_coverage.csv"
+    json_path = output_dir / "matchup_fixture_coverage.json"
+
+    pd.DataFrame([record.to_csv_row() for record in records], columns=pd.Index(CSV_COLUMNS)).to_csv(
+        csv_path,
+        index=False,
+    )
+    payload = {
+        "generated_at_utc": generated_at_utc,
+        "project_root": str(config.project_root),
+        "config": _config_json(config),
+        "decision": build_decision(records),
+        "seasons": [record.to_json_object() for record in records],
+    }
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return csv_path, json_path
+
+
 def load_round_fixture_context(
     project_root: str | Path,
     *,
@@ -273,6 +383,17 @@ def load_round_fixture_context(
         )
 
     return _empty_context_frame()
+
+
+def _config_json(config: MatchupFixtureAuditConfig) -> dict[str, object]:
+    return {
+        "seasons": list(config.seasons),
+        "project_root": str(config.project_root),
+        "output_root": str(config.output_root),
+        "expected_complete_rounds": config.expected_complete_rounds,
+        "complete_round_threshold": config.complete_round_threshold,
+        "current_year": config.current_year,
+    }
 
 
 def _empty_context_frame() -> pd.DataFrame:

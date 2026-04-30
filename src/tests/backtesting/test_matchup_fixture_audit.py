@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -193,6 +194,55 @@ def test_audit_season_fails_missing_duplicate_and_extra_context(
     assert {"rodada": 1, "id_clube": 99} in record.extra_context_keys
 
 
+def test_decision_ready_when_2023_2024_2025_are_comparable() -> None:
+    decision = audit.build_decision(
+        [_record(2023, comparable=True), _record(2024, comparable=True), _record(2025, comparable=True)]
+    )
+
+    assert decision["status"] == "ready_for_matchup_context"
+    assert decision["recommended_next_step"] == "implement matchup_context_mode=cartola_matchup_v1"
+
+
+def test_decision_exploratory_only_when_only_2025_passes() -> None:
+    decision = audit.build_decision(
+        [_record(2023, comparable=False), _record(2024, comparable=False), _record(2025, comparable=True)]
+    )
+
+    assert decision["status"] == "exploratory_only"
+    assert decision["recommended_next_step"] == "keep matchup context exploratory until 2023-2024 fixture coverage is fixed"
+
+
+def test_decision_blocks_when_2025_fails() -> None:
+    decision = audit.build_decision(
+        [_record(2023, comparable=True), _record(2024, comparable=True), _record(2025, comparable=False)]
+    )
+
+    assert decision["status"] == "coverage_blocked"
+    assert decision["recommended_next_step"] == "fix or import fixture coverage before feature work"
+
+
+def test_write_reports_outputs_csv_and_json(tmp_path: Path) -> None:
+    config = audit.MatchupFixtureAuditConfig(project_root=tmp_path, current_year=2026)
+    records = [_record(2025, comparable=True)]
+
+    csv_path, json_path = audit.write_audit_reports(
+        records,
+        config,
+        generated_at_utc="2026-04-30T00:00:00+00:00",
+    )
+
+    csv_frame = pd.read_csv(csv_path)
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+    assert csv_path == tmp_path / "data/08_reporting/fixtures/matchup_fixture_coverage.csv"
+    assert json_path == tmp_path / "data/08_reporting/fixtures/matchup_fixture_coverage.json"
+    assert csv_frame.loc[0, "season"] == 2025
+    assert csv_frame.loc[0, "fixture_status"] == "ok"
+    assert payload["config"]["current_year"] == 2026
+    assert payload["decision"]["status"] == "exploratory_only"
+    assert payload["seasons"][0]["season"] == 2025
+
+
 def _season_df() -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -201,6 +251,24 @@ def _season_df() -> pd.DataFrame:
             {"rodada": 2, "id_clube": 10, "nome_clube": "A", "entrou_em_campo": True},
             {"rodada": 2, "id_clube": 30, "nome_clube": "C", "entrou_em_campo": True},
         ]
+    )
+
+
+def _record(
+    season: int,
+    *,
+    comparable: bool,
+    status: str = "complete_historical",
+) -> audit.SeasonMatchupFixtureRecord:
+    return audit.SeasonMatchupFixtureRecord(
+        season=season,
+        season_status=status,
+        metrics_comparable=comparable,
+        fixture_status="ok" if comparable else "failed",
+        round_file_count=38,
+        min_round=1,
+        max_round=38,
+        detected_rounds=list(range(1, 39)),
     )
 
 
