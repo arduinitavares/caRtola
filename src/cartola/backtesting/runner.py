@@ -8,6 +8,7 @@ import pandas as pd
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
 from cartola.backtesting.features import (
+    MARKET_COLUMNS,  # noqa: F401
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     build_prediction_frame,
     build_training_frame,
@@ -122,6 +123,66 @@ class FixtureLoadForRun:
     generator_versions: list[str]
     excluded_rounds: list[int]
     warnings: list[str]
+
+
+class RoundFrameStore:
+    def __init__(
+        self,
+        *,
+        season_df: pd.DataFrame,
+        fixtures: pd.DataFrame | None,
+        footystats_rows: pd.DataFrame | None,
+        matchup_context_mode: str,
+    ) -> None:
+        self._season_df = season_df
+        self._fixtures = fixtures
+        self._footystats_rows = footystats_rows
+        self._matchup_context_mode = matchup_context_mode
+        self._frames: dict[int, pd.DataFrame] = {}
+
+    @property
+    def prediction_frames_built(self) -> int:
+        return len(self._frames)
+
+    def build_all(self, rounds: list[int]) -> None:
+        for round_number in rounds:
+            if round_number in self._frames:
+                continue
+            self._frames[round_number] = build_prediction_frame(
+                self._season_df,
+                round_number,
+                fixtures=self._fixtures,
+                footystats_rows=self._footystats_rows,
+                matchup_context_mode=self._matchup_context_mode,
+            ).copy(deep=True)
+
+    def prediction_frame(self, round_number: int) -> pd.DataFrame:
+        try:
+            frame = self._frames[round_number]
+        except KeyError as exc:
+            raise KeyError(f"Prediction frame for round {round_number} was not built.") from exc
+        return frame.copy(deep=True)
+
+    def training_frame(
+        self,
+        *,
+        target_round: int,
+        playable_statuses: tuple[str, ...],
+        empty_columns: list[str],
+    ) -> pd.DataFrame:
+        frames: list[pd.DataFrame] = []
+        for round_number in sorted(self._frames):
+            if round_number >= target_round:
+                continue
+            round_frame = self._frames[round_number].copy(deep=True)
+            round_frame = round_frame[round_frame["status"].isin(playable_statuses)].copy(deep=True)
+            round_frame["target"] = round_frame["pontuacao"]
+            frames.append(round_frame)
+
+        if not frames:
+            return pd.DataFrame(columns=pd.Index(empty_columns))
+
+        return pd.concat(frames, ignore_index=True)
 
 
 def run_backtest(
