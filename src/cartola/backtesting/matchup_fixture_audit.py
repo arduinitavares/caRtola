@@ -105,6 +105,7 @@ class SeasonMatchupFixtureRecord:
     missing_context_keys: list[dict[str, int]] = field(default_factory=list)
     duplicate_context_keys: list[dict[str, int]] = field(default_factory=list)
     extra_context_keys: list[dict[str, int]] = field(default_factory=list)
+    fixture_context_rows: list[dict[str, object]] = field(default_factory=list)
     source_files: list[str] = field(default_factory=list)
     source_manifests: list[str] = field(default_factory=list)
     error_stage: str | None = None
@@ -146,6 +147,7 @@ class SeasonMatchupFixtureRecord:
         row["missing_context_keys"] = self.missing_context_keys
         row["duplicate_context_keys"] = self.duplicate_context_keys
         row["extra_context_keys"] = self.extra_context_keys
+        row["fixture_context_rows"] = self.fixture_context_rows
         row["source_files"] = self.source_files
         row["source_manifests"] = self.source_manifests
         row["error_detail"] = None if self.error_detail is None else asdict(self.error_detail)
@@ -293,6 +295,8 @@ def audit_one_season(season: int, config: MatchupFixtureAuditConfig) -> SeasonMa
         )
 
     context = pd.concat(context_frames, ignore_index=True) if context_frames else _empty_context_frame()
+    context = _with_opponent_names(context, season_df)
+    record.fixture_context_rows = _context_json_records(context)
     _populate_context_counts(record, expected, context)
 
     if record.missing_context_count or record.duplicate_context_count or record.extra_context_count:
@@ -442,6 +446,59 @@ def _generated_at_utc(clock: Callable[[], datetime] | None = None) -> str:
 
 def _empty_context_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=pd.Index(CONTEXT_COLUMNS))
+
+
+def _with_opponent_names(context: pd.DataFrame, season_df: pd.DataFrame) -> pd.DataFrame:
+    if context.empty or "nome_clube" not in season_df.columns:
+        return context
+
+    lookup = _club_name_lookup(season_df)
+    enriched = context.copy()
+    enriched["opponent_nome_clube"] = enriched["opponent_id_clube"].map(lookup)
+    return enriched
+
+
+def _club_name_lookup(season_df: pd.DataFrame) -> dict[int, str]:
+    clubs = season_df[["id_clube", "nome_clube"]].copy()
+    clubs = clubs.dropna(subset=["id_clube", "nome_clube"])
+    if clubs.empty:
+        return {}
+    clubs["id_clube"] = pd.to_numeric(clubs["id_clube"], errors="coerce")
+    clubs = clubs.dropna(subset=["id_clube"])
+    clubs["id_clube"] = clubs["id_clube"].astype(int)
+    clubs["nome_clube"] = clubs["nome_clube"].astype(str).str.strip()
+    clubs = clubs.loc[clubs["nome_clube"].ne("")]
+    clubs = clubs.drop_duplicates(subset=["id_clube", "nome_clube"]).sort_values(["id_clube", "nome_clube"])
+    return {
+        int(row["id_clube"]): str(row["nome_clube"])
+        for row in clubs.drop_duplicates(subset=["id_clube"], keep="first").to_dict("records")
+    }
+
+
+def _context_json_records(context: pd.DataFrame) -> list[dict[str, object]]:
+    if context.empty:
+        return []
+    rows: list[dict[str, object]] = []
+    for row in context.sort_values(["rodada", "id_clube"]).to_dict("records"):
+        opponent_name = row["opponent_nome_clube"]
+        rows.append(
+            {
+                "season": int(row["season"]),
+                "rodada": int(row["rodada"]),
+                "id_clube": int(row["id_clube"]),
+                "opponent_id_clube": int(row["opponent_id_clube"]),
+                "opponent_nome_clube": None if pd.isna(opponent_name) else str(opponent_name),
+                "is_home": int(row["is_home"]),
+                "fixture_source": str(row["fixture_source"]),
+                "source_file": str(row["source_file"]),
+                "source_manifest": None if pd.isna(row["source_manifest"]) else str(row["source_manifest"]),
+                "source_sha256": str(row["source_sha256"]),
+                "source_manifest_sha256": (
+                    None if pd.isna(row["source_manifest_sha256"]) else str(row["source_manifest_sha256"])
+                ),
+            }
+        )
+    return rows
 
 
 def _detected_rounds(season_df: pd.DataFrame) -> list[int]:

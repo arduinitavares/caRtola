@@ -164,6 +164,60 @@ def test_audit_season_passes_when_every_played_club_has_one_context_row(
     assert record.extra_context_count == 0
 
 
+def test_audit_season_populates_opponent_names_from_cartola_clubs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = pd.DataFrame(
+        [
+            _context_row(2025, 1, 10, 20, 1, "f1"),
+            _context_row(2025, 1, 20, 10, 0, "f1"),
+        ]
+    )
+
+    monkeypatch.setattr(audit, "load_season_data", lambda season, project_root: _season_df().query("rodada == 1"))
+    monkeypatch.setattr(
+        audit,
+        "load_round_fixture_context",
+        lambda project_root, *, season, round_number: context[context["rodada"].eq(round_number)].copy(),
+    )
+
+    record = audit.audit_one_season(
+        2025,
+        audit.MatchupFixtureAuditConfig(project_root=tmp_path, current_year=2026, expected_complete_rounds=1),
+    )
+
+    assert record.fixture_context_rows == [
+        {
+            "season": 2025,
+            "rodada": 1,
+            "id_clube": 10,
+            "opponent_id_clube": 20,
+            "opponent_nome_clube": "B",
+            "is_home": 1,
+            "fixture_source": "exploratory",
+            "source_file": "f1",
+            "source_manifest": None,
+            "source_sha256": "a",
+            "source_manifest_sha256": None,
+        },
+        {
+            "season": 2025,
+            "rodada": 1,
+            "id_clube": 20,
+            "opponent_id_clube": 10,
+            "opponent_nome_clube": "A",
+            "is_home": 0,
+            "fixture_source": "exploratory",
+            "source_file": "f1",
+            "source_manifest": None,
+            "source_sha256": "a",
+            "source_manifest_sha256": None,
+        },
+    ]
+    assert record.to_json_object()["fixture_context_rows"][0]["opponent_nome_clube"] == "B"
+
+
 def test_audit_season_fails_missing_duplicate_and_extra_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
