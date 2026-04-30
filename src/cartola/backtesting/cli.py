@@ -4,6 +4,9 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
+from rich.console import Console
+
+from cartola.backtesting.cli_output import render_backtest_success, write_performance_chart
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.runner import run_backtest
 
@@ -51,9 +54,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     result = run_backtest(config)
-    for warning in result.metadata.warnings:
-        print(f"WARNING: {warning}")
-    print(f"Backtest complete: season={config.season} output={config.output_path}")
+    chart_output = write_performance_chart(result.round_results, config.output_path)
+    render_backtest_success(Console(), config=config, result=result, chart_output=chart_output)
     return 0
 
 

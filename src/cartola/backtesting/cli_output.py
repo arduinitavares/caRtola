@@ -96,13 +96,13 @@ def _build_run_details_table(
         ("Model n_jobs", _format_int(getattr(metadata, "model_n_jobs_effective", None))),
         ("Prediction frames built", _format_int(getattr(metadata, "prediction_frames_built", None))),
         ("Wall clock seconds", _format_points(getattr(metadata, "wall_clock_seconds", None))),
-        ("Performance chart", _format_path(chart_output.path, project_root=config.project_root)),
+        ("Performance chart", _format_chart_path(chart_output.path, project_root=config.project_root)),
         ("Scoring contract", _format_text(getattr(metadata, "scoring_contract_version", None))),
     ]
 
     table = Table(title="Run details")
     table.add_column("Field")
-    table.add_column("Value")
+    table.add_column("Value", overflow="fold")
     for label, value in rows:
         table.add_row(label, value)
     return table
@@ -140,6 +140,13 @@ def _format_path(path: Path | None, *, project_root: Path) -> str:
         return str(path.relative_to(project_root))
     except ValueError:
         return str(path)
+
+
+def _format_chart_path(path: Path | None, *, project_root: Path) -> str:
+    if path is None:
+        return "n/a"
+    formatted_path = _format_path(path, project_root=project_root)
+    return f"{path.name} ({formatted_path})"
 
 
 def _is_missing(value: Any) -> bool:
