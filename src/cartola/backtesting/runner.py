@@ -814,15 +814,15 @@ def _concat_or_empty(frames: list[pd.DataFrame]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _sort_frame(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+def _sort_frame(name: str, frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     if frame.empty:
         return frame.copy()
 
-    sort_columns = [key for key in keys if key in frame.columns]
-    if not sort_columns:
-        return frame.reset_index(drop=True)
+    missing_columns = [key for key in keys if key not in frame.columns]
+    if missing_columns:
+        raise ValueError(f"{name} is missing required sort columns: {missing_columns}")
 
-    return frame.sort_values(sort_columns, kind="mergesort").reset_index(drop=True)
+    return frame.sort_values(keys, kind="mergesort").reset_index(drop=True)
 
 
 def _sort_outputs(
@@ -833,11 +833,11 @@ def _sort_outputs(
     diagnostics: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return (
-        _sort_frame(round_results, SORT_KEYS["round_results"]),
-        _sort_frame(selected_players, SORT_KEYS["selected_players"]),
-        _sort_frame(player_predictions, SORT_KEYS["player_predictions"]),
-        _sort_frame(summary, SORT_KEYS["summary"]),
-        _sort_frame(diagnostics, SORT_KEYS["diagnostics"]),
+        _sort_frame("round_results", round_results, SORT_KEYS["round_results"]),
+        _sort_frame("selected_players", selected_players, SORT_KEYS["selected_players"]),
+        _sort_frame("player_predictions", player_predictions, SORT_KEYS["player_predictions"]),
+        _sort_frame("summary", summary, SORT_KEYS["summary"]),
+        _sort_frame("diagnostics", diagnostics, SORT_KEYS["diagnostics"]),
     )
 
 

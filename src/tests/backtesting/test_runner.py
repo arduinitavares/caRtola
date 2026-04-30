@@ -1164,6 +1164,27 @@ def test_sort_outputs_canonicalizes_report_order(tmp_path, monkeypatch):
     assert all(frame.empty for frame in empty_outputs)
 
 
+def test_sort_outputs_rejects_missing_required_sort_key():
+    selected_players = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "strategy": "baseline",
+                "posicao": "gol",
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="selected_players.*id_atleta"):
+        runner_module._sort_outputs(
+            pd.DataFrame(),
+            selected_players,
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+        )
+
+
 def test_run_backtest_records_captain_policy_flags_and_actual_totals(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
