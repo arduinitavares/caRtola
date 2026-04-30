@@ -11,7 +11,6 @@ from cartola.backtesting.features import (
     MARKET_COLUMNS,  # noqa: F401
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     build_prediction_frame,
-    build_training_frame,
     feature_columns_for_config,
 )
 from cartola.backtesting.footystats_features import (
@@ -216,12 +215,22 @@ def run_backtest(
     )
     _validate_footystats_join_diagnostics(footystats_diagnostics)
 
+    cached_rounds = _detected_rounds(data)
+    round_frame_store = RoundFrameStore(
+        season_df=data,
+        fixtures=fixture_data,
+        footystats_rows=footystats_rows,
+        matchup_context_mode=config.matchup_context_mode,
+    )
+    round_frame_store.build_all(cached_rounds)
+
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
     prediction_frames: list[pd.DataFrame] = []
 
     max_round = _max_round(data)
     model_feature_columns = feature_columns_for_config(config)
+    empty_training_columns = list(dict.fromkeys([*MARKET_COLUMNS, *model_feature_columns, "target"]))
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
@@ -258,22 +267,13 @@ def run_backtest(
         if round_number in excluded_rounds:
             continue
 
-        training = build_training_frame(
-            data,
-            round_number,
+        training = round_frame_store.training_frame(
+            target_round=round_number,
             playable_statuses=config.playable_statuses,
-            fixtures=fixture_data,
-            footystats_rows=footystats_rows,
-            matchup_context_mode=config.matchup_context_mode,
+            empty_columns=empty_training_columns,
         )
-        candidates = build_prediction_frame(
-            data,
-            round_number,
-            fixtures=fixture_data,
-            footystats_rows=footystats_rows,
-            matchup_context_mode=config.matchup_context_mode,
-        )
-        candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy()
+        candidates = round_frame_store.prediction_frame(round_number)
+        candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy(deep=True)
 
         if training.empty or candidates.empty:
             _record_skipped_round(round_rows, round_number, "TrainingEmpty" if training.empty else "Empty")
@@ -412,6 +412,15 @@ def _max_round(data: pd.DataFrame) -> int:
     if data.empty:
         return 0
     return int(data["rodada"].max())
+
+
+def _detected_rounds(data: pd.DataFrame) -> list[int]:
+    if data.empty:
+        return []
+    return sorted(
+        int(round_number)
+        for round_number in pd.to_numeric(data["rodada"], errors="raise").dropna().unique()
+    )
 
 
 def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:

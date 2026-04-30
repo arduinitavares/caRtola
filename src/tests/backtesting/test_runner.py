@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
+from cartola.backtesting import features as features_module
 from cartola.backtesting import runner as runner_module
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
 from cartola.backtesting.features import (
@@ -198,6 +199,24 @@ def test_round_frame_store_preserves_target_round_temporal_boundary():
         spiked_store.prediction_frame(3).sort_index(axis=1).reset_index(drop=True),
         check_dtype=False,
     )
+
+
+def test_run_backtest_builds_each_detected_round_prediction_frame_once(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
+    calls: list[int] = []
+    original = runner_module.build_prediction_frame
+
+    def counting_build_prediction_frame(*args: object, **kwargs: object) -> pd.DataFrame:
+        target_round = int(args[1])
+        calls.append(target_round)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(features_module, "build_prediction_frame", counting_build_prediction_frame)
+    monkeypatch.setattr(runner_module, "build_prediction_frame", counting_build_prediction_frame)
+
+    run_backtest(BacktestConfig(project_root=tmp_path, start_round=5, budget=100), season_df=season_df)
+
+    assert sorted(calls) == [1, 2, 3, 4, 5, 6]
 
 
 def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
