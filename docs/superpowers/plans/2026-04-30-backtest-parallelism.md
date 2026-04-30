@@ -419,6 +419,23 @@ def test_run_backtest_records_parallel_metadata_defaults(tmp_path):
         "OPENBLAS_NUM_THREADS",
         "BLIS_NUM_THREADS",
     }
+
+
+def test_run_backtest_records_requested_jobs_but_sequential_metadata_before_threading(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+
+    result = run_backtest(BacktestConfig(project_root=tmp_path, start_round=5, budget=100, jobs=2), season_df=season_df)
+
+    assert result.metadata.backtest_jobs == 2
+    assert result.metadata.backtest_workers_effective == 1
+    assert result.metadata.model_n_jobs_effective == -1
+    assert result.metadata.parallel_backend == "sequential"
+
+    metadata = json.loads((tmp_path / "data/08_reporting/backtests/2025/run_metadata.json").read_text())
+    assert metadata["backtest_jobs"] == 2
+    assert metadata["backtest_workers_effective"] == 1
+    assert metadata["model_n_jobs_effective"] == -1
+    assert metadata["parallel_backend"] == "sequential"
 ```
 
 Update `_metadata_for_config()` in `src/tests/backtesting/test_cli.py` to pass the new `BacktestMetadata` fields:
@@ -490,26 +507,25 @@ def _thread_env() -> dict[str, str | None]:
     return {key: os.environ.get(key) for key in THREAD_ENV_KEYS}
 ```
 
-In `run_backtest()`, before metadata construction:
+In `run_backtest()`, add truthful interim metadata only. The requested `jobs` value is recorded, but execution is still sequential until Task 7, and `run_backtest()` still does not pass `n_jobs` into `RandomForestPointPredictor`:
 
 ```python
-target_rounds = list(range(config.start_round, max_round + 1))
-worker_rounds = [
-    round_number
-    for round_number in target_rounds
-    if round_number not in excluded_rounds and round_number in cached_round_set
-]
-model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
-backtest_workers_effective = 1 if config.jobs == 1 else min(config.jobs, len(worker_rounds)) if worker_rounds else 0
+backtest_jobs=config.jobs,
+backtest_workers_effective=1,
+model_n_jobs_effective=-1,
+parallel_backend="sequential",
+thread_env=_thread_env(),
 ```
+
+Keep `_effective_model_n_jobs()` in this task even though `run_backtest()` does not use it yet; Task 7 uses it when threaded execution is actually added.
 
 Add these fields to `BacktestMetadata(...)`:
 
 ```python
 backtest_jobs=config.jobs,
-backtest_workers_effective=backtest_workers_effective,
-model_n_jobs_effective=model_n_jobs_effective,
-parallel_backend="sequential" if config.jobs == 1 else "threads",
+backtest_workers_effective=1,
+model_n_jobs_effective=-1,
+parallel_backend="sequential",
 thread_env=_thread_env(),
 ```
 
@@ -523,6 +539,7 @@ uv run --frozen pytest \
   src/tests/backtesting/test_runner.py::test_thread_env_records_explicit_keys \
   src/tests/backtesting/test_run_backtest_writes_metadata_for_no_fixture_mode \
   src/tests/backtesting/test_runner.py::test_run_backtest_records_parallel_metadata_defaults \
+  src/tests/backtesting/test_runner.py::test_run_backtest_records_requested_jobs_but_sequential_metadata_before_threading \
   src/tests/backtesting/test_cli.py \
   -q
 ```
@@ -1117,6 +1134,8 @@ git commit -m "feat: canonicalize backtest report ordering"
 - Modify: `src/cartola/backtesting/runner.py`
 - Test: `src/tests/backtesting/test_runner.py`
 
+This task is where `jobs > 1` becomes real threaded execution. When adding the thread executor, switch metadata from Task 3's truthful sequential interim values to effective worker counts, `_effective_model_n_jobs(config.jobs)`, and `parallel_backend="threads"` for parallel runs.
+
 - [ ] **Step 1: Write parallel tests**
 
 Add imports to `src/cartola/backtesting/runner.py` during implementation, not in tests yet:
@@ -1364,10 +1383,21 @@ for result in sorted(round_results_for_targets, key=lambda item: item.round_numb
     prediction_frames.extend(result.prediction_frames)
 ```
 
-Compute `backtest_workers_effective` from the same `worker_rounds`:
+Compute `model_n_jobs_effective`, `backtest_workers_effective`, and `parallel_backend` from the actual execution path:
 
 ```python
+model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
 backtest_workers_effective = 1 if config.jobs == 1 else min(config.jobs, len(worker_rounds)) if worker_rounds else 0
+parallel_backend = "sequential" if config.jobs == 1 else "threads"
+```
+
+Use these values in `BacktestMetadata(...)` in place of the Task 3 interim sequential values:
+
+```python
+backtest_jobs=config.jobs,
+backtest_workers_effective=backtest_workers_effective,
+model_n_jobs_effective=model_n_jobs_effective,
+parallel_backend=parallel_backend,
 ```
 
 - [ ] **Step 4: Run tests and verify they pass**

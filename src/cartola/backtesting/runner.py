@@ -250,14 +250,6 @@ def run_backtest(
     max_round = _max_round(data)
     model_feature_columns = feature_columns_for_config(config)
     empty_training_columns = list(dict.fromkeys([*MARKET_COLUMNS, *model_feature_columns, "target"]))
-    target_rounds = list(range(config.start_round, max_round + 1))
-    worker_rounds = [
-        round_number
-        for round_number in target_rounds
-        if round_number not in excluded_rounds and round_number in cached_round_set
-    ]
-    model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
-    backtest_workers_effective = 1 if config.jobs == 1 else min(config.jobs, len(worker_rounds)) if worker_rounds else 0
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
@@ -266,9 +258,9 @@ def run_backtest(
         prediction_frames_built=round_frame_store.prediction_frames_built,
         wall_clock_seconds=0.0,
         backtest_jobs=config.jobs,
-        backtest_workers_effective=backtest_workers_effective,
-        model_n_jobs_effective=model_n_jobs_effective,
-        parallel_backend="sequential" if config.jobs == 1 else "threads",
+        backtest_workers_effective=1,
+        model_n_jobs_effective=-1,
+        parallel_backend="sequential",
         thread_env=_thread_env(),
         scoring_contract_version=SCORING_CONTRACT_VERSION,
         captain_scoring_enabled=CAPTAIN_SCORING_ENABLED,

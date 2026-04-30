@@ -317,6 +317,23 @@ def test_run_backtest_records_parallel_metadata_defaults(tmp_path):
     }
 
 
+def test_run_backtest_records_requested_jobs_but_sequential_metadata_before_threading(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+
+    result = run_backtest(BacktestConfig(project_root=tmp_path, start_round=5, budget=100, jobs=2), season_df=season_df)
+
+    assert result.metadata.backtest_jobs == 2
+    assert result.metadata.backtest_workers_effective == 1
+    assert result.metadata.model_n_jobs_effective == -1
+    assert result.metadata.parallel_backend == "sequential"
+
+    metadata = json.loads((tmp_path / "data/08_reporting/backtests/2025/run_metadata.json").read_text())
+    assert metadata["backtest_jobs"] == 2
+    assert metadata["backtest_workers_effective"] == 1
+    assert metadata["model_n_jobs_effective"] == -1
+    assert metadata["parallel_backend"] == "sequential"
+
+
 def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
