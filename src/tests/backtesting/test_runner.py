@@ -517,6 +517,41 @@ def test_run_backtest_jobs_above_worker_rounds_records_effective_workers(tmp_pat
     assert metadata["parallel_backend"] == "threads"
 
 
+@pytest.mark.parametrize(
+    ("jobs", "expected_model_n_jobs"),
+    [
+        (1, -1),
+        (2, 1),
+    ],
+)
+def test_run_backtest_start_after_max_round_records_no_workers(tmp_path, jobs, expected_model_n_jobs):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+
+    result = run_backtest(
+        BacktestConfig(project_root=tmp_path, start_round=6, budget=100, jobs=jobs),
+        season_df=season_df,
+    )
+
+    assert result.round_results.empty
+    assert result.metadata.backtest_jobs == jobs
+    assert result.metadata.backtest_workers_effective == 0
+    assert result.metadata.model_n_jobs_effective == expected_model_n_jobs
+    assert result.metadata.parallel_backend == "none"
+
+    output_dir = tmp_path / "data/08_reporting/backtests/2025"
+    assert (output_dir / "round_results.csv").exists()
+    assert (output_dir / "selected_players.csv").exists()
+    assert (output_dir / "player_predictions.csv").exists()
+    assert (output_dir / "summary.csv").exists()
+    assert (output_dir / "diagnostics.csv").exists()
+
+    metadata = json.loads((output_dir / "run_metadata.json").read_text())
+    assert metadata["backtest_jobs"] == jobs
+    assert metadata["backtest_workers_effective"] == 0
+    assert metadata["model_n_jobs_effective"] == expected_model_n_jobs
+    assert metadata["parallel_backend"] == "none"
+
+
 def test_run_backtest_missing_round_is_not_submitted_to_worker(tmp_path, monkeypatch):
     season_df = pd.concat([_tiny_round(1), _tiny_round(3)], ignore_index=True)
     called_rounds: list[int] = []

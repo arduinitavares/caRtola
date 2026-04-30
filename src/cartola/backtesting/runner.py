@@ -287,10 +287,13 @@ def run_backtest(
         cached_round_set=cached_round_set,
     )
     model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
-    backtest_workers_effective = (
-        1 if config.jobs == 1 else min(config.jobs, len(worker_rounds)) if worker_rounds else 0
-    )
-    parallel_backend = "sequential" if config.jobs == 1 else "threads"
+    backtest_workers_effective = min(config.jobs, len(worker_rounds))
+    if backtest_workers_effective == 0:
+        parallel_backend = "none"
+    elif config.jobs == 1:
+        parallel_backend = "sequential"
+    else:
+        parallel_backend = "threads"
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
