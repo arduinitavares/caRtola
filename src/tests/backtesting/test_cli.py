@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from cartola.backtesting.cli import main, parse_args
+from cartola.backtesting.cli_output import ChartOutput
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.runner import BacktestMetadata, BacktestResult
 from cartola.backtesting.scoring_contract import contract_fields
@@ -273,6 +275,111 @@ def test_main_prints_metadata_warnings(monkeypatch, capsys, tmp_path):
 
     assert exit_code == 0
     output = capsys.readouterr().out
-    assert "WARNING: first warning" in output
-    assert "WARNING: second warning" in output
+    assert "Backtest warnings" in output
+    assert "first warning" in output
+    assert "second warning" in output
     assert "Backtest complete" in output
+    assert "WARNING:" not in output
+
+
+def test_main_writes_performance_chart_and_prints_path(monkeypatch, capsys, tmp_path):
+    output_root = tmp_path / "backtests"
+
+    def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
+        return BacktestResult(
+            round_results=pd.DataFrame(
+                [
+                    {
+                        "rodada": 5,
+                        "strategy": "random_forest",
+                        "solver_status": "Optimal",
+                        "actual_points": 72.4,
+                        "formation": "4-3-3",
+                    },
+                    {
+                        "rodada": 6,
+                        "strategy": "random_forest",
+                        "solver_status": "Optimal",
+                        "actual_points": 68.2,
+                        "formation": "4-4-2",
+                    },
+                ]
+            ),
+            selected_players=pd.DataFrame(),
+            player_predictions=pd.DataFrame(),
+            summary=pd.DataFrame(),
+            diagnostics=pd.DataFrame(),
+            metadata=_metadata_for_config(config),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.cli.run_backtest", fake_run_backtest)
+
+    exit_code = main(
+        [
+            "--season",
+            "2025",
+            "--project-root",
+            str(tmp_path),
+            "--output-root",
+            str(output_root),
+        ]
+    )
+
+    assert exit_code == 0
+    chart_path = output_root / "2025" / "charts" / "strategy_performance_by_round.html"
+    assert chart_path.exists()
+    output = capsys.readouterr().out
+    assert "Performance chart" in output
+    assert "strategy_performance_by_round.html" in output
+
+
+def test_main_prints_chart_warning_without_failing(monkeypatch, capsys, tmp_path):
+    def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
+        return BacktestResult(
+            round_results=pd.DataFrame(),
+            selected_players=pd.DataFrame(),
+            player_predictions=pd.DataFrame(),
+            summary=pd.DataFrame(),
+            diagnostics=pd.DataFrame(),
+            metadata=_metadata_for_config(config),
+        )
+
+    def fake_write_performance_chart(round_results: pd.DataFrame, output_path: Path) -> ChartOutput:
+        return ChartOutput(path=None, warnings=["Performance chart: n/a (disk full)"])
+
+    monkeypatch.setattr("cartola.backtesting.cli.run_backtest", fake_run_backtest)
+    monkeypatch.setattr("cartola.backtesting.cli.write_performance_chart", fake_write_performance_chart)
+
+    exit_code = main(["--project-root", str(tmp_path)])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Backtest warnings" in output
+    assert "Performance chart: n/a (disk full)" in output
+    assert "Backtest complete" in output
+
+
+def test_main_propagates_chart_schema_errors(monkeypatch, tmp_path):
+    def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
+        return BacktestResult(
+            round_results=pd.DataFrame(
+                [
+                    {
+                        "rodada": 5,
+                        "strategy": "random_forest",
+                        "solver_status": "Optimal",
+                        "formation": "4-3-3",
+                    }
+                ]
+            ),
+            selected_players=pd.DataFrame(),
+            player_predictions=pd.DataFrame(),
+            summary=pd.DataFrame(),
+            diagnostics=pd.DataFrame(),
+            metadata=_metadata_for_config(config),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.cli.run_backtest", fake_run_backtest)
+
+    with pytest.raises(ValueError, match="Missing chart columns: actual_points"):
+        main(["--project-root", str(tmp_path)])
