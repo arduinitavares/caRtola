@@ -32,6 +32,22 @@ def test_candidate_pool_signature_uses_canonical_candidate_fields() -> None:
     assert first == second
 
 
+def test_candidate_pool_signature_is_stable_for_duplicate_player_ids() -> None:
+    first_frame = pd.DataFrame(
+        {
+            "id_atleta": [1, 1, 2],
+            "posicao": ["ata", "ata", "mei"],
+            "id_clube": [10, 10, 20],
+            "status": ["Provavel", "Provavel", "Duvida"],
+            "preco_pre_rodada": [10.5, 10.25, 7.0],
+            "rodada": [6, 5, 5],
+        }
+    )
+    second_frame = first_frame.iloc[[1, 0, 2]].reset_index(drop=True)
+
+    assert candidate_pool_signature(first_frame) == candidate_pool_signature(second_frame)
+
+
 def test_candidate_pool_signature_changes_when_price_changes() -> None:
     frame = pd.DataFrame(
         {

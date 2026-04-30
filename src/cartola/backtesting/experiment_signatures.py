@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, cast
 
 import pandas as pd
 
@@ -17,6 +17,14 @@ _CANDIDATE_SIGNATURE_COLUMNS: tuple[str, ...] = (
     "preco_pre_rodada",
     "rodada",
 )
+_CANDIDATE_SIGNATURE_SORT_COLUMNS: tuple[str, ...] = (
+    "id_atleta",
+    "rodada",
+    "posicao",
+    "id_clube",
+    "status",
+    "preco_pre_rodada",
+)
 
 
 class ComparabilityError(ValueError):
@@ -29,11 +37,11 @@ def candidate_pool_signature(frame: pd.DataFrame) -> str:
         raise ComparabilityError(f"Missing required candidate columns: {', '.join(missing_columns)}")
 
     records = []
-    canonical_frame = frame.loc[:, _CANDIDATE_SIGNATURE_COLUMNS].sort_values("id_atleta", kind="mergesort")
-    for row in canonical_frame.to_dict(orient="records"):
+    for row in frame.loc[:, _CANDIDATE_SIGNATURE_COLUMNS].to_dict(orient="records"):
         record = dict(row)
         record["preco_pre_rodada"] = CSV_FLOAT_FORMAT % float(record["preco_pre_rodada"])
         records.append(_json_ready(record))
+    records.sort(key=_candidate_signature_sort_key)
 
     return _sha256_json(records)
 
@@ -127,6 +135,21 @@ def _round_key(value: object) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
+
+
+def _candidate_signature_sort_key(record: object) -> tuple[str, ...]:
+    if not isinstance(record, Mapping):
+        raise TypeError("Candidate signature record must be a mapping")
+    candidate_record = cast("Mapping[str, object]", record)
+    return tuple(_canonical_sort_value(candidate_record[column]) for column in _CANDIDATE_SIGNATURE_SORT_COLUMNS)
+
+
+def _canonical_sort_value(value: object) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _json_ready(value: object) -> object:
