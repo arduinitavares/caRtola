@@ -27,6 +27,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--footystats-league-slug", default="brazil-serie-a")
     parser.add_argument("--footystats-dir", type=Path, default=Path("data/footystats"))
     parser.add_argument("--current-year", type=int, default=None)
+    parser.add_argument("--jobs", type=int, default=1)
     return parser.parse_args(argv)
 
 
@@ -46,6 +47,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         footystats_league_slug=args.footystats_league_slug,
         footystats_dir=args.footystats_dir,
         current_year=args.current_year,
+        jobs=args.jobs,
     )
 
     result = run_backtest(config)

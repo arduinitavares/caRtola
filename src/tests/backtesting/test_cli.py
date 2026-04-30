@@ -116,6 +116,18 @@ def test_parse_args_accepts_ppg_xg_footystats_mode() -> None:
     assert args.footystats_mode == "ppg_xg"
 
 
+def test_parse_args_accepts_jobs() -> None:
+    args = parse_args(["--jobs", "4"])
+
+    assert args.jobs == 4
+
+
+def test_parse_args_uses_jobs_default() -> None:
+    args = parse_args([])
+
+    assert args.jobs == 1
+
+
 def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path):
     observed_configs: list[BacktestConfig] = []
 
@@ -146,7 +158,15 @@ def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path)
     )
 
     assert exit_code == 0
-    assert observed_configs == [BacktestConfig(season=2025, start_round=5, budget=100.0, project_root=tmp_path)]
+    assert observed_configs == [
+        BacktestConfig(
+            season=2025,
+            start_round=5,
+            budget=100.0,
+            project_root=tmp_path,
+            jobs=1,
+        )
+    ]
     observed_config = observed_configs[0]
     assert observed_config.output_root == Path("data/08_reporting/backtests")
     assert observed_config.matchup_context_mode == "none"
@@ -202,6 +222,28 @@ def test_main_passes_footystats_options_and_output_root_to_config(monkeypatch) -
     assert config.footystats_evaluation_scope == "historical_candidate"
     assert config.footystats_league_slug == "brazil-serie-a"
     assert config.current_year == 2026
+
+
+def test_main_passes_jobs_to_config(monkeypatch, tmp_path) -> None:
+    observed_configs: list[BacktestConfig] = []
+
+    def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
+        observed_configs.append(config)
+        return BacktestResult(
+            round_results=pd.DataFrame(),
+            selected_players=pd.DataFrame(),
+            player_predictions=pd.DataFrame(),
+            summary=pd.DataFrame(),
+            diagnostics=pd.DataFrame(),
+            metadata=_metadata_for_config(config),
+        )
+
+    monkeypatch.setattr("cartola.backtesting.cli.run_backtest", fake_run_backtest)
+
+    exit_code = main(["--project-root", str(tmp_path), "--jobs", "3"])
+
+    assert exit_code == 0
+    assert observed_configs[0].jobs == 3
 
 
 def test_main_prints_metadata_warnings(monkeypatch, capsys, tmp_path):

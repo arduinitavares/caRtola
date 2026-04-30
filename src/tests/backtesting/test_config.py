@@ -1,6 +1,8 @@
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
+
 from cartola.backtesting.config import (
     DEFAULT_FORMATIONS,
     DEFAULT_SCOUT_COLUMNS,
@@ -76,3 +78,27 @@ def test_backtest_config_accepts_ppg_xg_footystats_mode() -> None:
     config = BacktestConfig(footystats_mode="ppg_xg")
 
     assert config.footystats_mode == "ppg_xg"
+
+
+def test_backtest_config_accepts_default_jobs() -> None:
+    config = BacktestConfig()
+
+    assert config.jobs == 1
+
+
+def test_backtest_config_accepts_positive_jobs() -> None:
+    config = BacktestConfig(jobs=4)
+
+    assert config.jobs == 4
+
+
+@pytest.mark.parametrize("jobs", [0, -1])
+def test_backtest_config_rejects_non_positive_jobs(jobs: int) -> None:
+    with pytest.raises(ValueError, match="jobs must be >= 1"):
+        BacktestConfig(jobs=jobs)
+
+
+@pytest.mark.parametrize("jobs", [1.5, "2", True])
+def test_backtest_config_rejects_non_integer_jobs(jobs: object) -> None:
+    with pytest.raises(TypeError, match="jobs must be an integer"):
+        BacktestConfig(jobs=jobs)  # type: ignore[arg-type]

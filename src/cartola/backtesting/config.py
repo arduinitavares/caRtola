@@ -80,7 +80,14 @@ class BacktestConfig:
     footystats_league_slug: str = "brazil-serie-a"
     footystats_dir: Path = Path("data/footystats")
     current_year: int | None = None
+    jobs: int = 1
     scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS
+
+    def __post_init__(self) -> None:
+        if type(self.jobs) is not int:
+            raise TypeError("jobs must be an integer")
+        if self.jobs < 1:
+            raise ValueError("jobs must be >= 1")
 
     @property
     def raw_season_path(self) -> Path:
