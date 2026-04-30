@@ -107,6 +107,15 @@ Implement only sequential `jobs=1` behavior in Phase 1a.
 
 Do not add parallelism in the same patch. Caching changes data flow; parallelism changes execution order, CPU pressure, and memory behavior. If both are changed together and results differ, root cause becomes unclear.
 
+Phase 1a must not add:
+
+- `jobs`;
+- model registry;
+- RF parameter changes;
+- experiment runner;
+- on-disk frame cache;
+- public no-cache mode.
+
 ### Architecture
 
 Add a private per-run round-frame store used by `run_backtest()`.
@@ -142,9 +151,39 @@ The exact type name can change during implementation, but the contract is fixed:
 - one store per `run_backtest()` call;
 - no persisted/on-disk cache in v1;
 - cached frames are treated as immutable;
-- callers receive copies before adding columns or filtering in-place;
+- callers never receive the stored frame object directly;
+- callers receive deep copies before adding columns, filtering in-place, or appending predictions;
 - training frames concatenate only cached rounds `< target_round`;
 - target candidates come from the cached `target_round` frame.
+
+The Phase 1a implementation plan must name the final private helper/class before coding. The preferred name is `RoundFrameStore`.
+
+### Excluded Rounds And Round Set
+
+`RoundFrameStore.build_all()` must receive only the detected round numbers that remain after fixture and alignment filtering.
+
+The required order inside `run_backtest()` is:
+
+1. load and normalize the season dataframe;
+2. validate matchup configuration;
+3. resolve fixtures;
+4. validate fixture alignment;
+5. compute `excluded_rounds`;
+6. filter excluded rounds out of `data`;
+7. resolve FootyStats rows and join diagnostics;
+8. compute `max_round` from filtered `data`;
+9. build the round-frame cache from filtered detected rounds only.
+
+The cache must not blindly build `1..max_round` if some rounds were excluded or absent. The exact round list is:
+
+```python
+cached_rounds = sorted(
+    int(round_number)
+    for round_number in pd.to_numeric(data["rodada"], errors="raise").dropna().unique()
+)
+```
+
+`prediction_frames_built` must equal `len(cached_rounds)`. Excluded rounds and absent rounds are not built and do not count.
 
 ### Cache Scope
 
@@ -166,11 +205,15 @@ For v1, this avoids cache invalidation complexity. On-disk Parquet caching is ex
 
 If no prior frames exist, the cached training-frame path must return an empty frame with the same effective columns the current backtest expects:
 
-- normalized market/player columns;
-- resolved model feature columns;
-- FootyStats feature columns when active;
-- matchup context feature columns when active;
+- `MARKET_COLUMNS`;
+- `feature_columns_for_config(config)`;
 - `target`.
+
+The implementation must construct this with:
+
+```python
+empty_columns = list(dict.fromkeys([*MARKET_COLUMNS, *feature_columns_for_config(config), "target"]))
+```
 
 ### Metadata
 
@@ -179,10 +222,65 @@ Backtest metadata must gain these fields:
 - `cache_enabled`: always `true`;
 - `prediction_frames_built`: number of round frames built by the store;
 - `wall_clock_seconds`: runtime of `run_backtest()` as a float;
-- `backtest_jobs`: `1` in Phase 1a;
-- `model_n_jobs_effective`: the RF worker setting used by the model.
 
-If adding all metadata fields in Phase 1a creates too much report churn, `cache_enabled`, `prediction_frames_built`, and `wall_clock_seconds` are required first. The remaining worker fields become required in Phase 1b.
+`backtest_jobs` and `model_n_jobs_effective` are Phase 1b fields. Do not add them in Phase 1a unless the Phase 1a plan explicitly expands the metadata schema without adding public parallelism.
+
+Runtime metadata must be excluded from output-equivalence assertions because it is expected to differ across runs.
+
+### Output Equivalence Contract
+
+Phase 1a changes must preserve report semantics.
+
+Equivalence checks compare these artifacts:
+
+- `round_results.csv`;
+- `selected_players.csv`;
+- `player_predictions.csv`;
+- `summary.csv`;
+- `diagnostics.csv`.
+
+Stable sort keys:
+
+- `round_results.csv`: `["rodada", "strategy"]`;
+- `selected_players.csv`: `["rodada", "strategy", "id_atleta"]`;
+- `player_predictions.csv`: `["rodada", "id_atleta"]`;
+- `summary.csv`: `["strategy"]`;
+- `diagnostics.csv`: `["section", "strategy", "position", "metric"]`.
+
+Comparison rules:
+
+- compare identical column sets;
+- normalize row order with the stable sort keys above;
+- compare numeric columns with absolute tolerance `1e-10`;
+- compare non-numeric columns exactly after preserving null semantics;
+- compare `run_metadata.json` only for semantic fields unrelated to runtime/cache counters;
+- exclude `wall_clock_seconds` from equality;
+- allow `cache_enabled` and `prediction_frames_built` to be new metadata fields.
+
+If output equivalence cannot be asserted through file-level tests without excessive fixture setup, the implementation plan must add lower-level equivalence tests for cached training/candidate frames and at least one integration test that exercises report writing.
+
+### Benchmark Contract
+
+Phase 1a benchmark command:
+
+```bash
+/usr/bin/time -p uv run --frozen python -m cartola.backtesting.cli \
+  --season 2025 \
+  --start-round 5 \
+  --budget 100 \
+  --fixture-mode exploratory \
+  --footystats-mode ppg \
+  --matchup-context-mode cartola_matchup_v1 \
+  --current-year 2026 \
+  --output-root data/08_reporting/backtests/perf_cache_phase1a
+```
+
+Benchmark acceptance target:
+
+- at least 30% lower wall-clock time than the same command on the pre-cache branch; or
+- if the target is not met, record the before/after timings and the observed next bottleneck before proceeding to Phase 1b.
+
+Benchmark output directories are temporary validation artifacts and must not be committed.
 
 ### Required Tests
 
@@ -195,6 +293,8 @@ Phase 1a must include tests for:
 5. `matchup_context_mode=cartola_matchup_v1` cached frames match the uncached public helper output.
 6. Phase 1a backtest reports match the pre-cache report semantics after stable sorting.
 7. Metadata records cache/runtime fields.
+8. Excluded strict-fixture rounds are not built by the cache.
+9. Mutating returned candidate/training frames does not mutate the cached source frame.
 
 The public `build_training_frame()` function should remain available and unchanged in Phase 1a. It remains useful as the reference implementation for equivalence tests and for non-runner callers.
 
@@ -204,7 +304,7 @@ Phase 1a is accepted when:
 
 - focused tests pass;
 - full quality gate passes;
-- the 2025 matchup-context command runs materially faster than before;
+- the 2025 matchup-context benchmark is at least 30% faster than the pre-cache branch, or the before/after timings and next bottleneck are recorded before Phase 1b planning;
 - outputs remain equivalent under stable sort and numeric tolerance for floating values;
 - no implementation code exposes a public legacy no-cache mode.
 
