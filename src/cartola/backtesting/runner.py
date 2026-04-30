@@ -216,6 +216,7 @@ def run_backtest(
     _validate_footystats_join_diagnostics(footystats_diagnostics)
 
     cached_rounds = _detected_rounds(data)
+    cached_round_set = set(cached_rounds)
     round_frame_store = RoundFrameStore(
         season_df=data,
         fixtures=fixture_data,
@@ -265,6 +266,9 @@ def run_backtest(
     )
     for round_number in range(config.start_round, max_round + 1):
         if round_number in excluded_rounds:
+            continue
+        if round_number not in cached_round_set:
+            _record_skipped_round(round_rows, round_number, "Empty")
             continue
 
         training = round_frame_store.training_frame(

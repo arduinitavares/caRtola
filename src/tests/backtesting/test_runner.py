@@ -219,6 +219,18 @@ def test_run_backtest_builds_each_detected_round_prediction_frame_once(tmp_path,
     assert sorted(calls) == [1, 2, 3, 4, 5, 6]
 
 
+def test_run_backtest_records_empty_for_missing_non_excluded_round(tmp_path):
+    season_df = pd.concat([_tiny_round(1), _tiny_round(3)], ignore_index=True)
+    config = BacktestConfig(project_root=tmp_path, start_round=2, budget=100)
+
+    result = run_backtest(config, season_df=season_df)
+
+    round_2 = result.round_results[result.round_results["rodada"].eq(2)]
+    assert set(round_2["strategy"]) == {"baseline", "random_forest", "price"}
+    assert round_2["solver_status"].eq("Empty").all()
+    assert 2 not in set(result.player_predictions.get("rodada", pd.Series(dtype=int)).dropna().astype(int).tolist())
+
+
 def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
