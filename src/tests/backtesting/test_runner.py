@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -193,6 +194,70 @@ def test_round_frame_store_returns_deep_copies_for_candidates_and_training():
     )
     assert "random_forest_score" not in training_again.columns
     assert "training-mutated" not in set(training_again["apelido"])
+
+
+def test_round_frame_store_uses_lock_for_copy_access() -> None:
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 4)], ignore_index=True)
+    store = runner_module.RoundFrameStore(
+        season_df=season_df,
+        fixtures=None,
+        footystats_rows=None,
+        matchup_context_mode="none",
+    )
+    store.build_all([1, 2, 3])
+
+    calls: list[str] = []
+
+    class RecordingLock:
+        def __enter__(self) -> "RecordingLock":
+            calls.append("enter")
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            calls.append("exit")
+
+    store._lock = RecordingLock()  # type: ignore[attr-defined]
+
+    store.prediction_frame(3)
+    store.training_frame(
+        target_round=3,
+        playable_statuses=("Provavel",),
+        empty_columns=[*MARKET_COLUMNS, *feature_columns_for_config(BacktestConfig()), "target"],
+    )
+
+    assert calls == ["enter", "exit", "enter", "exit"]
+
+
+def test_round_frame_store_concurrent_reads_do_not_mutate_cached_frames() -> None:
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    store = runner_module.RoundFrameStore(
+        season_df=season_df,
+        fixtures=None,
+        footystats_rows=None,
+        matchup_context_mode="none",
+    )
+    store.build_all([1, 2, 3, 4, 5])
+    before = store.prediction_frame(5).sort_index(axis=1).reset_index(drop=True)
+
+    def read_and_mutate(round_number: int) -> int:
+        frame = store.prediction_frame(round_number)
+        frame.loc[:, "worker_mutation"] = round_number
+        training = store.training_frame(
+            target_round=round_number,
+            playable_statuses=("Provavel",),
+            empty_columns=[*MARKET_COLUMNS, *feature_columns_for_config(BacktestConfig()), "target"],
+        )
+        if not training.empty:
+            training.loc[:, "worker_mutation"] = round_number
+        return len(frame)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        lengths = list(executor.map(read_and_mutate, [2, 3, 4, 5] * 3))
+
+    after = store.prediction_frame(5).sort_index(axis=1).reset_index(drop=True)
+    assert all(length > 0 for length in lengths)
+    assert "worker_mutation" not in after.columns
+    assert_frame_equal(before, after)
 
 
 def test_round_frame_store_preserves_target_round_temporal_boundary():

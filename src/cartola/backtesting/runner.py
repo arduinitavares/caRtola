@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from threading import Lock
 from time import perf_counter
 
 import pandas as pd
@@ -155,6 +156,7 @@ class RoundFrameStore:
         self._footystats_rows = footystats_rows
         self._matchup_context_mode = matchup_context_mode
         self._frames: dict[int, pd.DataFrame] = {}
+        self._lock = Lock()
 
     @property
     def prediction_frames_built(self) -> int:
@@ -173,11 +175,12 @@ class RoundFrameStore:
             ).copy(deep=True)
 
     def prediction_frame(self, round_number: int) -> pd.DataFrame:
-        try:
-            frame = self._frames[round_number]
-        except KeyError as exc:
-            raise KeyError(f"Prediction frame for round {round_number} was not built.") from exc
-        return frame.copy(deep=True)
+        with self._lock:
+            try:
+                frame = self._frames[round_number]
+            except KeyError as exc:
+                raise KeyError(f"Prediction frame for round {round_number} was not built.") from exc
+            return frame.copy(deep=True)
 
     def training_frame(
         self,
@@ -186,11 +189,15 @@ class RoundFrameStore:
         playable_statuses: tuple[str, ...],
         empty_columns: list[str],
     ) -> pd.DataFrame:
+        with self._lock:
+            copied_frames = [
+                self._frames[round_number].copy(deep=True)
+                for round_number in sorted(self._frames)
+                if round_number < target_round
+            ]
+
         frames: list[pd.DataFrame] = []
-        for round_number in sorted(self._frames):
-            if round_number >= target_round:
-                continue
-            round_frame = self._frames[round_number].copy(deep=True)
+        for round_frame in copied_frames:
             round_frame = round_frame[round_frame["status"].isin(playable_statuses)].copy(deep=True)
             round_frame["target"] = round_frame["pontuacao"]
             frames.append(round_frame)
