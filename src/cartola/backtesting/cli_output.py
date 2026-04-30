@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+if TYPE_CHECKING:
+    from cartola.backtesting.config import BacktestConfig
+    from cartola.backtesting.runner import BacktestResult
 
 CHART_FILENAME = "strategy_performance_by_round.html"
 _REQUIRED_CHART_COLUMNS = {"rodada", "strategy", "solver_status", "actual_points", "formation"}
@@ -22,6 +30,125 @@ class PreparedChartData:
     score_rows: pd.DataFrame
     status_rows: pd.DataFrame
     formation_rows: pd.DataFrame
+
+
+def render_backtest_success(
+    console: Console,
+    *,
+    config: BacktestConfig,
+    result: BacktestResult,
+    chart_output: ChartOutput,
+) -> None:
+    warnings = [*result.metadata.warnings, *chart_output.warnings]
+    if warnings:
+        console.print(Panel("\n".join(warnings), title="Backtest warnings", border_style="yellow"))
+    console.print(
+        Panel(
+            (
+                f"season={config.season}  "
+                f"start_round={config.start_round}  "
+                f"output={_format_path(config.output_path, project_root=config.project_root)}"
+            ),
+            title="Backtest complete",
+            border_style="green",
+        )
+    )
+    console.print(_build_strategy_results_table(result.summary))
+    console.print(_build_run_details_table(config=config, result=result, chart_output=chart_output))
+
+
+def _build_strategy_results_table(summary: pd.DataFrame) -> Table:
+    table = Table(title="Strategy results")
+    table.add_column("Strategy")
+    table.add_column("Rounds", justify="right")
+    table.add_column("Total actual", justify="right")
+    table.add_column("Avg actual", justify="right")
+    table.add_column("Total predicted", justify="right")
+    table.add_column("Vs price", justify="right")
+
+    for _, row in summary.iterrows():
+        table.add_row(
+            _format_text(row.get("strategy")),
+            _format_int(row.get("rounds")),
+            _format_points(row.get("total_actual_points")),
+            _format_points(row.get("average_actual_points")),
+            _format_points(row.get("total_predicted_points")),
+            _format_points(row.get("actual_points_delta_vs_price"), signed=True),
+        )
+    return table
+
+
+def _build_run_details_table(
+    *,
+    config: BacktestConfig,
+    result: BacktestResult,
+    chart_output: ChartOutput,
+) -> Table:
+    metadata = result.metadata
+    rows = [
+        ("Output", _format_path(config.output_path, project_root=config.project_root)),
+        ("Fixture mode", _format_text(getattr(metadata, "fixture_mode", None))),
+        ("FootyStats mode", _format_text(getattr(metadata, "footystats_mode", None))),
+        ("Matchup context mode", _format_text(getattr(metadata, "matchup_context_mode", None))),
+        ("Jobs requested", _format_int(config.jobs)),
+        ("Workers effective", _format_int(getattr(metadata, "backtest_workers_effective", None))),
+        ("Parallel backend", _format_text(getattr(metadata, "parallel_backend", None))),
+        ("Model n_jobs", _format_int(getattr(metadata, "model_n_jobs_effective", None))),
+        ("Prediction frames built", _format_int(getattr(metadata, "prediction_frames_built", None))),
+        ("Wall clock seconds", _format_points(getattr(metadata, "wall_clock_seconds", None))),
+        ("Performance chart", _format_path(chart_output.path, project_root=config.project_root)),
+        ("Scoring contract", _format_text(getattr(metadata, "scoring_contract_version", None))),
+    ]
+
+    table = Table(title="Run details")
+    table.add_column("Field")
+    table.add_column("Value")
+    for label, value in rows:
+        table.add_row(label, value)
+    return table
+
+
+def _format_text(value: Any) -> str:
+    if _is_missing(value):
+        return "n/a"
+    return str(value)
+
+
+def _format_int(value: Any) -> str:
+    if _is_missing(value):
+        return "n/a"
+    try:
+        return str(int(value))
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _format_points(value: Any, *, signed: bool = False) -> str:
+    if _is_missing(value):
+        return "n/a"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    return f"{number:+.2f}" if signed else f"{number:.2f}"
+
+
+def _format_path(path: Path | None, *, project_root: Path) -> str:
+    if path is None:
+        return "n/a"
+    try:
+        return str(path.relative_to(project_root))
+    except ValueError:
+        return str(path)
+
+
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _prepare_chart_data(round_results: pd.DataFrame) -> PreparedChartData:

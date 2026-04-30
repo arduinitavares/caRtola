@@ -2,14 +2,93 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from rich.console import Console
 
 import cartola.backtesting.cli_output as cli_output
 from cartola.backtesting.cli_output import (
     ChartOutput,
     _build_performance_figure,
     _prepare_chart_data,
+    render_backtest_success,
     write_performance_chart,
 )
+from cartola.backtesting.config import BacktestConfig
+from cartola.backtesting.runner import BacktestMetadata, BacktestResult
+from cartola.backtesting.scoring_contract import contract_fields
+
+
+def _metadata_for_config(
+    config: BacktestConfig,
+    *,
+    warnings: list[str] | None = None,
+    prediction_frames_built: int = 12,
+    wall_clock_seconds: float = 3.456,
+    scoring_contract_version: str | None = None,
+) -> BacktestMetadata:
+    contract = contract_fields()
+    return BacktestMetadata(
+        season=config.season,
+        start_round=config.start_round,
+        max_round=10,
+        cache_enabled=True,
+        prediction_frames_built=prediction_frames_built,
+        wall_clock_seconds=wall_clock_seconds,
+        backtest_jobs=config.jobs,
+        backtest_workers_effective=2,
+        model_n_jobs_effective=-1,
+        parallel_backend="loky",
+        thread_env={
+            "OMP_NUM_THREADS": None,
+            "MKL_NUM_THREADS": None,
+            "OPENBLAS_NUM_THREADS": None,
+            "BLIS_NUM_THREADS": None,
+        },
+        scoring_contract_version=scoring_contract_version or str(contract["scoring_contract_version"]),
+        captain_scoring_enabled=bool(contract["captain_scoring_enabled"]),
+        captain_multiplier=float(contract["captain_multiplier"]),
+        formation_search=str(contract["formation_search"]),
+        fixture_mode=config.fixture_mode,
+        strict_alignment_policy=config.strict_alignment_policy,
+        matchup_context_mode=config.matchup_context_mode,
+        matchup_context_feature_columns=[],
+        fixture_source_directory=None,
+        fixture_manifest_paths=[],
+        fixture_manifest_sha256={},
+        generator_versions=[],
+        excluded_rounds=[],
+        warnings=[] if warnings is None else warnings,
+        footystats_mode=config.footystats_mode,
+        footystats_evaluation_scope=config.footystats_evaluation_scope,
+        footystats_league_slug=config.footystats_league_slug,
+        footystats_matches_source_path=None,
+        footystats_matches_source_sha256=None,
+        footystats_feature_columns=[],
+        footystats_missing_join_keys_by_round={},
+        footystats_duplicate_join_keys_by_round={},
+        footystats_extra_club_rows_by_round={},
+    )
+
+
+def _backtest_result(
+    config: BacktestConfig,
+    *,
+    summary: pd.DataFrame | None = None,
+    metadata: BacktestMetadata | None = None,
+) -> BacktestResult:
+    return BacktestResult(
+        round_results=pd.DataFrame(),
+        selected_players=pd.DataFrame(),
+        player_predictions=pd.DataFrame(),
+        summary=pd.DataFrame() if summary is None else summary,
+        diagnostics=pd.DataFrame(),
+        metadata=_metadata_for_config(config) if metadata is None else metadata,
+    )
+
+
+def _render_text(config: BacktestConfig, result: BacktestResult, chart_output: ChartOutput) -> str:
+    console = Console(record=True, width=140)
+    render_backtest_success(console, config=config, result=result, chart_output=chart_output)
+    return console.export_text(styles=False)
 
 
 def _valid_round_results() -> pd.DataFrame:
@@ -45,6 +124,70 @@ def _valid_round_results() -> pd.DataFrame:
             },
         ]
     )
+
+
+def test_render_backtest_success_prints_summary_and_run_details(tmp_path: Path) -> None:
+    config = BacktestConfig(
+        season=2026,
+        project_root=tmp_path,
+        output_root=Path("data/08_reporting/backtests"),
+        footystats_mode="ppg",
+        matchup_context_mode="cartola_matchup_v1",
+        jobs=4,
+    )
+    summary = pd.DataFrame(
+        [
+            {
+                "strategy": "random_forest",
+                "rounds": 8,
+                "total_actual_points": 70.25,
+                "average_actual_points": 8.78125,
+                "total_predicted_points": 75.0,
+                "actual_points_delta_vs_price": 5.5,
+            }
+        ]
+    )
+    result = _backtest_result(config, summary=summary)
+    chart_path = config.output_path / "charts" / "strategy_performance_by_round.html"
+
+    text = _render_text(config, result, ChartOutput(path=chart_path, warnings=[]))
+
+    assert "Backtest complete" in text
+    assert "season=2026" in text
+    assert "start_round=5" in text
+    assert "output=data/08_reporting/backtests/2026" in text
+    assert "Strategy" in text
+    assert "random_forest" in text
+    assert "70.25" in text
+    assert "+5.50" in text
+    assert "Run details" in text
+    assert "Performance chart" in text
+    assert "data/08_reporting/backtests/2026/charts/strategy_performance_by_round.html" in text
+    assert "cartola_standard_2026_v1" in text
+
+
+def test_render_backtest_success_prints_warning_panel_without_plain_warning_prefix(tmp_path: Path) -> None:
+    config = BacktestConfig(project_root=tmp_path)
+    metadata = _metadata_for_config(config, warnings=["metadata warning"])
+    result = _backtest_result(config, metadata=metadata)
+
+    text = _render_text(config, result, ChartOutput(path=None, warnings=["chart warning"]))
+
+    assert "Backtest warnings" in text
+    assert "metadata warning" in text
+    assert "chart warning" in text
+    assert "WARNING:" not in text
+
+
+def test_render_backtest_success_handles_missing_summary_values(tmp_path: Path) -> None:
+    config = BacktestConfig(project_root=tmp_path)
+    summary = pd.DataFrame([{"strategy": "empty_strategy"}])
+    result = _backtest_result(config, summary=summary)
+
+    text = _render_text(config, result, ChartOutput(path=None, warnings=[]))
+
+    assert "empty_strategy" in text
+    assert "n/a" in text
 
 
 def test_prepare_chart_data_filters_skipped_rows_from_score_traces() -> None:
