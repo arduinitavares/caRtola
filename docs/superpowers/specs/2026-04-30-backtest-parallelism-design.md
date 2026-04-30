@@ -76,6 +76,8 @@ Process pools are explicitly rejected for v1 because:
 
 If thread benchmarks do not improve runtime, write a separate process-pool spike/spec. Do not smuggle process-pool support into Phase 1b.
 
+This choice is experimental, not ideological. scikit-learn documents that forest tree fitting releases the GIL and that `RandomForestRegressor.fit`, `predict`, `decision_path`, and `apply` are parallelized over trees through `n_jobs`. That makes a thread proof worth trying. If the benchmark matrix shows weak or negative scaling, Phase 1b stops and the next artifact is a profiling/process-backend spike, not more thread tuning.
+
 ### Worker Ownership
 
 Parent owns:
@@ -101,6 +103,25 @@ Workers must return in-memory data only:
 - player-prediction frames;
 
 Workers must not write files.
+
+Worker return schema:
+
+```python
+@dataclass(frozen=True)
+class RoundEvaluationResult:
+    round_number: int
+    round_rows: list[dict[str, object]]
+    selected_frames: list[pd.DataFrame]
+    prediction_frames: list[pd.DataFrame]
+```
+
+Rules:
+
+- `round_number` is the evaluated target round;
+- `round_rows` contains exactly the rows that would have been appended for that round in sequential mode;
+- `selected_frames` contains zero or more selected-player dataframes for that round;
+- `prediction_frames` contains zero or one scored candidate dataframe for that round;
+- skipped rounds handled by the parent use the same `RoundEvaluationResult` shape with empty frame lists.
 
 ### Shared Store Access
 
@@ -141,6 +162,14 @@ Default behavior remains `jobs=1`.
 
 `jobs=1` is the behavior-preserving baseline. It must use the same sequential round order as today.
 
+When `worker_rounds` is non-empty, the executor uses:
+
+```python
+max_workers = min(config.jobs, len(worker_rounds))
+```
+
+If there are no worker rounds, no executor is created.
+
 ## RandomForest Worker Policy
 
 `RandomForestPointPredictor` currently hardcodes `RandomForestRegressor(n_jobs=-1)`.
@@ -173,6 +202,17 @@ This must affect the actual `RandomForestRegressor.n_jobs` parameter, not just m
 
 Reason: RandomForest fit/predict parallelizes over trees. Outer target-round parallelism plus RF `n_jobs=-1` would oversubscribe the 28-core machine and can be slower than sequential execution.
 
+Dynamic allocation such as `cpu_count // backtest_jobs` is out of scope for v1. It may use more cores, but it also reintroduces nested parallelism risk and makes the first benchmark harder to interpret. If `jobs>1` with RF `n_jobs=1` underutilizes the machine, record that result and design a separate worker-allocation benchmark.
+
+Metadata must also record present thread-control environment variables for benchmark debugging:
+
+- `OMP_NUM_THREADS`;
+- `MKL_NUM_THREADS`;
+- `OPENBLAS_NUM_THREADS`;
+- `BLIS_NUM_THREADS`.
+
+If a variable is absent, record it as `null`. These fields are explanatory metadata only and must not affect behavior.
+
 ## Runner Architecture
 
 Extract target-round evaluation into a private helper. Suggested shape:
@@ -180,6 +220,7 @@ Extract target-round evaluation into a private helper. Suggested shape:
 ```python
 @dataclass(frozen=True)
 class RoundEvaluationResult:
+    round_number: int
     round_rows: list[dict[str, object]]
     selected_frames: list[pd.DataFrame]
     prediction_frames: list[pd.DataFrame]
@@ -211,6 +252,8 @@ The helper contains the current per-round body:
 10. return records/frames.
 
 The helper must not write reports.
+
+The helper receives only cached/evaluable target rounds. It does not decide whether a round is excluded or missing from the season data.
 
 ### Sequential Path
 
@@ -246,6 +289,8 @@ class BacktestRoundEvaluationError(RuntimeError):
 
 When a future raises, re-raise `BacktestRoundEvaluationError(round_number, str(exc))` with the original exception as `__cause__`.
 
+Use `concurrent.futures.as_completed()` with a `future_to_round` mapping. Do not use bare `executor.map()` because it weakens round-specific error wrapping.
+
 ## Target Rounds
 
 Build target rounds from `range(config.start_round, max_round + 1)` as today.
@@ -253,8 +298,9 @@ Build target rounds from `range(config.start_round, max_round + 1)` as today.
 Rules:
 
 - excluded rounds are skipped before worker submission;
-- missing non-excluded rounds are submitted only if the current sequential logic would evaluate them;
-- the helper must preserve current behavior for missing non-excluded target rounds by returning `Empty` skipped rows;
+- missing non-excluded rounds are handled by the parent before worker submission;
+- parent records `Empty` skipped rows for missing non-excluded rounds;
+- only rounds present in `RoundFrameStore` are submitted to workers;
 - no worker is launched for excluded rounds.
 
 The target-round list must be constructed in the parent.
@@ -301,6 +347,7 @@ Comparison rules:
 - allow expected parallelism fields to differ:
   - `backtest_jobs`;
   - `model_n_jobs_effective`;
+  - `parallel_backend`;
 - require all other metadata fields to match.
 
 ## Metadata
@@ -310,12 +357,14 @@ Add required metadata fields:
 - `backtest_jobs`;
 - `model_n_jobs_effective`;
 - `parallel_backend`.
+- `thread_env`.
 
 Values:
 
 - `backtest_jobs`: integer from config;
 - `model_n_jobs_effective`: result of `_effective_model_n_jobs(config.jobs)`;
 - `parallel_backend`: `"sequential"` when `jobs == 1`, `"threads"` when `jobs > 1`.
+- `thread_env`: object containing `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `BLIS_NUM_THREADS` with string values or `null`.
 
 Existing Phase 1a metadata remains:
 
@@ -333,8 +382,9 @@ Required tests:
 
 1. `BacktestConfig(jobs=1)` is accepted.
 2. `BacktestConfig(jobs=0)` fails validation.
-3. CLI parses `--jobs 2` and passes `jobs=2` to `BacktestConfig`.
-4. CLI default remains `jobs=1`.
+3. `BacktestConfig(jobs=-1)` fails validation.
+4. CLI parses `--jobs 2` and passes `jobs=2` to `BacktestConfig`.
+5. CLI default remains `jobs=1`.
 
 If `BacktestConfig` does not currently validate fields in `__post_init__`, Phase 1b may add validation only for `jobs`; do not broaden config validation beyond this feature.
 
@@ -355,10 +405,11 @@ Existing tests that monkeypatch `RandomForestPointPredictor` must keep passing. 
 Required tests:
 
 1. `_evaluate_target_round()` returns the same rows/frames as the previous inline per-round logic for one round.
-2. Missing non-excluded target round returns `Empty` skipped rows.
+2. Parent missing-round handling returns `Empty` skipped rows without launching a worker.
 3. Training-empty round returns `TrainingEmpty` skipped rows.
 4. Worker helper does not write output files.
 5. Worker helper uses `model_n_jobs_effective` when constructing RF.
+6. Worker helper receives only rounds present in `RoundFrameStore`.
 
 ### Parallel Equivalence
 
@@ -369,9 +420,10 @@ Required tests:
 3. `jobs=1` and `jobs=2` produce equivalent `player_predictions`.
 4. `jobs=1` and `jobs=2` produce equivalent `summary`.
 5. `jobs=1` and `jobs=2` produce equivalent `diagnostics`.
-6. Metadata equality excludes only `wall_clock_seconds`, `backtest_jobs`, and `model_n_jobs_effective`; all other semantic metadata matches.
+6. Metadata equality excludes only `wall_clock_seconds`, `backtest_jobs`, `model_n_jobs_effective`, and `parallel_backend`; all other semantic metadata matches.
 7. `jobs=2` metadata records `parallel_backend="threads"`.
 8. `jobs=1` metadata records `parallel_backend="sequential"`.
+9. `selected_players` row order is deterministic after sorting by `["rodada", "strategy", "id_atleta"]`.
 
 ### Worker Failure
 
@@ -438,16 +490,19 @@ Record:
 - metadata `backtest_jobs`;
 - metadata `model_n_jobs_effective`;
 - metadata `parallel_backend`;
+- metadata `thread_env`;
 - whether report equivalence holds versus `jobs=1`.
 
 Temporary benchmark output roots must not be committed.
 
 Success criterion:
 
-- `jobs=2` or `jobs=4` improves wall-clock time over `jobs=1`; and
+- `jobs=2` or `jobs=4` improves wall-clock time over `jobs=1` by at least 15%; and
 - if neither improves, report the result honestly and stop before expanding parallelism further.
 
 Do not declare Phase 1b successful on metadata alone. Runtime must be benchmarked.
+
+Run each benchmark at least once. If the fastest parallel result is within 15% of `jobs=1`, repeat `jobs=1` and the fastest parallel setting once more to rule out ordinary machine noise before rejecting the thread design.
 
 ## Failure Semantics
 
@@ -467,6 +522,14 @@ Unexpected worker exceptions are not skipped rounds. They fail the whole command
 ### Threads May Not Help
 
 Some of the work may remain Python/GIL-bound. If `jobs=2` and `jobs=4` do not improve runtime, do not add process pools immediately. First profile the remaining bottleneck.
+
+Profiling must split the target-round work into at least:
+
+- training-frame assembly;
+- baseline fit/predict;
+- RF fit/predict;
+- optimizer calls;
+- report-shaping/captain diagnostics.
 
 ### Memory Pressure
 
@@ -509,13 +572,14 @@ Mitigation:
 1. Add config and CLI `jobs` validation.
 2. Add RF `n_jobs` plumbing and `_effective_model_n_jobs()`.
 3. Extract `_evaluate_target_round()` while keeping sequential behavior.
-4. Add deterministic sorting in parent output aggregation.
-5. Add thread executor path for `jobs>1`.
-6. Add metadata fields.
-7. Add worker error wrapping.
-8. Run equivalence tests.
-9. Run benchmark matrix.
-10. Run full quality gate.
+4. Add parent-side target-round classification for excluded, missing, and worker rounds.
+5. Add deterministic sorting in parent output aggregation.
+6. Add worker error wrapping.
+7. Add thread executor path for `jobs>1`.
+8. Add metadata fields.
+9. Run equivalence tests.
+10. Run benchmark matrix.
+11. Run full quality gate.
 
 ## Acceptance Criteria
 
