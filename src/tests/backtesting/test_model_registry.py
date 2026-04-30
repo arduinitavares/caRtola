@@ -9,11 +9,21 @@ from cartola.backtesting.model_registry import (
     MODEL_SPECS,
     create_point_predictor,
     model_n_jobs_for_metadata,
+    resolve_model_id,
 )
 
 
 def test_model_registry_contains_exact_v1_models() -> None:
     assert tuple(MODEL_SPECS) == ("random_forest", "extra_trees", "hist_gradient_boosting", "ridge")
+
+
+def test_resolve_model_id_returns_valid_model_id() -> None:
+    assert resolve_model_id("random_forest") == "random_forest"
+
+
+def test_resolve_model_id_rejects_unknown_model_id() -> None:
+    with pytest.raises(ValueError, match="Unsupported model_id: 'xgboost'"):
+        resolve_model_id("xgboost")
 
 
 def test_random_forest_spec_matches_contract() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 import pandas as pd
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
@@ -73,17 +73,20 @@ MODEL_SPECS: dict[ModelId, ModelSpec] = {
 }
 
 
+def resolve_model_id(model_id: str) -> ModelId:
+    if model_id not in MODEL_SPECS:
+        raise ValueError(f"Unsupported model_id: {model_id!r}")
+    return cast(ModelId, model_id)
+
+
 def create_point_predictor(
     *,
-    model_id: ModelId,
+    model_id: str,
     random_seed: int,
     feature_columns: list[str],
     n_jobs: int,
 ) -> PointPredictor:
-    try:
-        spec = MODEL_SPECS[model_id]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported model_id: {model_id}") from exc
+    spec = MODEL_SPECS[resolve_model_id(model_id)]
 
     return spec.predictor_type(
         random_seed=random_seed,
@@ -92,9 +95,6 @@ def create_point_predictor(
     )
 
 
-def model_n_jobs_for_metadata(model_id: ModelId, *, requested_n_jobs: int) -> int | None:
-    try:
-        spec = MODEL_SPECS[model_id]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported model_id: {model_id}") from exc
+def model_n_jobs_for_metadata(model_id: str, *, requested_n_jobs: int) -> int | None:
+    spec = MODEL_SPECS[resolve_model_id(model_id)]
     return requested_n_jobs if spec.supports_n_jobs else None
