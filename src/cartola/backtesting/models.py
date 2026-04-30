@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import Self
+
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
 class BaselinePredictor:
@@ -37,7 +40,7 @@ class BaselinePredictor:
         return predictions.astype(float)
 
 
-class RandomForestPointPredictor:
+class SklearnPointPredictor:
     def __init__(
         self,
         random_seed: int = 123,
@@ -58,13 +61,13 @@ class RandomForestPointPredictor:
                     "preprocess",
                     ColumnTransformer(
                         transformers=[
-                            ("numeric", SimpleImputer(strategy="median"), numeric_features),
+                            ("numeric", self._make_numeric_transformer(), numeric_features),
                             (
                                 "categorical",
                                 Pipeline(
                                     steps=[
                                         ("imputer", SimpleImputer(strategy="most_frequent")),
-                                        ("encoder", OneHotEncoder(handle_unknown="ignore")),
+                                        ("encoder", self._make_categorical_encoder()),
                                     ]
                                 ),
                                 categorical_features,
@@ -72,22 +75,69 @@ class RandomForestPointPredictor:
                         ]
                     ),
                 ),
-                (
-                    "model",
-                    RandomForestRegressor(
-                        n_estimators=200,
-                        min_samples_leaf=3,
-                        random_state=random_seed,
-                        n_jobs=n_jobs,
-                    ),
-                ),
+                ("model", self._make_model(random_seed=random_seed, n_jobs=n_jobs)),
             ]
         )
 
-    def fit(self, frame: pd.DataFrame) -> RandomForestPointPredictor:
+    def _make_numeric_transformer(self) -> object:
+        return SimpleImputer(strategy="median")
+
+    def _make_categorical_encoder(self) -> OneHotEncoder:
+        return OneHotEncoder(handle_unknown="ignore")
+
+    def _make_model(self, *, random_seed: int, n_jobs: int) -> object:
+        raise NotImplementedError
+
+    def fit(self, frame: pd.DataFrame) -> Self:
         self.pipeline.fit(frame[self.feature_columns], frame["target"])
         return self
 
     def predict(self, frame: pd.DataFrame) -> pd.Series:
         predictions = self.pipeline.predict(frame[self.feature_columns])
         return pd.Series(predictions, index=frame.index, dtype=float)
+
+
+class RandomForestPointPredictor(SklearnPointPredictor):
+    def _make_model(self, *, random_seed: int, n_jobs: int) -> RandomForestRegressor:
+        return RandomForestRegressor(
+            n_estimators=200,
+            min_samples_leaf=3,
+            random_state=random_seed,
+            n_jobs=n_jobs,
+        )
+
+
+class ExtraTreesPointPredictor(SklearnPointPredictor):
+    def _make_model(self, *, random_seed: int, n_jobs: int) -> ExtraTreesRegressor:
+        return ExtraTreesRegressor(
+            n_estimators=200,
+            min_samples_leaf=3,
+            random_state=random_seed,
+            n_jobs=n_jobs,
+        )
+
+
+class HistGradientBoostingPointPredictor(SklearnPointPredictor):
+    def _make_categorical_encoder(self) -> OneHotEncoder:
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+
+    def _make_model(self, *, random_seed: int, n_jobs: int) -> HistGradientBoostingRegressor:
+        return HistGradientBoostingRegressor(
+            max_iter=200,
+            learning_rate=0.05,
+            min_samples_leaf=20,
+            random_state=random_seed,
+        )
+
+
+class RidgePointPredictor(SklearnPointPredictor):
+    def _make_numeric_transformer(self) -> Pipeline:
+        return Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+            ]
+        )
+
+    def _make_model(self, *, random_seed: int, n_jobs: int) -> Ridge:
+        return Ridge(alpha=1.0)
