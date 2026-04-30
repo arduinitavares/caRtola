@@ -61,6 +61,14 @@ ROUND_RESULT_COLUMNS: list[str] = [
     "actual_points_with_upside_captain",
 ]
 
+SORT_KEYS: dict[str, list[str]] = {
+    "round_results": ["rodada", "strategy"],
+    "selected_players": ["rodada", "strategy", "id_atleta"],
+    "player_predictions": ["rodada", "id_atleta"],
+    "summary": ["strategy"],
+    "diagnostics": ["section", "strategy", "position", "metric"],
+}
+
 OUTPUT_FLOAT_PRECISION = 10
 CSV_FLOAT_FORMAT = f"%.{OUTPUT_FLOAT_PRECISION}f"
 
@@ -334,6 +342,14 @@ def run_backtest(
         benchmark_strategy="price",
         budget=config.budget,
         random_seed=config.random_seed,
+    )
+
+    round_results, selected_players, player_predictions, summary, diagnostics = _sort_outputs(
+        round_results,
+        selected_players,
+        player_predictions,
+        summary,
+        diagnostics,
     )
 
     round_results = _normalize_float_outputs(round_results)
@@ -796,6 +812,33 @@ def _concat_or_empty(frames: list[pd.DataFrame]) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+def _sort_frame(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+
+    sort_columns = [key for key in keys if key in frame.columns]
+    if not sort_columns:
+        return frame.reset_index(drop=True)
+
+    return frame.sort_values(sort_columns, kind="mergesort").reset_index(drop=True)
+
+
+def _sort_outputs(
+    round_results: pd.DataFrame,
+    selected_players: pd.DataFrame,
+    player_predictions: pd.DataFrame,
+    summary: pd.DataFrame,
+    diagnostics: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return (
+        _sort_frame(round_results, SORT_KEYS["round_results"]),
+        _sort_frame(selected_players, SORT_KEYS["selected_players"]),
+        _sort_frame(player_predictions, SORT_KEYS["player_predictions"]),
+        _sort_frame(summary, SORT_KEYS["summary"]),
+        _sort_frame(diagnostics, SORT_KEYS["diagnostics"]),
+    )
 
 
 def _normalize_float_outputs(frame: pd.DataFrame) -> pd.DataFrame:

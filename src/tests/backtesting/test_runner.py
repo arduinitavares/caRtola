@@ -1040,6 +1040,130 @@ def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_pa
     assert not result.diagnostics.empty
 
 
+def test_sort_outputs_canonicalizes_report_order(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
+
+    def round_row(round_number: int, strategy: str) -> dict[str, object]:
+        return {
+            "rodada": round_number,
+            "strategy": strategy,
+            "solver_status": "Optimal",
+            "formation": "4-3-3",
+            "selected_count": 1,
+            "budget_used": 1.0,
+            "predicted_points": 10.0,
+            "predicted_points_base": 10.0,
+            "captain_bonus_predicted": 0.0,
+            "predicted_points_with_captain": 10.0,
+            "actual_points": 10.0,
+            "actual_points_base": 10.0,
+            "captain_bonus_actual": 0.0,
+            "actual_points_with_captain": 10.0,
+            "captain_id": 1,
+            "captain_name": "captain",
+            "captain_policy_ev_id": 1,
+            "captain_policy_safe_id": 1,
+            "captain_policy_upside_id": 1,
+            "actual_points_with_ev_captain": 10.0,
+            "actual_points_with_safe_captain": 10.0,
+            "actual_points_with_upside_captain": 10.0,
+        }
+
+    def fake_evaluate_target_round(**kwargs: object) -> runner_module.RoundEvaluationResult:
+        round_number = int(kwargs["round_number"])
+        selected = pd.DataFrame(
+            [
+                {
+                    "rodada": round_number,
+                    "strategy": "price",
+                    "id_atleta": 3,
+                    "posicao": "ata",
+                    "pontuacao": 3.0,
+                    "entrou_em_campo": True,
+                },
+                {
+                    "rodada": round_number,
+                    "strategy": "baseline",
+                    "id_atleta": 1,
+                    "posicao": "gol",
+                    "pontuacao": 1.0,
+                    "entrou_em_campo": True,
+                },
+            ]
+        )
+        predictions = pd.DataFrame(
+            [
+                {
+                    "rodada": round_number,
+                    "id_atleta": 2,
+                    "posicao": "ata",
+                    "pontuacao": 2.0,
+                    "baseline_score": 2.0,
+                    "random_forest_score": 2.0,
+                    "price_score": 2.0,
+                },
+                {
+                    "rodada": round_number,
+                    "id_atleta": 1,
+                    "posicao": "gol",
+                    "pontuacao": 1.0,
+                    "baseline_score": 1.0,
+                    "random_forest_score": 1.0,
+                    "price_score": 1.0,
+                },
+            ]
+        )
+        return runner_module.RoundEvaluationResult(
+            round_number=round_number,
+            round_rows=[round_row(round_number, "price"), round_row(round_number, "baseline")],
+            selected_frames=[selected],
+            prediction_frames=[predictions],
+        )
+
+    monkeypatch.setattr(runner_module, "_evaluate_target_round", fake_evaluate_target_round)
+
+    result = run_backtest(BacktestConfig(project_root=tmp_path, start_round=5, budget=100), season_df=season_df)
+
+    assert result.round_results[["rodada", "strategy"]].to_dict("records") == [
+        {"rodada": 5, "strategy": "baseline"},
+        {"rodada": 5, "strategy": "price"},
+        {"rodada": 6, "strategy": "baseline"},
+        {"rodada": 6, "strategy": "price"},
+    ]
+    assert result.selected_players[["rodada", "strategy", "id_atleta"]].to_dict("records") == [
+        {"rodada": 5, "strategy": "baseline", "id_atleta": 1},
+        {"rodada": 5, "strategy": "price", "id_atleta": 3},
+        {"rodada": 6, "strategy": "baseline", "id_atleta": 1},
+        {"rodada": 6, "strategy": "price", "id_atleta": 3},
+    ]
+    assert result.player_predictions[["rodada", "id_atleta"]].to_dict("records") == [
+        {"rodada": 5, "id_atleta": 1},
+        {"rodada": 5, "id_atleta": 2},
+        {"rodada": 6, "id_atleta": 1},
+        {"rodada": 6, "id_atleta": 2},
+    ]
+    assert result.summary["strategy"].tolist() == sorted(result.summary["strategy"].tolist())
+    assert result.diagnostics[["section", "strategy", "position", "metric"]].to_dict("records") == (
+        result.diagnostics[["section", "strategy", "position", "metric"]]
+        .sort_values(["section", "strategy", "position", "metric"], kind="mergesort")
+        .to_dict("records")
+    )
+
+    written_selected = pd.read_csv(tmp_path / "data/08_reporting/backtests/2025/selected_players.csv")
+    assert written_selected[["rodada", "strategy", "id_atleta"]].to_dict("records") == (
+        result.selected_players[["rodada", "strategy", "id_atleta"]].to_dict("records")
+    )
+
+    empty_outputs = runner_module._sort_outputs(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+    )
+    assert all(frame.empty for frame in empty_outputs)
+
+
 def test_run_backtest_records_captain_policy_flags_and_actual_totals(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
