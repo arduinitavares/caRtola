@@ -318,6 +318,41 @@ def test_run_backtest_builds_each_detected_round_prediction_frame_once(tmp_path,
     assert sorted(calls) == [1, 2, 3, 4, 5, 6]
 
 
+def test_public_run_backtest_keeps_random_forest_strategy(tmp_path, monkeypatch) -> None:
+    data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    monkeypatch.setattr(runner_module, "load_season_data", lambda season, project_root: data)
+
+    config = BacktestConfig(project_root=tmp_path, season=2025, start_round=5, jobs=1)
+
+    result = run_backtest(config)
+
+    assert set(result.round_results["strategy"]) == {"baseline", "random_forest", "price"}
+    assert "random_forest_score" in result.player_predictions.columns
+
+
+def test_experiment_run_uses_primary_model_strategy(tmp_path, monkeypatch) -> None:
+    data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    monkeypatch.setattr(runner_module, "load_season_data", lambda season, project_root: data)
+
+    config = BacktestConfig(project_root=tmp_path, season=2025, start_round=5, jobs=1)
+
+    result = runner_module.run_backtest_for_experiment(config, primary_model_id="extra_trees")
+
+    assert set(result.round_results["strategy"]) == {"baseline", "extra_trees", "price"}
+    assert "extra_trees_score" in result.player_predictions.columns
+    assert "random_forest_score" not in result.player_predictions.columns
+
+
+def test_experiment_run_rejects_unknown_primary_model(tmp_path, monkeypatch) -> None:
+    data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    monkeypatch.setattr(runner_module, "load_season_data", lambda season, project_root: data)
+
+    config = BacktestConfig(project_root=tmp_path, season=2025, start_round=5, jobs=1)
+
+    with pytest.raises(ValueError, match="Unsupported model_id"):
+        runner_module.run_backtest_for_experiment(config, primary_model_id="xgboost")
+
+
 def test_evaluate_target_round_returns_round_records_and_frames(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
@@ -336,6 +371,7 @@ def test_evaluate_target_round_returns_round_records_and_frames(tmp_path):
         model_feature_columns=feature_columns_for_config(config),
         empty_training_columns=[*MARKET_COLUMNS, *feature_columns_for_config(config), "target"],
         model_n_jobs_effective=-1,
+        primary_model_id="random_forest",
     )
 
     assert isinstance(result, runner_module.RoundEvaluationResult)
@@ -370,10 +406,14 @@ def test_evaluate_target_round_passes_effective_model_n_jobs(tmp_path, monkeypat
         def predict(self, frame: pd.DataFrame) -> pd.Series:
             return pd.Series(frame["prior_points_mean"].astype(float), index=frame.index)
 
-    monkeypatch.setattr(
-        "cartola.backtesting.runner.RandomForestPointPredictor",
-        RecordingRandomForestPointPredictor,
-    )
+    def recording_create_point_predictor(**kwargs: object) -> RecordingRandomForestPointPredictor:
+        return RecordingRandomForestPointPredictor(
+            random_seed=int(kwargs["random_seed"]),
+            feature_columns=kwargs["feature_columns"],  # type: ignore[arg-type]
+            n_jobs=int(kwargs["n_jobs"]),
+        )
+
+    monkeypatch.setattr(runner_module, "create_point_predictor", recording_create_point_predictor)
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, jobs=2)
     store = runner_module.RoundFrameStore(
@@ -391,6 +431,7 @@ def test_evaluate_target_round_passes_effective_model_n_jobs(tmp_path, monkeypat
         model_feature_columns=feature_columns_for_config(config),
         empty_training_columns=[*MARKET_COLUMNS, *feature_columns_for_config(config), "target"],
         model_n_jobs_effective=1,
+        primary_model_id="random_forest",
     )
 
     assert observed_n_jobs == [1]
@@ -1354,10 +1395,14 @@ def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path, 
                 index=frame.index,
             )
 
-    monkeypatch.setattr(
-        "cartola.backtesting.runner.RandomForestPointPredictor",
-        NoisyRandomForestPointPredictor,
-    )
+    def noisy_create_point_predictor(**kwargs: object) -> NoisyRandomForestPointPredictor:
+        return NoisyRandomForestPointPredictor(
+            random_seed=int(kwargs["random_seed"]),
+            feature_columns=kwargs["feature_columns"],  # type: ignore[arg-type]
+            n_jobs=int(kwargs["n_jobs"]),
+        )
+
+    monkeypatch.setattr(runner_module, "create_point_predictor", noisy_create_point_predictor)
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
 
     first = run_backtest(

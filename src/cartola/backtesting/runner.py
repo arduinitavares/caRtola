@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from threading import Lock
 from time import perf_counter
+from typing import cast
 
 import pandas as pd
 
@@ -24,7 +25,8 @@ from cartola.backtesting.footystats_features import (
     load_footystats_feature_rows,
 )
 from cartola.backtesting.metrics import build_diagnostics, build_summary
-from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
+from cartola.backtesting.model_registry import ModelId, create_point_predictor
+from cartola.backtesting.models import BaselinePredictor
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.scoring_contract import (
     CAPTAIN_MULTIPLIER,
@@ -236,6 +238,36 @@ def run_backtest(
     season_df: pd.DataFrame | None = None,
     fixtures: pd.DataFrame | None = None,
 ) -> BacktestResult:
+    return _run_backtest(
+        config,
+        primary_model_id="random_forest",
+        season_df=season_df,
+        fixtures=fixtures,
+    )
+
+
+def run_backtest_for_experiment(
+    config: BacktestConfig,
+    *,
+    primary_model_id: str,
+    season_df: pd.DataFrame | None = None,
+    fixtures: pd.DataFrame | None = None,
+) -> BacktestResult:
+    return _run_backtest(
+        config,
+        primary_model_id=primary_model_id,
+        season_df=season_df,
+        fixtures=fixtures,
+    )
+
+
+def _run_backtest(
+    config: BacktestConfig,
+    *,
+    primary_model_id: str,
+    season_df: pd.DataFrame | None = None,
+    fixtures: pd.DataFrame | None = None,
+) -> BacktestResult:
     started_at = perf_counter()
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
@@ -281,12 +313,19 @@ def run_backtest(
     model_feature_columns = feature_columns_for_config(config)
     empty_training_columns = list(dict.fromkeys([*MARKET_COLUMNS, *model_feature_columns, "target"]))
     target_rounds = list(range(config.start_round, max_round + 1))
+    model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
+    _validate_primary_model_id(
+        primary_model_id,
+        config=config,
+        model_feature_columns=model_feature_columns,
+        model_n_jobs_effective=model_n_jobs_effective,
+    )
     skipped_results, worker_rounds = _target_round_work(
         target_rounds=target_rounds,
         excluded_rounds=excluded_rounds,
         cached_round_set=cached_round_set,
+        primary_model_id=primary_model_id,
     )
-    model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
     backtest_workers_effective = min(config.jobs, len(worker_rounds))
     if backtest_workers_effective == 0:
         parallel_backend = "none"
@@ -343,6 +382,7 @@ def run_backtest(
             empty_training_columns=empty_training_columns,
             model_feature_columns=model_feature_columns,
             model_n_jobs_effective=model_n_jobs_effective,
+            primary_model_id=primary_model_id,
         ),
     ]
     for evaluation in sorted(round_results_for_targets, key=lambda item: item.round_number):
@@ -456,6 +496,21 @@ def _effective_model_n_jobs(backtest_jobs: int) -> int:
     return 1
 
 
+def _validate_primary_model_id(
+    primary_model_id: str,
+    *,
+    config: BacktestConfig,
+    model_feature_columns: list[str],
+    model_n_jobs_effective: int,
+) -> None:
+    create_point_predictor(
+        model_id=cast(ModelId, primary_model_id),
+        random_seed=config.random_seed,
+        feature_columns=model_feature_columns,
+        n_jobs=model_n_jobs_effective,
+    )
+
+
 def _thread_env() -> dict[str, str | None]:
     return {key: os.environ.get(key) for key in THREAD_ENV_KEYS}
 
@@ -465,6 +520,7 @@ def _target_round_work(
     target_rounds: list[int],
     excluded_rounds: list[int],
     cached_round_set: set[int],
+    primary_model_id: str,
 ) -> tuple[list[RoundEvaluationResult], list[int]]:
     skipped_results: list[RoundEvaluationResult] = []
     worker_rounds: list[int] = []
@@ -474,7 +530,7 @@ def _target_round_work(
             continue
         if round_number not in cached_round_set:
             round_rows: list[dict[str, object]] = []
-            _record_skipped_round(round_rows, round_number, "Empty")
+            _record_skipped_round(round_rows, round_number, "Empty", primary_model_id=primary_model_id)
             skipped_results.append(
                 RoundEvaluationResult(
                     round_number=round_number,
@@ -496,6 +552,7 @@ def _run_round_workers(
     empty_training_columns: list[str],
     model_feature_columns: list[str],
     model_n_jobs_effective: int,
+    primary_model_id: str,
 ) -> list[RoundEvaluationResult]:
     if config.jobs == 1:
         return [
@@ -506,6 +563,7 @@ def _run_round_workers(
                 empty_training_columns=empty_training_columns,
                 model_feature_columns=model_feature_columns,
                 model_n_jobs_effective=model_n_jobs_effective,
+                primary_model_id=primary_model_id,
             )
             for round_number in worker_rounds
         ]
@@ -525,6 +583,7 @@ def _run_round_workers(
                 empty_training_columns=empty_training_columns,
                 model_feature_columns=model_feature_columns,
                 model_n_jobs_effective=model_n_jobs_effective,
+                primary_model_id=primary_model_id,
             ): round_number
             for round_number in worker_rounds
         }
@@ -545,6 +604,7 @@ def _evaluate_target_round(
     model_feature_columns: list[str],
     empty_training_columns: list[str],
     model_n_jobs_effective: int,
+    primary_model_id: str,
 ) -> RoundEvaluationResult:
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
@@ -559,7 +619,12 @@ def _evaluate_target_round(
     candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy(deep=True)
 
     if training.empty or candidates.empty:
-        _record_skipped_round(round_rows, round_number, "TrainingEmpty" if training.empty else "Empty")
+        _record_skipped_round(
+            round_rows,
+            round_number,
+            "TrainingEmpty" if training.empty else "Empty",
+            primary_model_id=primary_model_id,
+        )
         return RoundEvaluationResult(
             round_number=round_number,
             round_rows=round_rows,
@@ -569,17 +634,19 @@ def _evaluate_target_round(
 
     scored_candidates = candidates.copy()
     baseline_model = BaselinePredictor().fit(training)
-    forest_model = RandomForestPointPredictor(
+    primary_model = create_point_predictor(
+        model_id=cast(ModelId, primary_model_id),
         random_seed=config.random_seed,
         feature_columns=model_feature_columns,
         n_jobs=model_n_jobs_effective,
     ).fit(training)
+    primary_score_column = f"{primary_model_id}_score"
     scored_candidates["baseline_score"] = baseline_model.predict(scored_candidates)
-    scored_candidates["random_forest_score"] = forest_model.predict(scored_candidates)
+    scored_candidates[primary_score_column] = primary_model.predict(scored_candidates)
     scored_candidates["price_score"] = scored_candidates[MARKET_OPEN_PRICE_COLUMN].astype(float)
     prediction_frames.append(scored_candidates.copy())
 
-    for strategy, score_column in _strategies().items():
+    for strategy, score_column in _strategies(primary_model_id).items():
         strategy_candidates = scored_candidates.copy()
         strategy_candidates["predicted_points"] = strategy_candidates[score_column]
         result = optimize_squad(strategy_candidates, score_column="predicted_points", config=config)
@@ -786,10 +853,10 @@ def _validate_fixture_alignment(
     raise ValueError(f"Fixture alignment failed: {details}")
 
 
-def _strategies() -> dict[str, str]:
+def _strategies(primary_model_id: str) -> dict[str, str]:
     return {
         "baseline": "baseline_score",
-        "random_forest": "random_forest_score",
+        primary_model_id: f"{primary_model_id}_score",
         "price": "price_score",
     }
 
@@ -874,8 +941,10 @@ def _record_skipped_round(
     round_rows: list[dict[str, object]],
     round_number: int,
     status: str,
+    *,
+    primary_model_id: str,
 ) -> None:
-    for strategy in _strategies():
+    for strategy in _strategies(primary_model_id):
         round_rows.append(
             {
                 "rodada": round_number,

@@ -63,6 +63,11 @@ def test_parse_args_accepts_v1_options():
     assert args.budget == 100.0
 
 
+def test_parse_args_does_not_expose_model_id() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--model-id", "extra_trees"])
+
+
 def test_parse_args_uses_v1_defaults():
     args = parse_args([])
 

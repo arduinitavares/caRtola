@@ -22,6 +22,13 @@ def test_default_config_matches_v1_scope():
     assert config.output_path == Path("data/08_reporting/backtests/2025")
 
 
+def test_output_path_override_is_private_and_exact(tmp_path) -> None:
+    override = tmp_path / "runs" / "season=2025" / "model=extra_trees" / "feature_pack=ppg"
+    config = BacktestConfig(project_root=tmp_path, _output_path_override=override)
+
+    assert config.output_path == override
+
+
 def test_default_formations_are_all_official_cartola_formations() -> None:
     assert DEFAULT_FORMATIONS == {
         "3-4-3": {"gol": 1, "lat": 0, "zag": 3, "mei": 4, "ata": 3, "tec": 1},

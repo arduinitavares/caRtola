@@ -82,6 +82,7 @@ class BacktestConfig:
     current_year: int | None = None
     jobs: int = 1
     scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS
+    _output_path_override: Path | None = None
 
     def __post_init__(self) -> None:
         if type(self.jobs) is not int:
@@ -95,4 +96,6 @@ class BacktestConfig:
 
     @property
     def output_path(self) -> Path:
+        if self._output_path_override is not None:
+            return self._output_path_override
         return self.project_root / self.output_root / str(self.season)
