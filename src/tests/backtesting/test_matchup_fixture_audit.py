@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from cartola.backtesting import matchup_fixture_audit as audit
@@ -54,3 +55,60 @@ def test_config_from_args_preserves_values() -> None:
     assert config.output_root == Path("/tmp/reports")
     assert config.expected_complete_rounds == 30
     assert config.complete_round_threshold == 20
+
+
+def test_fixture_context_rows_expand_home_and_away_with_exploratory_source(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "data/01_raw/fixtures/2025"
+    fixture_dir.mkdir(parents=True)
+    fixture_path = fixture_dir / "partidas-1.csv"
+    fixture_path.write_text(
+        "rodada,id_clube_home,id_clube_away,data\n"
+        "1,10,20,2025-04-01\n",
+        encoding="utf-8",
+    )
+
+    rows = audit.load_round_fixture_context(
+        project_root=tmp_path,
+        season=2025,
+        round_number=1,
+    )
+
+    assert rows[["rodada", "id_clube", "opponent_id_clube", "is_home", "fixture_source"]].to_dict("records") == [
+        {"rodada": 1, "id_clube": 10, "opponent_id_clube": 20, "is_home": 1, "fixture_source": "exploratory"},
+        {"rodada": 1, "id_clube": 20, "opponent_id_clube": 10, "is_home": 0, "fixture_source": "exploratory"},
+    ]
+    assert rows["source_file"].tolist() == ["data/01_raw/fixtures/2025/partidas-1.csv"] * 2
+    assert rows["source_manifest"].isna().all()
+    assert rows["source_sha256"].notna().all()
+
+
+def test_fixture_context_prefers_strict_when_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    strict_dir = tmp_path / "data/01_raw/fixtures_strict/2025"
+    exploratory_dir = tmp_path / "data/01_raw/fixtures/2025"
+    strict_dir.mkdir(parents=True)
+    exploratory_dir.mkdir(parents=True)
+    strict_path = strict_dir / "partidas-1.csv"
+    manifest_path = strict_dir / "partidas-1.manifest.json"
+    strict_path.write_text("rodada,id_clube_home,id_clube_away,data\n1,10,20,2025-04-01\n", encoding="utf-8")
+    manifest_path.write_text('{"mode":"strict"}\n', encoding="utf-8")
+    (exploratory_dir / "partidas-1.csv").write_text(
+        "rodada,id_clube_home,id_clube_away,data\n1,30,40,2025-04-01\n",
+        encoding="utf-8",
+    )
+
+    calls: list[Path] = []
+
+    def fake_validate_strict_manifest(
+        *, project_root: Path, fixture_path: Path, season: int, round_number: int
+    ) -> object:
+        calls.append(fixture_path)
+        return object()
+
+    monkeypatch.setattr(audit, "validate_strict_manifest", fake_validate_strict_manifest)
+
+    rows = audit.load_round_fixture_context(tmp_path, season=2025, round_number=1)
+
+    assert calls == [strict_path]
+    assert rows["fixture_source"].unique().tolist() == ["strict"]
+    assert rows["id_clube"].tolist() == [10, 20]
+    assert rows["source_manifest"].tolist() == ["data/01_raw/fixtures_strict/2025/partidas-1.manifest.json"] * 2
