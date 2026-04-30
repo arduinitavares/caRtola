@@ -3,12 +3,48 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import cartola.backtesting.cli_output as cli_output
 from cartola.backtesting.cli_output import (
     ChartOutput,
     _build_performance_figure,
     _prepare_chart_data,
     write_performance_chart,
 )
+
+
+def _valid_round_results() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "rodada": 1,
+                "strategy": "random_forest",
+                "solver_status": "Optimal",
+                "actual_points": 10.0,
+                "formation": "4-3-3",
+            },
+            {
+                "rodada": 2,
+                "strategy": "random_forest",
+                "solver_status": "Optimal",
+                "actual_points": 12.0,
+                "formation": "4-4-2",
+            },
+            {
+                "rodada": 1,
+                "strategy": "baseline",
+                "solver_status": "Optimal",
+                "actual_points": 8.0,
+                "formation": "4-3-3",
+            },
+            {
+                "rodada": 2,
+                "strategy": "baseline",
+                "solver_status": "Infeasible",
+                "actual_points": 0.0,
+                "formation": "",
+            },
+        ]
+    )
 
 
 def test_prepare_chart_data_filters_skipped_rows_from_score_traces() -> None:
@@ -202,40 +238,7 @@ def test_performance_figure_has_three_panels_without_zero_status_trace() -> None
 
 
 def test_write_performance_chart_writes_standalone_html(tmp_path: Path) -> None:
-    round_results = pd.DataFrame(
-        [
-            {
-                "rodada": 1,
-                "strategy": "random_forest",
-                "solver_status": "Optimal",
-                "actual_points": 10.0,
-                "formation": "4-3-3",
-            },
-            {
-                "rodada": 2,
-                "strategy": "random_forest",
-                "solver_status": "Optimal",
-                "actual_points": 12.0,
-                "formation": "4-4-2",
-            },
-            {
-                "rodada": 1,
-                "strategy": "baseline",
-                "solver_status": "Optimal",
-                "actual_points": 8.0,
-                "formation": "4-3-3",
-            },
-            {
-                "rodada": 2,
-                "strategy": "baseline",
-                "solver_status": "Infeasible",
-                "actual_points": 0.0,
-                "formation": "",
-            },
-        ]
-    )
-
-    chart_output = write_performance_chart(round_results, tmp_path)
+    chart_output = write_performance_chart(_valid_round_results(), tmp_path)
 
     expected_path = tmp_path / "charts" / "strategy_performance_by_round.html"
     assert chart_output == ChartOutput(path=expected_path, warnings=[])
@@ -245,3 +248,51 @@ def test_write_performance_chart_writes_standalone_html(tmp_path: Path) -> None:
     assert "random_forest" in html
     assert "baseline" in html
     assert "https://cdn.plot.ly" not in html
+
+
+def test_write_performance_chart_reports_non_fatal_export_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def raise_disk_full(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli_output.go.Figure, "write_html", raise_disk_full)
+
+    chart_output = write_performance_chart(_valid_round_results(), tmp_path)
+
+    assert chart_output.path is None
+    assert len(chart_output.warnings) == 1
+    assert chart_output.warnings[0].startswith("Performance chart: n/a (")
+    assert "disk full" in chart_output.warnings[0]
+
+
+def test_write_performance_chart_keeps_schema_failures_loud(tmp_path: Path) -> None:
+    round_results = _valid_round_results().drop(columns=["formation"])
+
+    with pytest.raises(ValueError, match="Missing chart columns: formation"):
+        write_performance_chart(round_results, tmp_path)
+
+
+def test_write_performance_chart_reports_non_fatal_charts_dir_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_mkdir = Path.mkdir
+
+    def raise_for_charts_dir(
+        self: Path,
+        mode: int = 0o777,
+        parents: bool = False,
+        exist_ok: bool = False,
+    ) -> None:
+        if self.name == "charts":
+            raise OSError("permission denied")
+        original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", raise_for_charts_dir)
+
+    chart_output = write_performance_chart(pd.DataFrame(), tmp_path)
+
+    assert chart_output.path is None
+    assert len(chart_output.warnings) == 1
+    assert chart_output.warnings[0].startswith("Performance chart: n/a (")
+    assert "permission denied" in chart_output.warnings[0]

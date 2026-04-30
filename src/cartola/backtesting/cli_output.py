@@ -74,16 +74,31 @@ def _prepare_chart_data(round_results: pd.DataFrame) -> PreparedChartData:
 
 def write_performance_chart(round_results: pd.DataFrame, output_path: Path) -> ChartOutput:
     charts_path = output_path / "charts"
-    charts_path.mkdir(parents=True, exist_ok=True)
+    try:
+        charts_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return ChartOutput(path=None, warnings=[_chart_unavailable_warning(exc)])
+
     if round_results.empty:
         return ChartOutput(path=None, warnings=[])
 
     chart_data = _prepare_chart_data(round_results)
     figure = _build_performance_figure(chart_data)
     chart_path = charts_path / CHART_FILENAME
+    try:
+        _write_plotly_html(figure, chart_path)
+    except Exception as exc:
+        return ChartOutput(path=None, warnings=[_chart_unavailable_warning(exc)])
+    return ChartOutput(path=chart_path, warnings=[])
+
+
+def _chart_unavailable_warning(exc: Exception) -> str:
+    return f"Performance chart: n/a ({exc})"
+
+
+def _write_plotly_html(figure: go.Figure, chart_path: Path) -> None:
     figure.write_html(chart_path, include_plotlyjs=True, full_html=True)
     _remove_plotly_cdn_defaults(chart_path)
-    return ChartOutput(path=chart_path, warnings=[])
 
 
 def _build_performance_figure(chart_data: PreparedChartData) -> go.Figure:
