@@ -94,6 +94,13 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
     `matchup_club_position_count`,
   - excludes raw opponent IDs from model features,
   - records matchup mode and feature columns in `run_metadata.json`.
+- Backtest performance engine:
+  - builds per-round prediction frames once per run with an in-memory `RoundFrameStore`,
+  - exposes `--jobs` for target-round parallelism,
+  - uses thread-based workers with parent-owned aggregation/writes,
+  - forces RF `n_jobs=1` when `--jobs > 1` to avoid nested parallelism,
+  - records cache, worker, backend, thread-env, and wall-clock metadata in `run_metadata.json`,
+  - keeps report semantics and scoring unchanged.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -189,6 +196,25 @@ ablation. The new `cartola_matchup_v1` path has been smoke-tested with
 `footystats_mode=ppg` and `fixture_mode=exploratory` for all three seasons, but
 we still need the paired ablation report before making a product recommendation.
 
+The backtest runner now uses the standard Cartola 2026 scoring contract:
+
+- 11 players plus 1 tecnico are selected;
+- the tecnico is included in budget, predicted totals, and actual totals;
+- one non-tecnico selected player is captain;
+- round-level `predicted_points` and `actual_points` include the captain multiplier;
+- selected-player `predicted_points` remains the raw per-athlete model score.
+
+The backtest budget is still fixed per round. A run with `--budget 100` means
+every round is optimized independently with at most C$ 100. It does **not** yet
+simulate patrimonio growth from previous rounds.
+
+Official Globo/ge documentation confirms that patrimonio changes through
+selected asset price movement, not directly through total lineup points. The
+exact price-variation formula is not publicly documented; official guidance
+uses qualitative rules and the PRO "Minimo Para Valorizar" concept. Therefore,
+future patrimonio simulation should replay official pre/post market prices or
+official variation fields instead of reverse-engineering a hidden formula.
+
 **How To Run Now**
 No fixture context:
 
@@ -213,6 +239,7 @@ uv run --frozen python -m cartola.backtesting.cli \
   --footystats-mode ppg \
   --matchup-context-mode cartola_matchup_v1 \
   --current-year 2026 \
+  --jobs 12 \
   --output-root data/08_reporting/backtests/matchup_context_single
 ```
 
@@ -334,30 +361,46 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
-2. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
-3. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
+1. Finish backtest output UX.
+   - Add Rich terminal output to `python -m cartola.backtesting.cli`.
+   - Show warnings, strategy summary, run metadata, output path, fixture/FootyStats/matchup modes, jobs, effective workers, backend, model `n_jobs`, prediction frame count, and wall-clock seconds.
+   - Generate one consolidated performance chart at `charts/strategy_performance_by_round.png`.
+   - Chart layout: cumulative actual points by strategy, per-round actual points by strategy, and random_forest formation markers by round.
+   - Keep this display/report-only: no scoring, optimizer, feature, or CSV/JSON schema changes.
+2. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
+3. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
+4. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
    - Future step: integrate strict fixtures into live recommendations as an explicit opt-in mode after several successful live captures.
-4. Build a paired matchup-context ablation report:
+5. Build a paired matchup-context ablation report:
    - control: `footystats_mode=ppg`, `fixture_mode=exploratory`, `matchup_context_mode=none`;
    - treatment: `footystats_mode=ppg`, `fixture_mode=exploratory`, `matchup_context_mode=cartola_matchup_v1`;
    - seasons: `2023`, `2024`, `2025`;
    - require identical candidate pools and baseline/price results across arms.
-5. Decide whether to promote `cartola_matchup_v1` only after the paired report shows positive squad-point lift across the complete historical gate.
-6. Defer wider matchup features until v1 is measured:
+6. Decide whether to promote `cartola_matchup_v1` only after the paired report shows positive squad-point lift across the complete historical gate.
+7. Audit patrimonio data before changing budget semantics.
+   - Verify historical raw data contains reliable pre-round price and post-round price or official variation fields.
+   - Verify tecnico rows have the same market fields.
+   - Verify DNP/no-play behavior preserves or changes price as expected.
+   - Verify whether enough information exists to replay official patrimonio without reverse-engineering Cartola's hidden valuation formula.
+8. Add simulated patrimonio only after the audit passes.
+   - Add `budget_mode=fixed|simulated_patrimonio`.
+   - Keep `fixed` as the current controlled-comparison mode.
+   - In `simulated_patrimonio`, start from `--budget`, optimize round N with current patrimonio, then update patrimonio from selected players' and tecnico's official post-round market values.
+   - Persist `budget_available`, `budget_used`, `unspent_cash`, `patrimonio_after_round`, and `patrimonio_delta`.
+   - Do not apply the captain multiplier to patrimonio unless an official source proves that Cartola does.
+9. Defer wider matchup features until v1 is measured:
    - home/away split priors,
    - shorter roll3 variants,
    - odds/goal-environment fields,
    - or DNP probability modeling if selection reliability becomes the bigger live-game bottleneck.
-7. Add DNP probability modeling if needed:
-   - predict `p_play`,
-   - use `expected_points = predicted_points * p_play`.
-8. Add model comparison only after features improve:
-   - HistGradientBoosting,
-   - GradientBoosting,
-   - maybe XGBoost/CatBoost later.
-9. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
+10. Add DNP probability modeling if needed:
+    - predict `p_play`,
+    - use `expected_points = predicted_points * p_play`.
+11. Add model comparison only after features improve:
+    - HistGradientBoosting,
+    - GradientBoosting,
+    - maybe XGBoost/CatBoost later.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:
