@@ -112,3 +112,116 @@ def test_fixture_context_prefers_strict_when_valid(tmp_path: Path, monkeypatch: 
     assert rows["fixture_source"].unique().tolist() == ["strict"]
     assert rows["id_clube"].tolist() == [10, 20]
     assert rows["source_manifest"].tolist() == ["data/01_raw/fixtures_strict/2025/partidas-1.manifest.json"] * 2
+
+
+def test_classify_complete_historical_and_partial_current() -> None:
+    config = audit.MatchupFixtureAuditConfig(current_year=2026)
+
+    assert audit.classify_season(2025, list(range(1, 39)), config) == ("complete_historical", True, [])
+    assert audit.classify_season(2026, list(range(1, 14)), config) == (
+        "partial_current",
+        False,
+        ["partial current season; matchup coverage is not historically comparable"],
+    )
+    irregular = audit.classify_season(2024, [1, 2, 4], config)
+    assert irregular[0] == "irregular_historical"
+    assert irregular[1] is False
+
+
+def test_audit_season_passes_when_every_played_club_has_one_context_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = pd.DataFrame(
+        [
+            _context_row(2025, 1, 10, 20, 1, "f1"),
+            _context_row(2025, 1, 20, 10, 0, "f1"),
+            _context_row(2025, 2, 10, 30, 1, "f2"),
+            _context_row(2025, 2, 30, 10, 0, "f2"),
+        ]
+    )
+
+    monkeypatch.setattr(audit, "load_season_data", lambda season, project_root: _season_df())
+    monkeypatch.setattr(
+        audit,
+        "load_round_fixture_context",
+        lambda project_root, *, season, round_number: context[context["rodada"].eq(round_number)].copy(),
+    )
+
+    record = audit.audit_one_season(
+        2025,
+        audit.MatchupFixtureAuditConfig(project_root=tmp_path, current_year=2026, expected_complete_rounds=2),
+    )
+
+    assert record.fixture_status == "ok"
+    assert record.metrics_comparable is True
+    assert record.expected_club_round_count == 4
+    assert record.fixture_context_row_count == 4
+    assert record.missing_context_count == 0
+    assert record.duplicate_context_count == 0
+    assert record.extra_context_count == 0
+
+
+def test_audit_season_fails_missing_duplicate_and_extra_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = pd.DataFrame(
+        [
+            _context_row(2025, 1, 10, 20, 1, "f1"),
+            _context_row(2025, 1, 10, 20, 1, "f1"),
+            _context_row(2025, 1, 99, 20, 0, "f1"),
+        ]
+    )
+
+    monkeypatch.setattr(audit, "load_season_data", lambda season, project_root: _season_df())
+    monkeypatch.setattr(
+        audit,
+        "load_round_fixture_context",
+        lambda project_root, *, season, round_number: context[context["rodada"].eq(round_number)].copy(),
+    )
+
+    record = audit.audit_one_season(2025, audit.MatchupFixtureAuditConfig(project_root=tmp_path, current_year=2026))
+
+    assert record.fixture_status == "failed"
+    assert record.metrics_comparable is False
+    assert record.missing_context_count == 3
+    assert record.duplicate_context_count == 1
+    assert record.extra_context_count == 1
+    assert {"rodada": 1, "id_clube": 20} in record.missing_context_keys
+    assert {"rodada": 1, "id_clube": 10, "count": 2} in record.duplicate_context_keys
+    assert {"rodada": 1, "id_clube": 99} in record.extra_context_keys
+
+
+def _season_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"rodada": 1, "id_clube": 10, "nome_clube": "A", "entrou_em_campo": True},
+            {"rodada": 1, "id_clube": 20, "nome_clube": "B", "entrou_em_campo": True},
+            {"rodada": 2, "id_clube": 10, "nome_clube": "A", "entrou_em_campo": True},
+            {"rodada": 2, "id_clube": 30, "nome_clube": "C", "entrou_em_campo": True},
+        ]
+    )
+
+
+def _context_row(
+    season: int,
+    rodada: int,
+    id_clube: int,
+    opponent_id_clube: int,
+    is_home: int,
+    source_file: str,
+) -> dict[str, object]:
+    return {
+        "season": season,
+        "rodada": rodada,
+        "id_clube": id_clube,
+        "opponent_id_clube": opponent_id_clube,
+        "opponent_nome_clube": None,
+        "is_home": is_home,
+        "fixture_source": "exploratory",
+        "source_file": source_file,
+        "source_manifest": None,
+        "source_sha256": "a",
+        "source_manifest_sha256": None,
+    }
