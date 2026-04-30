@@ -20,6 +20,8 @@ def _metadata_for_config(config: BacktestConfig, *, warnings: list[str] | None =
         formation_search=str(contract["formation_search"]),
         fixture_mode=config.fixture_mode,
         strict_alignment_policy=config.strict_alignment_policy,
+        matchup_context_mode=config.matchup_context_mode,
+        matchup_context_feature_columns=[],
         fixture_source_directory=None,
         fixture_manifest_paths=[],
         fixture_manifest_sha256={},
@@ -99,6 +101,12 @@ def test_parse_args_accepts_footystats_and_output_options() -> None:
     assert args.current_year == 2026
 
 
+def test_parse_args_accepts_matchup_context_mode() -> None:
+    args = parse_args(["--matchup-context-mode", "cartola_matchup_v1"])
+
+    assert args.matchup_context_mode == "cartola_matchup_v1"
+
+
 def test_parse_args_accepts_ppg_xg_footystats_mode() -> None:
     args = parse_args(["--footystats-mode", "ppg_xg"])
 
@@ -138,6 +146,7 @@ def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path)
     assert observed_configs == [BacktestConfig(season=2025, start_round=5, budget=100.0, project_root=tmp_path)]
     observed_config = observed_configs[0]
     assert observed_config.output_root == Path("data/08_reporting/backtests")
+    assert observed_config.matchup_context_mode == "none"
     assert observed_config.footystats_mode == "none"
     assert observed_config.footystats_evaluation_scope == "historical_candidate"
     assert observed_config.footystats_league_slug == "brazil-serie-a"
@@ -170,6 +179,8 @@ def test_main_passes_footystats_options_and_output_root_to_config(monkeypatch) -
             "data/08_reporting/backtests/footystats_ppg",
             "--footystats-mode",
             "ppg",
+            "--matchup-context-mode",
+            "cartola_matchup_v1",
             "--footystats-evaluation-scope",
             "historical_candidate",
             "--footystats-league-slug",
@@ -184,6 +195,7 @@ def test_main_passes_footystats_options_and_output_root_to_config(monkeypatch) -
     assert config.output_root == Path("data/08_reporting/backtests/footystats_ppg")
     assert config.output_path == Path("data/08_reporting/backtests/footystats_ppg/2025")
     assert config.footystats_mode == "ppg"
+    assert config.matchup_context_mode == "cartola_matchup_v1"
     assert config.footystats_evaluation_scope == "historical_candidate"
     assert config.footystats_league_slug == "brazil-serie-a"
     assert config.current_year == 2026

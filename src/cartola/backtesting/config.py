@@ -33,6 +33,7 @@ FixtureMode = Literal["none", "exploratory", "strict"]
 StrictAlignmentPolicy = Literal["fail", "exclude_round"]
 FootyStatsMode = Literal["none", "ppg", "ppg_xg"]
 FootyStatsEvaluationScope = Literal["historical_candidate", "live_current"]
+MatchupContextMode = Literal["none", "cartola_matchup_v1"]
 
 STATUS_ID_TO_NAME: Mapping[int, str] = {
     2: "Duvida",
@@ -73,6 +74,7 @@ class BacktestConfig:
     output_root: Path = Path("data/08_reporting/backtests")
     fixture_mode: FixtureMode = "none"
     strict_alignment_policy: StrictAlignmentPolicy = "fail"
+    matchup_context_mode: MatchupContextMode = "none"
     footystats_mode: FootyStatsMode = "none"
     footystats_evaluation_scope: FootyStatsEvaluationScope = "historical_candidate"
     footystats_league_slug: str = "brazil-serie-a"

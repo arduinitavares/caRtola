@@ -17,6 +17,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/backtests"))
     parser.add_argument("--fixture-mode", choices=("none", "exploratory", "strict"), default="none")
     parser.add_argument("--strict-alignment-policy", choices=("fail", "exclude_round"), default="fail")
+    parser.add_argument("--matchup-context-mode", choices=("none", "cartola_matchup_v1"), default="none")
     parser.add_argument("--footystats-mode", choices=("none", "ppg", "ppg_xg"), default="none")
     parser.add_argument(
         "--footystats-evaluation-scope",
@@ -39,6 +40,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_root=args.output_root,
         fixture_mode=args.fixture_mode,
         strict_alignment_policy=args.strict_alignment_policy,
+        matchup_context_mode=args.matchup_context_mode,
         footystats_mode=args.footystats_mode,
         footystats_evaluation_scope=args.footystats_evaluation_scope,
         footystats_league_slug=args.footystats_league_slug,

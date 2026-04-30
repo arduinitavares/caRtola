@@ -7,7 +7,12 @@ import pandas as pd
 
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
-from cartola.backtesting.features import build_prediction_frame, build_training_frame, feature_columns_for_config
+from cartola.backtesting.features import (
+    MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
+    build_prediction_frame,
+    build_training_frame,
+    feature_columns_for_config,
+)
 from cartola.backtesting.footystats_features import (
     FootyStatsJoinDiagnostics,
     FootyStatsPPGLoadResult,
@@ -79,6 +84,8 @@ class BacktestMetadata:
     formation_search: str
     fixture_mode: str
     strict_alignment_policy: str
+    matchup_context_mode: str
+    matchup_context_feature_columns: list[str]
     fixture_source_directory: str | None
     fixture_manifest_paths: list[str]
     fixture_manifest_sha256: dict[str, str]
@@ -125,8 +132,11 @@ def run_backtest(
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
+    _validate_matchup_context_config(config)
     resolved_fixtures = _resolve_fixtures(config, data, fixtures)
     fixture_data = resolved_fixtures.fixtures
+    if config.matchup_context_mode != "none" and fixture_data is None:
+        raise ValueError("matchup_context_mode requires fixture_mode='exploratory' or 'strict' with available fixtures")
     alignment_excluded_rounds = _validate_fixture_alignment(
         fixture_data,
         data,
@@ -161,6 +171,8 @@ def run_backtest(
         formation_search=FORMATION_SEARCH,
         fixture_mode=config.fixture_mode,
         strict_alignment_policy=config.strict_alignment_policy,
+        matchup_context_mode=config.matchup_context_mode,
+        matchup_context_feature_columns=_matchup_context_feature_columns(config),
         fixture_source_directory=resolved_fixtures.source_directory,
         fixture_manifest_paths=resolved_fixtures.manifest_paths,
         fixture_manifest_sha256=resolved_fixtures.manifest_sha256,
@@ -191,8 +203,15 @@ def run_backtest(
             playable_statuses=config.playable_statuses,
             fixtures=fixture_data,
             footystats_rows=footystats_rows,
+            matchup_context_mode=config.matchup_context_mode,
         )
-        candidates = build_prediction_frame(data, round_number, fixtures=fixture_data, footystats_rows=footystats_rows)
+        candidates = build_prediction_frame(
+            data,
+            round_number,
+            fixtures=fixture_data,
+            footystats_rows=footystats_rows,
+            matchup_context_mode=config.matchup_context_mode,
+        )
         candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy()
 
         if training.empty or candidates.empty:
@@ -302,6 +321,23 @@ def _resolve_footystats(config: BacktestConfig) -> FootyStatsPPGLoadResult | Non
         current_year=config.current_year,
         footystats_mode=config.footystats_mode,
     )
+
+
+def _validate_matchup_context_config(config: BacktestConfig) -> None:
+    if config.matchup_context_mode == "none":
+        return
+    if config.matchup_context_mode != "cartola_matchup_v1":
+        raise ValueError(f"Unsupported matchup_context_mode: {config.matchup_context_mode!r}")
+    if config.fixture_mode == "none":
+        raise ValueError("matchup_context_mode='cartola_matchup_v1' requires fixture_mode='exploratory' or 'strict'")
+
+
+def _matchup_context_feature_columns(config: BacktestConfig) -> list[str]:
+    if config.matchup_context_mode == "none":
+        return []
+    if config.matchup_context_mode == "cartola_matchup_v1":
+        return list(MATCHUP_CONTEXT_V1_FEATURE_COLUMNS)
+    raise ValueError(f"Unsupported matchup_context_mode: {config.matchup_context_mode!r}")
 
 
 def _validate_footystats_join_diagnostics(diagnostics: FootyStatsJoinDiagnostics) -> None:

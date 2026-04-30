@@ -22,9 +22,6 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - appearance rate,
   - volatility,
   - club recent form.
-- Fixture context features:
-  - `is_home`,
-  - `opponent_club_points_roll3`.
 - 2025 reconstructed fixture files for exploratory analysis.
 - Strict no-leakage fixture infrastructure:
   - pre-lock Cartola snapshot capture,
@@ -83,7 +80,20 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - prefers strict fixture CSVs with valid manifests and falls back to exploratory fixture CSVs,
   - reports missing, duplicate, and extra `(rodada, id_clube)` fixture-context keys,
   - writes `matchup_fixture_coverage.csv/json` under `data/08_reporting/fixtures/`,
-  - gives an advisory decision before implementing `matchup_context_mode=cartola_matchup_v1`.
+  - currently reports `ready_for_matchup_context` for `2023`, `2024`, and `2025`.
+- First Cartola matchup-context integration:
+  - `matchup_context_mode`: `none | cartola_matchup_v1`,
+  - kept separate from `footystats_mode`,
+  - requires `fixture_mode=exploratory` or `fixture_mode=strict`,
+  - adds narrow roll5 Cartola matchup features only when explicitly enabled:
+    `matchup_is_home`,
+    `matchup_opponent_allowed_points_roll5`,
+    `matchup_opponent_allowed_position_points_roll5`,
+    `matchup_club_position_points_roll5`,
+    `matchup_opponent_allowed_position_count`,
+    `matchup_club_position_count`,
+  - excludes raw opponent IDs from model features,
+  - records matchup mode and feature columns in `run_metadata.json`.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -101,7 +111,7 @@ The multi-season audit shows the current pipeline is compatible with recent seas
 - `2022`: marked irregular because the raw round layout is unusual.
 - `2018`, `2019`, `2020`: structurally complete, but currently fail at load time and need schema compatibility work before they can expand the training/evaluation history.
 
-The next prediction-quality bet is still **FootyStats-style match context**, not forcing older Cartola seasons to load first. This is tabular modeling, so more old rows are not automatically better if the historical schema is degraded or partially reconstructed. FootyStats data is more likely to add independent signal if we can source Brasileirão seasons with pre-match-safe match/team fields.
+The next prediction-quality bet is now a measured **Cartola matchup-context ablation** on top of FootyStats PPG. The feature path exists and runs on `2023`, `2024`, and `2025`, but it should not be promoted until a paired control/treatment report proves that it improves squad points, not only player-level fit.
 
 The FootyStats compatibility audit is now implemented and the current `data/footystats/` files are Brazil Serie A seasons, not sample EPL data. The audit result is:
 
@@ -168,15 +178,16 @@ legacy scoring mode, no fixed-formation public config, and no configurable capta
 multiplier.
 
 The matchup fixture coverage audit is now implemented. Current result for
-`2023,2024,2025` is `exploratory_only`:
+`2023,2024,2025` is `ready_for_matchup_context`:
 
+- `2023`: complete historical season with full exploratory fixture coverage.
+- `2024`: complete historical season with full exploratory fixture coverage.
 - `2025`: complete historical season with full exploratory fixture coverage.
-- `2024`: complete historical season, but local fixture context is missing.
-- `2023`: irregular historical season in the raw round layout and local fixture context is missing.
 
-Interpretation: we can run a first matchup-context experiment against 2025 as
-exploratory research, but we should not claim multi-season generalization until
-2023-2024 fixture coverage is fixed or imported.
+Interpretation: the data gate is clear for a proper multi-season matchup-context
+ablation. The new `cartola_matchup_v1` path has been smoke-tested with
+`footystats_mode=ppg` and `fixture_mode=exploratory` for all three seasons, but
+we still need the paired ablation report before making a product recommendation.
 
 **How To Run Now**
 No fixture context:
@@ -189,6 +200,20 @@ Exploratory 2025 fixture context:
 
 ```bash
 uv run --frozen python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100 --fixture-mode exploratory
+```
+
+FootyStats PPG plus Cartola matchup-context v1:
+
+```bash
+uv run --frozen python -m cartola.backtesting.cli \
+  --season 2025 \
+  --start-round 5 \
+  --budget 100 \
+  --fixture-mode exploratory \
+  --footystats-mode ppg \
+  --matchup-context-mode cartola_matchup_v1 \
+  --current-year 2026 \
+  --output-root data/08_reporting/backtests/matchup_context_single
 ```
 
 Single-season no-fixture FootyStats PPG backtest:
@@ -314,18 +339,18 @@ uv run --frozen scripts/pyrepo-check --all
 3. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
    - Future step: integrate strict fixtures into live recommendations as an explicit opt-in mode after several successful live captures.
-4. Use the current `exploratory_only` matchup fixture audit result to choose the next action.
-   - Option A: implement a 2025-only exploratory `matchup_context_mode=cartola_matchup_v1` experiment, clearly labeled as non-generalized.
-   - Option B: fix/import 2023-2024 fixture coverage first, then rerun the audit before implementing matchup features.
-5. Decide the next narrow feature bet after the fixture coverage gate:
-   - Cartola matchup context if coverage is ready;
-   - odds/goal-environment features as a separate ablation over PPG, not stacked blindly after xG;
-   - or DNP probability modeling if selection reliability is the bigger live-game bottleneck.
-6. Add higher-signal Cartola fixture features:
-   - opponent defensive weakness,
-   - points conceded by opponent and position,
-   - home/away split priors.
-7. Add DNP probability modeling:
+4. Build a paired matchup-context ablation report:
+   - control: `footystats_mode=ppg`, `fixture_mode=exploratory`, `matchup_context_mode=none`;
+   - treatment: `footystats_mode=ppg`, `fixture_mode=exploratory`, `matchup_context_mode=cartola_matchup_v1`;
+   - seasons: `2023`, `2024`, `2025`;
+   - require identical candidate pools and baseline/price results across arms.
+5. Decide whether to promote `cartola_matchup_v1` only after the paired report shows positive squad-point lift across the complete historical gate.
+6. Defer wider matchup features until v1 is measured:
+   - home/away split priors,
+   - shorter roll3 variants,
+   - odds/goal-environment fields,
+   - or DNP probability modeling if selection reliability becomes the bigger live-game bottleneck.
+7. Add DNP probability modeling if needed:
    - predict `p_play`,
    - use `expected_points = predicted_points * p_play`.
 8. Add model comparison only after features improve:

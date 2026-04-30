@@ -43,8 +43,6 @@ FEATURE_COLUMNS: list[str] = [
     "prior_price_mean",
     "prior_variation_mean",
     "club_points_roll3",
-    "is_home",
-    "opponent_club_points_roll3",
     "prior_media",
     "prior_num_jogos",
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
@@ -62,6 +60,15 @@ FOOTYSTATS_XG_FEATURE_COLUMNS: list[str] = [
     "footystats_xg_diff",
 ]
 
+MATCHUP_CONTEXT_V1_FEATURE_COLUMNS: list[str] = [
+    "matchup_is_home",
+    "matchup_opponent_allowed_points_roll5",
+    "matchup_opponent_allowed_position_points_roll5",
+    "matchup_club_position_points_roll5",
+    "matchup_opponent_allowed_position_count",
+    "matchup_club_position_count",
+]
+
 NUMERIC_PRIOR_COLUMNS: list[str] = [
     "position_points_prior",
     "prior_appearances",
@@ -74,22 +81,29 @@ NUMERIC_PRIOR_COLUMNS: list[str] = [
     "prior_price_mean",
     "prior_variation_mean",
     "club_points_roll3",
-    "is_home",
-    "opponent_club_points_roll3",
     "prior_media",
     "prior_num_jogos",
+    *MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     *[f"prior_{scout}_mean" for scout in DEFAULT_SCOUT_COLUMNS],
 ]
 
 
 def feature_columns_for_config(config: BacktestConfig) -> list[str]:
+    columns = list(FEATURE_COLUMNS)
     if config.footystats_mode == "none":
-        return list(FEATURE_COLUMNS)
-    if config.footystats_mode == "ppg":
-        return [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS]
-    if config.footystats_mode == "ppg_xg":
-        return [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS, *FOOTYSTATS_XG_FEATURE_COLUMNS]
-    raise ValueError(f"Unsupported footystats_mode: {config.footystats_mode!r}")
+        pass
+    elif config.footystats_mode == "ppg":
+        columns.extend(FOOTYSTATS_PPG_FEATURE_COLUMNS)
+    elif config.footystats_mode == "ppg_xg":
+        columns.extend([*FOOTYSTATS_PPG_FEATURE_COLUMNS, *FOOTYSTATS_XG_FEATURE_COLUMNS])
+    else:
+        raise ValueError(f"Unsupported footystats_mode: {config.footystats_mode!r}")
+
+    if config.matchup_context_mode == "none":
+        return columns
+    if config.matchup_context_mode == "cartola_matchup_v1":
+        return [*columns, *MATCHUP_CONTEXT_V1_FEATURE_COLUMNS]
+    raise ValueError(f"Unsupported matchup_context_mode: {config.matchup_context_mode!r}")
 
 
 def build_prediction_frame(
@@ -97,11 +111,19 @@ def build_prediction_frame(
     target_round: int,
     fixtures: pd.DataFrame | None = None,
     footystats_rows: pd.DataFrame | None = None,
+    matchup_context_mode: str = "none",
 ) -> pd.DataFrame:
     candidates = season_df[season_df["rodada"] == target_round].copy()
     played_history = _played_history(season_df, target_round)
     all_history = season_df[season_df["rodada"] < target_round].copy()
-    frame = _add_prior_features(candidates, played_history, all_history, fixtures, target_round)
+    frame = _add_prior_features(
+        candidates,
+        played_history,
+        all_history,
+        fixtures,
+        target_round,
+        matchup_context_mode=matchup_context_mode,
+    )
     return merge_footystats_features(frame, footystats_rows, target_round=target_round)
 
 
@@ -111,6 +133,7 @@ def build_training_frame(
     playable_statuses: tuple[str, ...] | None = None,
     fixtures: pd.DataFrame | None = None,
     footystats_rows: pd.DataFrame | None = None,
+    matchup_context_mode: str = "none",
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     historical_rounds = sorted(
@@ -123,6 +146,7 @@ def build_training_frame(
             int(round_number),
             fixtures=fixtures,
             footystats_rows=footystats_rows,
+            matchup_context_mode=matchup_context_mode,
         )
         if playable_statuses is not None:
             round_frame = round_frame[round_frame["status"].isin(playable_statuses)].copy()
@@ -130,9 +154,12 @@ def build_training_frame(
         frames.append(round_frame)
 
     if not frames:
+        feature_columns = list(FEATURE_COLUMNS)
+        if matchup_context_mode == "cartola_matchup_v1":
+            feature_columns.extend(MATCHUP_CONTEXT_V1_FEATURE_COLUMNS)
         return pd.DataFrame(
             columns=pd.Index(
-                list(dict.fromkeys([*MARKET_COLUMNS, *FEATURE_COLUMNS, "target"]))
+                list(dict.fromkeys([*MARKET_COLUMNS, *feature_columns, "target"]))
             )
         )
     return pd.concat(frames, ignore_index=True)
@@ -182,13 +209,8 @@ def _club_history_features(played_history: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _fixture_context_features(
-    fixtures: pd.DataFrame | None,
-    *,
-    target_round: int,
-    played_history: pd.DataFrame,
-) -> pd.DataFrame:
-    columns = pd.Index(["id_clube", "is_home", "opponent_club_points_roll3"])
+def _round_fixture_context(fixtures: pd.DataFrame | None, target_round: int) -> pd.DataFrame:
+    columns = pd.Index(["id_clube", "opponent_id_clube", "matchup_is_home"])
     if fixtures is None or fixtures.empty:
         return pd.DataFrame(columns=columns)
 
@@ -199,23 +221,193 @@ def _fixture_context_features(
         return pd.DataFrame(columns=columns)
 
     home_context = round_fixtures[["id_clube_home", "id_clube_away"]].rename(
-        columns={"id_clube_home": "id_clube", "id_clube_away": "opponent_id"}
+        columns={"id_clube_home": "id_clube", "id_clube_away": "opponent_id_clube"}
     )
-    home_context["is_home"] = 1
+    home_context["matchup_is_home"] = 1
     away_context = round_fixtures[["id_clube_away", "id_clube_home"]].rename(
-        columns={"id_clube_away": "id_clube", "id_clube_home": "opponent_id"}
+        columns={"id_clube_away": "id_clube", "id_clube_home": "opponent_id_clube"}
     )
-    away_context["is_home"] = 0
+    away_context["matchup_is_home"] = 0
     context = pd.concat([home_context, away_context], ignore_index=True)
     duplicate_clubs = context.loc[context["id_clube"].duplicated(), "id_clube"].drop_duplicates().to_list()
     if duplicate_clubs:
         raise ValueError(f"Duplicate fixture club context for round {target_round}: {duplicate_clubs}")
+    return context[["id_clube", "opponent_id_clube", "matchup_is_home"]]
 
-    opponent_roll = _club_history_features(played_history).rename(
-        columns={"id_clube": "opponent_id", "club_points_roll3": "opponent_club_points_roll3"}
+
+def _historical_fixture_context(fixtures: pd.DataFrame | None, target_round: int) -> pd.DataFrame:
+    columns = pd.Index(["rodada", "id_clube", "opponent_id_clube"])
+    if fixtures is None or fixtures.empty:
+        return pd.DataFrame(columns=columns)
+
+    fixture_frame = fixtures.copy()
+    fixture_frame["rodada"] = pd.to_numeric(fixture_frame["rodada"], errors="raise").astype(int)
+    fixture_frame = fixture_frame[fixture_frame["rodada"].lt(target_round)]
+    if fixture_frame.empty:
+        return pd.DataFrame(columns=columns)
+
+    home_context = fixture_frame[["rodada", "id_clube_home", "id_clube_away"]].rename(
+        columns={"id_clube_home": "id_clube", "id_clube_away": "opponent_id_clube"}
     )
-    context = context.merge(opponent_roll, on="opponent_id", how="left")
-    return context[["id_clube", "is_home", "opponent_club_points_roll3"]]
+    away_context = fixture_frame[["rodada", "id_clube_away", "id_clube_home"]].rename(
+        columns={"id_clube_away": "id_clube", "id_clube_home": "opponent_id_clube"}
+    )
+    return pd.concat([home_context, away_context], ignore_index=True)[["rodada", "id_clube", "opponent_id_clube"]]
+
+
+def _roll5_last(
+    frame: pd.DataFrame,
+    group_columns: list[str],
+    value_column: str,
+    output_column: str,
+    count_column: str | None = None,
+) -> pd.DataFrame:
+    if frame.empty:
+        columns = [*group_columns, output_column]
+        if count_column is not None:
+            columns.append(count_column)
+        return pd.DataFrame(columns=pd.Index(columns))
+
+    rows: list[dict[str, object]] = []
+    for key, group in frame.sort_values([*group_columns, "rodada"]).groupby(group_columns, sort=False, dropna=False):
+        key_values = key if isinstance(key, tuple) else (key,)
+        recent = group.tail(5)
+        row = {column: value for column, value in zip(group_columns, key_values, strict=True)}
+        row[output_column] = float(recent[value_column].mean())
+        if count_column is not None:
+            row[count_column] = int(recent["sample_count"].sum())
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _club_position_roll5(played_history: pd.DataFrame) -> pd.DataFrame:
+    columns = pd.Index(
+        [
+            "id_clube",
+            "posicao",
+            "matchup_club_position_points_roll5",
+            "matchup_club_position_count",
+        ]
+    )
+    if played_history.empty:
+        return pd.DataFrame(columns=columns)
+
+    club_position_round = (
+        played_history.groupby(["id_clube", "posicao", "rodada"], as_index=False)
+        .agg(position_points=("pontuacao", "mean"), sample_count=("pontuacao", "count"))
+        .sort_values(["id_clube", "posicao", "rodada"])
+    )
+    result = _roll5_last(
+        club_position_round,
+        ["id_clube", "posicao"],
+        "position_points",
+        "matchup_club_position_points_roll5",
+        "matchup_club_position_count",
+    )
+    return result if not result.empty else pd.DataFrame(columns=columns)
+
+
+def _opponent_allowed_roll5(played_history: pd.DataFrame, fixtures: pd.DataFrame | None, target_round: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    all_columns = pd.Index(["opponent_id_clube", "matchup_opponent_allowed_points_roll5"])
+    position_columns = pd.Index(
+        [
+            "opponent_id_clube",
+            "posicao",
+            "matchup_opponent_allowed_position_points_roll5",
+            "matchup_opponent_allowed_position_count",
+        ]
+    )
+    fixture_context = _historical_fixture_context(fixtures, target_round)
+    if played_history.empty or fixture_context.empty:
+        return pd.DataFrame(columns=all_columns), pd.DataFrame(columns=position_columns)
+
+    scored_against = played_history.merge(
+        fixture_context,
+        on=["rodada", "id_clube"],
+        how="inner",
+        validate="many_to_one",
+    )
+    if scored_against.empty:
+        return pd.DataFrame(columns=all_columns), pd.DataFrame(columns=position_columns)
+
+    opponent_round = (
+        scored_against.groupby(["opponent_id_clube", "rodada"], as_index=False)
+        .agg(allowed_points=("pontuacao", "mean"), sample_count=("pontuacao", "count"))
+        .sort_values(["opponent_id_clube", "rodada"])
+    )
+    opponent_position_round = (
+        scored_against.groupby(["opponent_id_clube", "posicao", "rodada"], as_index=False)
+        .agg(allowed_position_points=("pontuacao", "mean"), sample_count=("pontuacao", "count"))
+        .sort_values(["opponent_id_clube", "posicao", "rodada"])
+    )
+    opponent_all = _roll5_last(
+        opponent_round,
+        ["opponent_id_clube"],
+        "allowed_points",
+        "matchup_opponent_allowed_points_roll5",
+    )
+    opponent_position = _roll5_last(
+        opponent_position_round,
+        ["opponent_id_clube", "posicao"],
+        "allowed_position_points",
+        "matchup_opponent_allowed_position_points_roll5",
+        "matchup_opponent_allowed_position_count",
+    )
+    return opponent_all, opponent_position
+
+
+def _add_matchup_context_features(
+    frame: pd.DataFrame,
+    played_history: pd.DataFrame,
+    fixtures: pd.DataFrame | None,
+    target_round: int,
+) -> pd.DataFrame:
+    result = frame.merge(
+        _round_fixture_context(fixtures, target_round),
+        on="id_clube",
+        how="left",
+        validate="many_to_one",
+    )
+    opponent_allowed, opponent_position_allowed = _opponent_allowed_roll5(played_history, fixtures, target_round)
+    result = result.merge(opponent_allowed, on="opponent_id_clube", how="left", validate="many_to_one")
+    result = result.merge(
+        opponent_position_allowed,
+        on=["opponent_id_clube", "posicao"],
+        how="left",
+        validate="many_to_one",
+    )
+    result = result.merge(_club_position_roll5(played_history), on=["id_clube", "posicao"], how="left", validate="many_to_one")
+
+    global_points_prior = float(played_history["pontuacao"].mean()) if not played_history.empty else 0.0
+    position_priors = _position_priors(played_history).rename(
+        columns={"position_points_prior": "_matchup_position_points_prior"}
+    )
+    result = result.merge(position_priors, on="posicao", how="left", validate="many_to_one")
+    for column in [*MATCHUP_CONTEXT_V1_FEATURE_COLUMNS, "_matchup_position_points_prior"]:
+        if column not in result.columns:
+            result[column] = pd.NA
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+
+    result["matchup_is_home"] = result["matchup_is_home"].fillna(0).astype(int)
+    result["matchup_opponent_allowed_points_roll5"] = result["matchup_opponent_allowed_points_roll5"].fillna(
+        global_points_prior
+    )
+    result["matchup_opponent_allowed_position_points_roll5"] = (
+        result["matchup_opponent_allowed_position_points_roll5"]
+        .fillna(result["matchup_opponent_allowed_points_roll5"])
+        .fillna(result["_matchup_position_points_prior"])
+        .fillna(global_points_prior)
+    )
+    result["matchup_club_position_points_roll5"] = (
+        result["matchup_club_position_points_roll5"]
+        .fillna(result["_matchup_position_points_prior"])
+        .fillna(global_points_prior)
+    )
+    result["matchup_opponent_allowed_position_count"] = (
+        result["matchup_opponent_allowed_position_count"].fillna(0).astype(int)
+    )
+    result["matchup_club_position_count"] = result["matchup_club_position_count"].fillna(0).astype(int)
+    return result.drop(columns=["opponent_id_clube", "_matchup_position_points_prior"], errors="ignore")
 
 
 def _global_club_points_prior(played_history: pd.DataFrame) -> float:
@@ -238,17 +430,16 @@ def _add_prior_features(
     all_history: pd.DataFrame,
     fixtures: pd.DataFrame | None,
     target_round: int,
+    matchup_context_mode: str = "none",
 ) -> pd.DataFrame:
     frame = candidates.merge(_player_history_features(played_history), on="id_atleta", how="left")
     frame = frame.merge(_position_priors(played_history), on="posicao", how="left")
     frame = frame.merge(_appearance_history_features(all_history), on="id_atleta", how="left")
     frame = frame.merge(_club_history_features(played_history), on="id_clube", how="left")
-    frame = frame.merge(
-        _fixture_context_features(fixtures, target_round=target_round, played_history=played_history),
-        on="id_clube",
-        how="left",
-        validate="many_to_one",
-    )
+    if matchup_context_mode == "cartola_matchup_v1":
+        frame = _add_matchup_context_features(frame, played_history, fixtures, target_round)
+    elif matchup_context_mode != "none":
+        raise ValueError(f"Unsupported matchup_context_mode: {matchup_context_mode!r}")
 
     for column in NUMERIC_PRIOR_COLUMNS:
         if column in frame.columns:
@@ -267,10 +458,6 @@ def _add_prior_features(
     frame["prior_price_mean"] = frame["prior_price_mean"].fillna(frame[MARKET_OPEN_PRICE_COLUMN])
     frame["prior_variation_mean"] = frame["prior_variation_mean"].fillna(0)
     frame["club_points_roll3"] = frame["club_points_roll3"].fillna(global_club_points_prior)
-    # Missing fixture context is encoded as the neutral away-like default; runner
-    # alignment validation requires fixture coverage for clubs that actually played.
-    frame["is_home"] = frame["is_home"].fillna(0).astype(int)
-    frame["opponent_club_points_roll3"] = frame["opponent_club_points_roll3"].fillna(global_club_points_prior)
     frame["prior_media"] = frame["prior_media"].fillna(frame["prior_points_mean"])
     frame["prior_num_jogos"] = frame["prior_num_jogos"].fillna(0)
 

@@ -261,6 +261,24 @@ para `fixtures` exploratório quando não existir. A decisão final indica se j�
 dá para avançar para `matchup_context_mode=cartola_matchup_v1`, se só há base
 exploratória suficiente, ou se a cobertura precisa ser corrigida antes.
 
+Com cobertura aprovada, rode o contexto de matchup como um modo separado de
+`footystats_mode`:
+
+```bash
+uv run --frozen python -m cartola.backtesting.cli \
+  --season 2025 \
+  --start-round 5 \
+  --budget 100 \
+  --fixture-mode exploratory \
+  --footystats-mode ppg \
+  --matchup-context-mode cartola_matchup_v1 \
+  --current-year 2026 \
+  --output-root data/08_reporting/backtests/matchup_context_single
+```
+
+Na v1, `cartola_matchup_v1` exige `fixture_mode=exploratory` ou `strict`; o
+runner falha se o contexto for pedido com `fixture_mode=none`.
+
 ## ✅ Qualidade
 
 O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:

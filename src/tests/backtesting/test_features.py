@@ -8,6 +8,7 @@ from cartola.backtesting.features import (
     FEATURE_COLUMNS,
     FOOTYSTATS_PPG_FEATURE_COLUMNS,
     FOOTYSTATS_XG_FEATURE_COLUMNS,
+    MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     build_prediction_frame,
     build_training_frame,
     feature_columns_for_config,
@@ -153,6 +154,8 @@ def _season_df() -> pd.DataFrame:
 def _fixture_df() -> pd.DataFrame:
     return pd.DataFrame(
         [
+            {"rodada": 1, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-03-29"},
+            {"rodada": 2, "id_clube_home": 20, "id_clube_away": 10, "data": "2025-04-05"},
             {"rodada": 3, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-12"},
             {"rodada": 4, "id_clube_home": 20, "id_clube_away": 10, "data": "2025-04-19"},
         ]
@@ -401,6 +404,10 @@ def test_feature_columns_for_none_excludes_footystats_columns() -> None:
     assert columns is not FEATURE_COLUMNS
     for column in FOOTYSTATS_PPG_FEATURE_COLUMNS:
         assert column not in columns
+    for column in MATCHUP_CONTEXT_V1_FEATURE_COLUMNS:
+        assert column not in columns
+    assert "is_home" not in columns
+    assert "opponent_club_points_roll3" not in columns
 
 
 def test_feature_columns_for_ppg_includes_footystats_columns_after_base_columns() -> None:
@@ -417,6 +424,16 @@ def test_feature_columns_for_ppg_xg_includes_ppg_then_xg_columns_after_base_colu
     assert columns[:base_count] == FEATURE_COLUMNS
     assert columns[base_count : base_count + ppg_count] == FOOTYSTATS_PPG_FEATURE_COLUMNS
     assert columns[base_count + ppg_count :] == FOOTYSTATS_XG_FEATURE_COLUMNS
+
+
+def test_feature_columns_for_matchup_context_adds_matchup_columns_after_footystats_columns() -> None:
+    columns = feature_columns_for_config(
+        BacktestConfig(footystats_mode="ppg", matchup_context_mode="cartola_matchup_v1")
+    )
+
+    expected = [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS, *MATCHUP_CONTEXT_V1_FEATURE_COLUMNS]
+    assert columns == expected
+    assert "opponent_id_clube" not in columns
 
 
 def test_prediction_frame_merges_footystats_ppg_rows() -> None:
@@ -512,44 +529,93 @@ def test_prior_cumulative_replacements_use_only_prior_rounds() -> None:
     assert player["prior_num_jogos"] == 2
 
 
-def test_fixture_features_mark_home_and_away_players() -> None:
-    frame = build_prediction_frame(_season_df(), target_round=3, fixtures=_fixture_df())
+def test_matchup_context_v1_marks_home_and_away_players() -> None:
+    frame = build_prediction_frame(
+        _season_df(),
+        target_round=3,
+        fixtures=_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+    )
     home_player = frame.loc[frame["id_atleta"] == 1].iloc[0]
     away_player = frame.loc[frame["id_atleta"] == 2].iloc[0]
 
-    assert home_player["is_home"] == 1
-    assert away_player["is_home"] == 0
+    assert home_player["matchup_is_home"] == 1
+    assert away_player["matchup_is_home"] == 0
 
 
-def test_opponent_club_points_roll3_uses_prior_rounds_only() -> None:
+def test_matchup_context_v1_uses_prior_rounds_only() -> None:
     season_df = _season_df()
-    season_df.loc[season_df["id_atleta"].eq(2), "pontuacao"] = [10, 20, 500]
+    season_df.loc[season_df["id_atleta"].eq(1), "pontuacao"] = [2, 8, 500]
 
-    frame = build_prediction_frame(season_df, target_round=3, fixtures=_fixture_df())
+    frame = build_prediction_frame(
+        season_df,
+        target_round=3,
+        fixtures=_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+    )
     player = frame.loc[frame["id_atleta"] == 1].iloc[0]
 
-    assert player["opponent_club_points_roll3"] == pytest.approx(15)
+    assert player["matchup_opponent_allowed_points_roll5"] == pytest.approx(5)
+    assert player["matchup_opponent_allowed_position_points_roll5"] == pytest.approx(5)
+    assert player["matchup_club_position_points_roll5"] == pytest.approx(5)
 
 
-def test_fixture_features_fall_back_without_fixtures() -> None:
+def test_matchup_context_v1_uses_points_allowed_by_opponent_not_opponent_scored_points() -> None:
+    season_df = _season_df()
+    season_df.loc[season_df["id_atleta"].eq(1), "pontuacao"] = [100, 100, 500]
+    season_df.loc[season_df["id_atleta"].eq(2), "pontuacao"] = [1, 3, 500]
+
+    frame = build_prediction_frame(
+        season_df,
+        target_round=3,
+        fixtures=_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+    )
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["matchup_opponent_allowed_points_roll5"] == pytest.approx(100)
+
+
+def test_matchup_context_none_does_not_emit_matchup_columns_without_fixtures() -> None:
     frame = build_prediction_frame(_season_df(), target_round=3)
     player = frame.loc[frame["id_atleta"] == 1].iloc[0]
 
-    assert player["is_home"] == 0
-    assert player["opponent_club_points_roll3"] == pytest.approx(5)
+    assert "matchup_is_home" not in player.index
+    assert "matchup_opponent_allowed_points_roll5" not in player.index
 
 
-def test_fixture_features_match_string_round_values() -> None:
+def test_matchup_context_v1_falls_back_without_fixtures() -> None:
+    frame = build_prediction_frame(
+        _season_df(),
+        target_round=3,
+        matchup_context_mode="cartola_matchup_v1",
+    )
+    player = frame.loc[frame["id_atleta"] == 1].iloc[0]
+
+    assert player["matchup_is_home"] == 0
+    assert player["matchup_opponent_allowed_points_roll5"] == pytest.approx(5)
+    assert player["matchup_opponent_allowed_position_points_roll5"] == pytest.approx(5)
+    assert player["matchup_club_position_points_roll5"] == pytest.approx(5)
+    assert player["matchup_opponent_allowed_position_count"] == 0
+    assert player["matchup_club_position_count"] == 2
+
+
+def test_matchup_context_v1_matches_string_round_values() -> None:
     fixtures = _fixture_df()
     fixtures["rodada"] = fixtures["rodada"].astype(str)
 
-    frame = build_prediction_frame(_season_df(), target_round=3, fixtures=fixtures)
+    frame = build_prediction_frame(
+        _season_df(),
+        target_round=3,
+        fixtures=fixtures,
+        matchup_context_mode="cartola_matchup_v1",
+    )
     home_player = frame.loc[frame["id_atleta"] == 1].iloc[0]
 
-    assert home_player["is_home"] == 1
+    assert home_player["matchup_is_home"] == 1
 
 
-def test_fixture_features_reject_duplicate_club_context_rows() -> None:
+def test_matchup_context_v1_rejects_duplicate_club_context_rows() -> None:
     fixtures = pd.DataFrame(
         [
             {"rodada": 3, "id_clube_home": 10, "id_clube_away": 20},
@@ -558,10 +624,16 @@ def test_fixture_features_reject_duplicate_club_context_rows() -> None:
     )
 
     with pytest.raises(ValueError, match="Duplicate fixture club context"):
-        build_prediction_frame(_season_df(), target_round=3, fixtures=fixtures)
+        build_prediction_frame(
+            _season_df(),
+            target_round=3,
+            fixtures=fixtures,
+            matchup_context_mode="cartola_matchup_v1",
+        )
 
 
 def test_opponent_id_is_join_only_not_model_feature() -> None:
     assert "opponent_id" not in FEATURE_COLUMNS
-    assert "is_home" in FEATURE_COLUMNS
-    assert "opponent_club_points_roll3" in FEATURE_COLUMNS
+    assert "opponent_id_clube" not in FEATURE_COLUMNS
+    assert "matchup_opponent_id_clube" not in MATCHUP_CONTEXT_V1_FEATURE_COLUMNS
+    assert "matchup_is_home" in MATCHUP_CONTEXT_V1_FEATURE_COLUMNS

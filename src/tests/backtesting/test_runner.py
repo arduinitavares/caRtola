@@ -5,7 +5,11 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
-from cartola.backtesting.features import FOOTYSTATS_PPG_FEATURE_COLUMNS, FOOTYSTATS_XG_FEATURE_COLUMNS
+from cartola.backtesting.features import (
+    FOOTYSTATS_PPG_FEATURE_COLUMNS,
+    FOOTYSTATS_XG_FEATURE_COLUMNS,
+    MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
+)
 from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 from cartola.backtesting.runner import run_backtest
 from cartola.backtesting.scoring_contract import contract_fields
@@ -111,6 +115,8 @@ def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
     assert metadata["fixture_manifest_paths"] == []
     assert metadata["fixture_manifest_sha256"] == {}
     assert metadata["warnings"] == []
+    assert metadata["matchup_context_mode"] == "none"
+    assert metadata["matchup_context_feature_columns"] == []
     for field, expected_value in contract_fields().items():
         assert metadata[field] == expected_value
 
@@ -330,7 +336,7 @@ def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path):
     assert result.metadata.fixture_mode == "none"
     assert result.metadata.fixture_source_directory is None
     assert result.metadata.warnings == []
-    assert result.player_predictions["is_home"].eq(0).all()
+    assert "matchup_is_home" not in result.player_predictions.columns
 
 
 def test_run_backtest_default_none_ignores_explicit_fixtures(tmp_path):
@@ -341,25 +347,58 @@ def test_run_backtest_default_none_ignores_explicit_fixtures(tmp_path):
     result = run_backtest(config, season_df=season_df, fixtures=fixtures)
 
     assert result.metadata.fixture_mode == "none"
-    assert result.player_predictions["is_home"].eq(0).all()
+    assert "matchup_is_home" not in result.player_predictions.columns
 
 
-def test_run_backtest_uses_fixture_files_when_available(tmp_path):
+def test_run_backtest_rejects_matchup_context_with_fixture_mode_none(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        matchup_context_mode="cartola_matchup_v1",
+    )
+
+    with pytest.raises(ValueError, match="requires fixture_mode"):
+        run_backtest(config, season_df=season_df)
+
+
+def test_run_backtest_exploratory_without_matchup_mode_does_not_emit_matchup_features(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     _write_tiny_fixture_files(tmp_path, range(1, 6))
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
+
+    result = run_backtest(config, season_df=season_df)
+
+    assert result.metadata.fixture_mode == "exploratory"
+    assert result.metadata.fixture_source_directory == "data/01_raw/fixtures/2025"
+    assert result.metadata.warnings
+    assert result.metadata.matchup_context_mode == "none"
+    assert "matchup_is_home" not in result.player_predictions.columns
+
+
+def test_run_backtest_uses_fixture_files_for_matchup_context_when_enabled(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    _write_tiny_fixture_files(tmp_path, range(1, 6))
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        fixture_mode="exploratory",
+        matchup_context_mode="cartola_matchup_v1",
+    )
 
     result = run_backtest(config, season_df=season_df)
     round_5 = result.player_predictions[result.player_predictions["rodada"] == 5]
     club_1 = round_5[round_5["id_clube"] == 1].iloc[0]
     club_2 = round_5[round_5["id_clube"] == 2].iloc[0]
 
-    assert result.metadata.fixture_mode == "exploratory"
-    assert result.metadata.fixture_source_directory == "data/01_raw/fixtures/2025"
-    assert result.metadata.warnings
-    assert club_1["is_home"] == 1
-    assert club_2["is_home"] == 0
-    assert "opponent_club_points_roll3" in result.player_predictions.columns
+    assert result.metadata.matchup_context_mode == "cartola_matchup_v1"
+    assert result.metadata.matchup_context_feature_columns == MATCHUP_CONTEXT_V1_FEATURE_COLUMNS
+    assert club_1["matchup_is_home"] == 1
+    assert club_2["matchup_is_home"] == 0
+    assert "matchup_opponent_allowed_points_roll5" in result.player_predictions.columns
+    assert "opponent_id_clube" not in result.player_predictions.columns
 
 
 def test_run_backtest_exploratory_without_files_records_no_source(tmp_path):
@@ -371,21 +410,41 @@ def test_run_backtest_exploratory_without_files_records_no_source(tmp_path):
     assert result.metadata.fixture_mode == "exploratory"
     assert result.metadata.fixture_source_directory is None
     assert "not found" in " ".join(result.metadata.warnings)
-    assert result.player_predictions["is_home"].eq(0).all()
+    assert "matchup_is_home" not in result.player_predictions.columns
+
+
+def test_run_backtest_rejects_matchup_context_when_exploratory_fixture_files_are_missing(tmp_path):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        fixture_mode="exploratory",
+        matchup_context_mode="cartola_matchup_v1",
+    )
+
+    with pytest.raises(ValueError, match="requires fixture_mode"):
+        run_backtest(config, season_df=season_df)
 
 
 def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     fixtures = _tiny_fixtures(range(1, 6))
-    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        fixture_mode="exploratory",
+        matchup_context_mode="cartola_matchup_v1",
+    )
 
     result = run_backtest(config, season_df=season_df, fixtures=fixtures)
     round_5 = result.player_predictions[result.player_predictions["rodada"] == 5]
     club_1 = round_5[round_5["id_clube"] == 1].iloc[0]
     club_2 = round_5[round_5["id_clube"] == 2].iloc[0]
 
-    assert club_1["is_home"] == 1
-    assert club_2["is_home"] == 0
+    assert club_1["matchup_is_home"] == 1
+    assert club_2["matchup_is_home"] == 0
 
 
 def test_run_backtest_strict_mode_missing_files_raises_for_first_required_round(tmp_path):
