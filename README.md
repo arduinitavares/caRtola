@@ -240,6 +240,27 @@ uv run --frozen python scripts/capture_strict_round_fixture.py \
 
 Este comando é separado de `scripts/run_live_round.py`. As recomendações live ainda usam `fixture_mode=none` por padrão; a captura strict de fixtures é trabalho de proveniência para uma futura integração de contexto de fixtures.
 
+### Auditoria de cobertura de fixtures para matchup
+
+Antes de criar novas features de mando/oponente, rode a auditoria de cobertura:
+
+```bash
+uv run --frozen python scripts/audit_matchup_fixture_coverage.py \
+  --seasons 2023,2024,2025 \
+  --current-year 2026
+```
+
+O comando é somente leitura para `data/01_raw` e grava:
+
+- `data/08_reporting/fixtures/matchup_fixture_coverage.csv`
+- `data/08_reporting/fixtures/matchup_fixture_coverage.json`
+
+Ele valida se cada clube que entrou em campo em cada rodada tem exatamente uma
+linha de contexto de fixture, usando `fixtures_strict` quando existir e caindo
+para `fixtures` exploratório quando não existir. A decisão final indica se já
+dá para avançar para `matchup_context_mode=cartola_matchup_v1`, se só há base
+exploratória suficiente, ou se a cobertura precisa ser corrigida antes.
+
 ## ✅ Qualidade
 
 O mesmo conjunto de verificações usado no GitHub Actions pode ser executado localmente com:

@@ -78,6 +78,12 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - uses the captured `rodada_atual` as the recommendation target,
   - archives every recommendation under `runs/run_started_at=...`,
   - links recommendation metadata back to the capture CSV/hash/metadata.
+- Matchup fixture coverage audit:
+  - `scripts/audit_matchup_fixture_coverage.py` checks whether requested seasons have fixture context for every played club-round,
+  - prefers strict fixture CSVs with valid manifests and falls back to exploratory fixture CSVs,
+  - reports missing, duplicate, and extra `(rodada, id_clube)` fixture-context keys,
+  - writes `matchup_fixture_coverage.csv/json` under `data/08_reporting/fixtures/`,
+  - gives an advisory decision before implementing `matchup_context_mode=cartola_matchup_v1`.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -161,6 +167,17 @@ not an extra slot and the tecnico cannot be captain. For v1 there is no public
 legacy scoring mode, no fixed-formation public config, and no configurable captain
 multiplier.
 
+The matchup fixture coverage audit is now implemented. Current result for
+`2023,2024,2025` is `exploratory_only`:
+
+- `2025`: complete historical season with full exploratory fixture coverage.
+- `2024`: complete historical season, but local fixture context is missing.
+- `2023`: irregular historical season in the raw round layout and local fixture context is missing.
+
+Interpretation: we can run a first matchup-context experiment against 2025 as
+exploratory research, but we should not claim multi-season generalization until
+2023-2024 fixture coverage is fixed or imported.
+
 **How To Run Now**
 No fixture context:
 
@@ -205,6 +222,14 @@ FootyStats compatibility audit:
 
 ```bash
 uv run --frozen python scripts/audit_footystats_compatibility.py --current-year 2026
+```
+
+Matchup fixture coverage audit:
+
+```bash
+uv run --frozen python scripts/audit_matchup_fixture_coverage.py \
+  --seasons 2023,2024,2025 \
+  --current-year 2026
 ```
 
 Multi-season FootyStats PPG ablation report:
@@ -289,21 +314,25 @@ uv run --frozen scripts/pyrepo-check --all
 3. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
    - Future step: integrate strict fixtures into live recommendations as an explicit opt-in mode after several successful live captures.
-4. Decide the next narrow feature bet:
+4. Use the current `exploratory_only` matchup fixture audit result to choose the next action.
+   - Option A: implement a 2025-only exploratory `matchup_context_mode=cartola_matchup_v1` experiment, clearly labeled as non-generalized.
+   - Option B: fix/import 2023-2024 fixture coverage first, then rerun the audit before implementing matchup features.
+5. Decide the next narrow feature bet after the fixture coverage gate:
+   - Cartola matchup context if coverage is ready;
    - odds/goal-environment features as a separate ablation over PPG, not stacked blindly after xG;
    - or DNP probability modeling if selection reliability is the bigger live-game bottleneck.
-5. Add higher-signal Cartola fixture features:
+6. Add higher-signal Cartola fixture features:
    - opponent defensive weakness,
    - points conceded by opponent and position,
    - home/away split priors.
-6. Add DNP probability modeling:
+7. Add DNP probability modeling:
    - predict `p_play`,
    - use `expected_points = predicted_points * p_play`.
-7. Add model comparison only after features improve:
+8. Add model comparison only after features improve:
    - HistGradientBoosting,
    - GradientBoosting,
    - maybe XGBoost/CatBoost later.
-8. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
+9. Add evolving patrimônio/wealth simulation after prediction quality is trustworthy.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:
