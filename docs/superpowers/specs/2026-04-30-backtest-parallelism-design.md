@@ -76,7 +76,7 @@ Process pools are explicitly rejected for v1 because:
 
 If thread benchmarks do not improve runtime, write a separate process-pool spike/spec. Do not smuggle process-pool support into Phase 1b.
 
-This choice is experimental, not ideological. scikit-learn documents that forest tree fitting releases the GIL and that `RandomForestRegressor.fit`, `predict`, `decision_path`, and `apply` are parallelized over trees through `n_jobs`. That makes a thread proof worth trying. If the benchmark matrix shows weak or negative scaling, Phase 1b stops and the next artifact is a profiling/process-backend spike, not more thread tuning.
+This choice is experimental, not ideological. scikit-learn documents that `n_jobs` controls joblib-managed estimator parallelism, while lower-level OpenMP/BLAS thread pools can also affect runtime. That makes a thread proof worth trying, but not guaranteed to win. If the benchmark matrix shows weak or negative scaling, Phase 1b stops and the next artifact is a profiling/process-backend spike, not more thread tuning.
 
 ### Worker Ownership
 
@@ -100,7 +100,7 @@ Workers must return in-memory data only:
 
 - round-result row dicts;
 - selected-player frames;
-- player-prediction frames;
+- player-prediction frames.
 
 Workers must not write files.
 
@@ -123,6 +123,14 @@ Rules:
 - `prediction_frames` contains zero or one scored candidate dataframe for that round;
 - skipped rounds handled by the parent use the same `RoundEvaluationResult` shape with empty frame lists.
 
+Empty-frame schema rules:
+
+- `round_rows` is materialized by the parent with `ROUND_RESULT_COLUMNS`;
+- skipped rounds and infeasible strategies return empty `selected_frames` and `prediction_frames` lists, not placeholder dataframes;
+- non-empty `selected_frames` use `result.selected` columns plus `rodada` and `strategy`;
+- non-empty `prediction_frames` use the scored candidate columns after adding `baseline_score`, `random_forest_score`, and `price_score`;
+- if the final run has no selected-player frames or no prediction frames, the parent uses `pd.DataFrame()` for that output, preserving the existing `_concat_or_empty()` behavior.
+
 ### Shared Store Access
 
 The parent builds `RoundFrameStore` once before launching workers.
@@ -136,7 +144,16 @@ candidates = round_frame_store.prediction_frame(round_number)
 
 Workers must not access or mutate `round_frame_store._frames` directly.
 
-The existing deep-copy behavior is sufficient for v1 because current backtest frames contain scalar values. If future feature code stores mutable objects inside cells, that feature must either avoid object-cell mutation or define its own defensive-copy contract.
+Thread-safety contract:
+
+- cached frames are immutable after `build_all()` completes;
+- `build_all()` must complete before any worker is submitted;
+- `RoundFrameStore` owns a private lock;
+- `prediction_frame()` acquires the lock, copies the cached frame with `copy(deep=True)`, releases the lock, then returns the copy;
+- `training_frame()` acquires the lock, copies all cached frames needed for rounds `< target_round`, releases the lock, then performs filtering, target-column assignment, and `pd.concat()` outside the lock;
+- no model fitting, prediction, optimization, diagnostics, or report shaping may run while holding the store lock.
+
+pandas documents that it is not fully thread-safe and specifically recommends locks around concurrent `DataFrame.copy()` operations. The lock is required for v1. A lock-free store is out of scope unless a later design includes a targeted pandas-copy stress test and accepts the risk explicitly.
 
 ## Config And CLI
 
@@ -238,6 +255,8 @@ def _evaluate_target_round(
     ...
 ```
 
+If target-round evaluation needs a dependency not available through `config`, `round_number`, `round_frame_store`, `empty_training_columns`, `model_feature_columns`, or `model_n_jobs_effective`, pass it explicitly. Do not read mutable module-level state from workers.
+
 The helper contains the current per-round body:
 
 1. create training frame from cached rounds `< round_number`;
@@ -268,7 +287,12 @@ No thread executor is used in this path.
 
 ### Parallel Path
 
-When `config.jobs > 1`, use `ThreadPoolExecutor(max_workers=config.jobs)`.
+When `config.jobs > 1`, use:
+
+```python
+max_workers = min(config.jobs, len(worker_rounds))
+ThreadPoolExecutor(max_workers=max_workers)
+```
 
 Submit one future per target round.
 
@@ -305,6 +329,8 @@ Rules:
 
 The target-round list must be constructed in the parent.
 
+A target-round worker may read only cached frames for rounds `< round_number` when assembling training data and exactly `round_number` when reading candidates.
+
 ## Output Aggregation And Sorting
 
 Parent aggregates all worker-returned rows/frames.
@@ -322,6 +348,8 @@ Required sort keys:
 Sorting must happen for both `jobs=1` and `jobs>1` so output ordering does not depend on execution order.
 
 If a dataframe is empty, sorting must preserve an empty dataframe without raising.
+
+Canonical sorting becomes the report row-order contract for both sequential and parallel runs. `jobs=1` must preserve current semantic behavior, but byte-for-byte row order from older unsorted reports is not a compatibility target.
 
 ## Output Equivalence Contract
 
@@ -346,24 +374,30 @@ Comparison rules:
   - `wall_clock_seconds`;
 - allow expected parallelism fields to differ:
   - `backtest_jobs`;
+  - `backtest_workers_effective`;
   - `model_n_jobs_effective`;
   - `parallel_backend`;
+- require `thread_env` to have the same explicit keys in both metadata files, with absent environment variables represented as JSON `null`;
 - require all other metadata fields to match.
+
+Float normalization applies to all float columns in `round_results`, `selected_players`, `player_predictions`, `summary`, and `diagnostics` except the identifier/count columns listed in `FLOAT_NORMALIZATION_EXCLUDED_COLUMNS`. Normalization happens before CSV writing and before in-memory equivalence assertions.
 
 ## Metadata
 
 Add required metadata fields:
 
 - `backtest_jobs`;
+- `backtest_workers_effective`;
 - `model_n_jobs_effective`;
-- `parallel_backend`.
+- `parallel_backend`;
 - `thread_env`.
 
 Values:
 
 - `backtest_jobs`: integer from config;
+- `backtest_workers_effective`: `1` when `jobs == 1`; otherwise `min(config.jobs, len(worker_rounds))`, or `0` when there are no worker rounds;
 - `model_n_jobs_effective`: result of `_effective_model_n_jobs(config.jobs)`;
-- `parallel_backend`: `"sequential"` when `jobs == 1`, `"threads"` when `jobs > 1`.
+- `parallel_backend`: `"sequential"` when `jobs == 1`, `"threads"` when `jobs > 1`;
 - `thread_env`: object containing `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `BLIS_NUM_THREADS` with string values or `null`.
 
 Existing Phase 1a metadata remains:
@@ -410,6 +444,17 @@ Required tests:
 4. Worker helper does not write output files.
 5. Worker helper uses `model_n_jobs_effective` when constructing RF.
 6. Worker helper receives only rounds present in `RoundFrameStore`.
+7. Worker helper creates fresh predictor/model instances per target round and never shares estimator instances between workers.
+
+### RoundFrameStore Thread Safety
+
+Required tests:
+
+1. `build_all()` freezes the cache before workers are launched.
+2. `prediction_frame()` returns a deep copy and does not expose `_frames` directly.
+3. `training_frame()` returns data assembled from deep-copied cached frames.
+4. Concurrent `prediction_frame()` and `training_frame()` calls under `jobs=4` do not mutate cached frames.
+5. Store copy/assembly operations acquire the private lock; RF, optimizer, and diagnostics work run outside the lock.
 
 ### Parallel Equivalence
 
@@ -420,10 +465,11 @@ Required tests:
 3. `jobs=1` and `jobs=2` produce equivalent `player_predictions`.
 4. `jobs=1` and `jobs=2` produce equivalent `summary`.
 5. `jobs=1` and `jobs=2` produce equivalent `diagnostics`.
-6. Metadata equality excludes only `wall_clock_seconds`, `backtest_jobs`, `model_n_jobs_effective`, and `parallel_backend`; all other semantic metadata matches.
+6. Metadata equality excludes only `wall_clock_seconds`, `backtest_jobs`, `backtest_workers_effective`, `model_n_jobs_effective`, and `parallel_backend`; all other semantic metadata matches.
 7. `jobs=2` metadata records `parallel_backend="threads"`.
 8. `jobs=1` metadata records `parallel_backend="sequential"`.
 9. `selected_players` row order is deterministic after sorting by `["rodada", "strategy", "id_atleta"]`.
+10. `thread_env` contains all required keys with string values or explicit null values in both metadata files.
 
 ### Worker Failure
 
@@ -488,6 +534,7 @@ Record:
 - `/usr/bin/time` `real`, `user`, `sys`;
 - metadata `wall_clock_seconds`;
 - metadata `backtest_jobs`;
+- metadata `backtest_workers_effective`;
 - metadata `model_n_jobs_effective`;
 - metadata `parallel_backend`;
 - metadata `thread_env`;
@@ -565,29 +612,32 @@ Workers could mutate local frames.
 Mitigation:
 
 - `RoundFrameStore` methods return copies;
+- store copy operations are protected by a private lock;
 - worker helper must not access private store internals.
 
 ## Implementation Sequence
 
 1. Add config and CLI `jobs` validation.
 2. Add RF `n_jobs` plumbing and `_effective_model_n_jobs()`.
-3. Extract `_evaluate_target_round()` while keeping sequential behavior.
-4. Add parent-side target-round classification for excluded, missing, and worker rounds.
-5. Add deterministic sorting in parent output aggregation.
-6. Add worker error wrapping.
-7. Add thread executor path for `jobs>1`.
-8. Add metadata fields.
-9. Run equivalence tests.
-10. Run benchmark matrix.
-11. Run full quality gate.
+3. Add `RoundFrameStore` private lock and locked copy access.
+4. Extract `_evaluate_target_round()` while keeping sequential behavior.
+5. Add parent-side target-round classification for excluded, missing, and worker rounds.
+6. Add deterministic sorting in parent output aggregation.
+7. Add worker error wrapping.
+8. Add thread executor path for `jobs>1`.
+9. Add metadata fields.
+10. Run equivalence tests.
+11. Run benchmark matrix.
+12. Run full quality gate.
 
 ## Acceptance Criteria
 
 Phase 1b is accepted when:
 
-- `jobs=1` preserves current behavior;
+- `jobs=1` preserves current semantic behavior, with canonical report row ordering allowed;
 - `jobs=2` report outputs match `jobs=1` except allowed runtime/parallelism metadata differences;
 - RF actually uses `n_jobs=1` when `jobs>1`;
+- `RoundFrameStore` copy access is locked and cached frames remain immutable after `build_all()`;
 - worker failures include round context and preserve original cause;
 - parent owns all report writes;
 - benchmark matrix is recorded;
