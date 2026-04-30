@@ -107,7 +107,7 @@ The v1 model registry is fixed. These parameters are part of the experiment cont
 
 `hist_gradient_boosting`:
 
-- preprocessing: numeric median imputation; `posicao` most-frequent imputation plus one-hot encoding;
+- preprocessing: numeric median imputation; `posicao` most-frequent imputation plus dense one-hot encoding with `OneHotEncoder(handle_unknown="ignore", sparse_output=False)`;
 - estimator: `HistGradientBoostingRegressor`;
 - `max_iter=200`;
 - `learning_rate=0.05`;
@@ -117,7 +117,7 @@ The v1 model registry is fixed. These parameters are part of the experiment cont
 
 `ridge`:
 
-- preprocessing: numeric median imputation plus standard scaling; `posicao` most-frequent imputation plus one-hot encoding;
+- preprocessing: numeric median imputation plus standard scaling; `posicao` most-frequent imputation plus one-hot encoding with `OneHotEncoder(handle_unknown="ignore")`;
 - estimator: `Ridge`;
 - `alpha=1.0`;
 - no model-level parallelism.
@@ -154,6 +154,18 @@ class PointPredictor(Protocol):
 The current public `run_backtest(config)` behavior remains equivalent to running with `primary_model_id="random_forest"`.
 
 The experiment runner uses a private/internal backtest entry point or override to set one `primary_model_id` per child run. Do not add `--model-id` to `python -m cartola.backtesting.cli` in v1.
+
+The implementation target is a private wrapper:
+
+```python
+run_backtest_for_experiment(
+    config: BacktestConfig,
+    *,
+    primary_model_id: str,
+) -> BacktestResult
+```
+
+This wrapper may call shared internal runner helpers, but public `run_backtest(config)` remains the normal CLI path and hardcodes `primary_model_id="random_forest"`.
 
 Each child run has exactly three strategy rows:
 
@@ -339,6 +351,8 @@ A model/feature pack is eligible for recommendation only if all are true:
 - skipped rounds and solver-status distributions match the comparison contract;
 - scoring contract version is exactly `cartola_standard_2026_v1`.
 
+If a promotion guardrail metric is `null`, the config is not eligible and must be marked `insufficient_metric_data`. Nullable oracle fields with reason `not_produced_by_backtest` are informational and are not promotion guardrails in v1.
+
 These thresholds are v1 decision gates. If they prove too strict or too loose, revise the spec before changing code.
 
 ## Comparability Contract
@@ -362,6 +376,8 @@ Each comparison group must fail closed if any run differs unexpectedly in:
 Expected feature-column differences are allowed. Candidate-pool differences are not allowed unless a future spec explicitly defines why a feature pack may change eligibility.
 
 The runner must raise a `ComparabilityError` before ranking results when the contract fails.
+
+Comparability mismatch is an operational failure. The command exits non-zero after writing `comparability_report.json` when the output directory is available.
 
 ### Signature Schemas
 
@@ -416,12 +432,12 @@ The experiment runner must also write top-level metadata containing:
 - start round;
 - budget;
 - fixture mode;
-- source paths and hashes, using `null` only when the data source is not file-backed;
+- source paths and hashes, using the source hash rules below;
 - scoring contract version;
 - optimizer contract identifier, using `cartola_standard_2026_v1` when no separate optimizer contract field exists;
 - random seed;
 - backtest jobs;
-- model worker setting;
+- model worker setting per child run;
 - runtime per child run;
 - candidate pool signatures;
 - skipped-round signatures;
@@ -431,6 +447,28 @@ The experiment runner must also write top-level metadata containing:
 The config hash must include every field that can change predictions, eligibility, optimization, or scoring.
 
 Missing metadata required for comparability is an error.
+
+### Source Hash Rules
+
+Top-level experiment metadata must record these source identities:
+
+- raw Cartola season inputs: SHA-256 over the sorted list of files under `data/01_raw/<season>/`, excluding generated `*.capture.json` live-market metadata unless a child run explicitly consumes it;
+- FootyStats source: path plus SHA-256 of the loaded FootyStats file when `footystats_mode != none`, otherwise `null`;
+- fixture source: fixture mode plus path and SHA-256 for exploratory fixture CSVs or strict fixture manifests, otherwise `null`;
+- matchup source: `matchup_context_mode` plus fixture source identity when matchup is enabled, otherwise `null`.
+
+When a source is made of multiple files, hash each file as bytes, sort by project-root-relative path, and hash canonical JSON records containing `path`, `sha256`, and `size_bytes`.
+
+### Model Worker Metadata
+
+`model_n_jobs_effective` is recorded per child run.
+
+- `random_forest`: the integer passed to `RandomForestRegressor(n_jobs=...)`;
+- `extra_trees`: the integer passed to `ExtraTreesRegressor(n_jobs=...)`;
+- `hist_gradient_boosting`: `null`;
+- `ridge`: `null`.
+
+The absence of model-level parallelism for HGB and Ridge is represented by `null`, not `1`.
 
 ## Execution Model
 
@@ -467,6 +505,14 @@ group=<group>__started_at=<YYYYMMDDTHHMMSSffffffZ>__matrix=<12-char-config-hash>
 ```
 
 If the target output directory already exists, the runner fails. V1 does not include `--force`.
+
+Child run directories are deterministic under the top-level experiment path:
+
+```text
+runs/season=<season>/model=<model_id>/feature_pack=<feature_pack>/
+```
+
+Each child run sets `BacktestConfig.output_root` so the child backtest writes into that exact directory. The child season is not appended a second time below this path.
 
 Required files:
 
@@ -557,6 +603,11 @@ Required tests before implementation is considered complete:
 - primary model solver statuses compare by `primary_model` role across different model ids;
 - unexpected strategy rows raise `ComparabilityError`;
 - missing scoring contract metadata raises `ComparabilityError`;
+- null promotion guardrail metric marks a config `insufficient_metric_data` and ineligible;
+- raw Cartola source hash changes when any consumed raw season file content changes;
+- HGB preprocessing uses dense one-hot output;
+- `model_n_jobs_effective` is `null` for HGB and Ridge;
+- baseline and price outputs are identical across model ids within the same season and feature pack, after excluding runtime/path metadata;
 - top-K metrics are computed per season and target round before aggregation;
 - selected-player metrics include tecnico rows;
 - prediction metrics do not consume price objective totals as predictions;
