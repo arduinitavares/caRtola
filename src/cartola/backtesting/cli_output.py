@@ -17,6 +17,13 @@ if TYPE_CHECKING:
 
 CHART_FILENAME = "strategy_performance_by_round.html"
 _REQUIRED_CHART_COLUMNS = {"rodada", "strategy", "solver_status", "actual_points", "formation"}
+_FORMATION_CONTEXT_COLUMNS = ("actual_points", "captain_name", "budget_used")
+_STRATEGY_COLORS = {
+    "random_forest": "#2563eb",
+    "baseline": "#059669",
+    "price": "#d97706",
+}
+_FALLBACK_STRATEGY_COLOR = "#6b7280"
 
 
 @dataclass(frozen=True)
@@ -170,7 +177,10 @@ def _prepare_chart_data(round_results: pd.DataFrame) -> PreparedChartData:
     if missing_columns:
         raise ValueError(f"Missing chart columns: {', '.join(missing_columns)}")
 
-    chart_rows = round_results.loc[:, sorted(_REQUIRED_CHART_COLUMNS)].copy()
+    optional_columns = [
+        column for column in _FORMATION_CONTEXT_COLUMNS if column in round_results.columns and column not in _REQUIRED_CHART_COLUMNS
+    ]
+    chart_rows = round_results.loc[:, [*sorted(_REQUIRED_CHART_COLUMNS), *optional_columns]].copy()
     numeric_rounds = pd.to_numeric(chart_rows["rodada"], errors="coerce")
     if numeric_rounds.isna().any():
         raise ValueError("Chart column 'rodada' must be numeric")
@@ -192,8 +202,13 @@ def _prepare_chart_data(round_results: pd.DataFrame) -> PreparedChartData:
 
     formations = chart_rows["formation"].fillna("").astype(str).str.strip()
     formation_mask = optimal_mask & chart_rows["strategy"].eq("random_forest") & formations.ne("")
+    formation_columns = [
+        "rodada",
+        "formation",
+        *[column for column in _FORMATION_CONTEXT_COLUMNS if column in chart_rows.columns],
+    ]
     formation_rows = (
-        chart_rows.loc[formation_mask, ["rodada", "formation"]]
+        chart_rows.loc[formation_mask, formation_columns]
         .copy()
         .sort_values("rodada")
         .reset_index(drop=True)
@@ -251,6 +266,7 @@ def _build_performance_figure(chart_data: PreparedChartData) -> go.Figure:
 
     for strategy, strategy_rows in chart_data.score_rows.groupby("strategy", sort=True):
         strategy_name = str(strategy)
+        strategy_color = _strategy_color(strategy_name)
         figure.add_trace(
             go.Scatter(
                 x=strategy_rows["rodada"],
@@ -258,6 +274,8 @@ def _build_performance_figure(chart_data: PreparedChartData) -> go.Figure:
                 mode="lines+markers",
                 name=f"{strategy_name} cumulative",
                 customdata=strategy_rows["actual_points"],
+                line={"color": strategy_color},
+                marker={"color": strategy_color},
                 hovertemplate=(
                     "Strategy=%{fullData.name}<br>"
                     "Round=%{x}<br>"
@@ -274,6 +292,8 @@ def _build_performance_figure(chart_data: PreparedChartData) -> go.Figure:
                 y=strategy_rows["actual_points"],
                 mode="lines+markers",
                 name=f"{strategy_name} per round",
+                line={"color": strategy_color},
+                marker={"color": strategy_color},
                 hovertemplate=(
                     f"Strategy={strategy_name}<br>"
                     "Round=%{x}<br>"
@@ -285,13 +305,17 @@ def _build_performance_figure(chart_data: PreparedChartData) -> go.Figure:
         )
 
     if not chart_data.formation_rows.empty:
+        customdata, hovertemplate = _formation_customdata_and_hover(chart_data.formation_rows)
         figure.add_trace(
             go.Scatter(
                 x=chart_data.formation_rows["rodada"],
                 y=chart_data.formation_rows["formation"],
                 mode="markers+lines",
                 name="random_forest formation",
-                hovertemplate="Round=%{x}<br>Formation=%{y}<extra></extra>",
+                customdata=customdata,
+                line={"color": _strategy_color("random_forest")},
+                marker={"color": _strategy_color("random_forest")},
+                hovertemplate=hovertemplate,
             ),
             row=3,
             col=1,
@@ -309,6 +333,23 @@ def _build_performance_figure(chart_data: PreparedChartData) -> go.Figure:
     figure.update_yaxes(title_text="Round points", row=2, col=1)
     figure.update_yaxes(title_text="Formation", row=3, col=1, type="category")
     return figure
+
+
+def _strategy_color(strategy_name: str) -> str:
+    return _STRATEGY_COLORS.get(strategy_name, _FALLBACK_STRATEGY_COLOR)
+
+
+def _formation_customdata_and_hover(formation_rows: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    context_columns = [column for column in _FORMATION_CONTEXT_COLUMNS if column in formation_rows.columns]
+    hover_parts = ["Round=%{x}", "Formation=%{y}"]
+    for index, column in enumerate(context_columns):
+        if column == "actual_points":
+            hover_parts.append(f"Actual=%{{customdata[{index}]:.2f}}")
+        elif column == "captain_name":
+            hover_parts.append(f"Captain=%{{customdata[{index}]}}")
+        elif column == "budget_used":
+            hover_parts.append(f"Budget used=%{{customdata[{index}]:.2f}}")
+    return formation_rows.loc[:, context_columns], "<br>".join(hover_parts) + "<extra></extra>"
 
 
 def _add_status_annotations(figure: go.Figure, status_rows: pd.DataFrame) -> None:

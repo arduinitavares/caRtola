@@ -380,6 +380,51 @@ def test_performance_figure_has_three_panels_without_zero_status_trace() -> None
     assert not any(trace.name == "non-optimal status" and list(trace.y) == [0] for trace in figure.data)
 
 
+def test_formation_trace_hover_includes_optional_context_when_available() -> None:
+    round_results = pd.DataFrame(
+        [
+            {
+                "rodada": 1,
+                "strategy": "random_forest",
+                "solver_status": "Optimal",
+                "actual_points": 10.25,
+                "formation": "4-3-3",
+                "captain_name": "Pedro",
+                "budget_used": 99.5,
+            },
+            {
+                "rodada": 2,
+                "strategy": "random_forest",
+                "solver_status": "Optimal",
+                "actual_points": 12.5,
+                "formation": "5-3-2",
+                "captain_name": "Arrascaeta",
+                "budget_used": 98.25,
+            },
+        ]
+    )
+
+    chart_data = _prepare_chart_data(round_results)
+    figure = _build_performance_figure(chart_data)
+    formation_trace = next(trace for trace in figure.data if trace.name == "random_forest formation")
+
+    assert chart_data.formation_rows["captain_name"].tolist() == ["Pedro", "Arrascaeta"]
+    assert chart_data.formation_rows["budget_used"].tolist() == [99.5, 98.25]
+    assert list(formation_trace.customdata[0]) == [10.25, "Pedro", 99.5]
+    assert "Actual=%{customdata[0]:.2f}" in formation_trace.hovertemplate
+    assert "Captain=%{customdata[1]}" in formation_trace.hovertemplate
+    assert "Budget used=%{customdata[2]:.2f}" in formation_trace.hovertemplate
+
+
+def test_strategy_traces_use_stable_color_mapping_by_strategy() -> None:
+    figure = _build_performance_figure(_prepare_chart_data(_valid_round_results()))
+    trace_by_name = {trace.name: trace for trace in figure.data}
+
+    assert trace_by_name["random_forest cumulative"].line.color == trace_by_name["random_forest per round"].line.color
+    assert trace_by_name["baseline cumulative"].line.color == trace_by_name["baseline per round"].line.color
+    assert trace_by_name["random_forest cumulative"].line.color != trace_by_name["baseline cumulative"].line.color
+
+
 def test_write_performance_chart_writes_standalone_html(tmp_path: Path) -> None:
     chart_output = write_performance_chart(_valid_round_results(), tmp_path)
 
