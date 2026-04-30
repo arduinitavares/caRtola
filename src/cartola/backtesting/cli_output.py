@@ -314,19 +314,19 @@ def _build_performance_figure(chart_data: PreparedChartData) -> go.Figure:
 def _add_status_annotations(figure: go.Figure, status_rows: pd.DataFrame) -> None:
     if status_rows.empty:
         return
-    status_counts = (
-        status_rows.groupby(["rodada", "solver_status"], sort=True)
-        .size()
-        .reset_index(name="count")
-        .sort_values(["rodada", "solver_status"])
-    )
-    for _, row in status_counts.iterrows():
+    status_counts: dict[tuple[float, str], int] = {}
+    for _, row in status_rows.iterrows():
+        key = (float(row["rodada"]), str(row["solver_status"]))
+        status_counts[key] = status_counts.get(key, 0) + 1
+
+    for (round_number, solver_status), count in sorted(status_counts.items()):
+        x_value: float | int = int(round_number) if round_number.is_integer() else round_number
         figure.add_annotation(
-            x=row["rodada"],
+            x=x_value,
             y=1.0,
             xref="x3",
             yref="paper",
-            text=f"{row['solver_status']} ({row['count']})",
+            text=f"{solver_status} ({count})",
             showarrow=False,
             yanchor="bottom",
             font={"size": 10, "color": "#6b7280"},
