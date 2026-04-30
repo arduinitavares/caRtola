@@ -364,8 +364,9 @@ uv run --frozen scripts/pyrepo-check --all
 1. Finish backtest output UX.
    - Add Rich terminal output to `python -m cartola.backtesting.cli`.
    - Show warnings, strategy summary, run metadata, output path, fixture/FootyStats/matchup modes, jobs, effective workers, backend, model `n_jobs`, prediction frame count, and wall-clock seconds.
-   - Generate one consolidated performance chart at `charts/strategy_performance_by_round.png`.
+   - Generate one consolidated interactive Plotly chart at `charts/strategy_performance_by_round.html`.
    - Chart layout: cumulative actual points by strategy, per-round actual points by strategy, and random_forest formation markers by round.
+   - The chart should support hover/zoom from a standalone HTML file.
    - Keep this display/report-only: no scoring, optimizer, feature, or CSV/JSON schema changes.
 2. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
 3. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
