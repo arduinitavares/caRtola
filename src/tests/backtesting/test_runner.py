@@ -259,6 +259,10 @@ def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
     assert metadata["warnings"] == []
     assert metadata["matchup_context_mode"] == "none"
     assert metadata["matchup_context_feature_columns"] == []
+    assert metadata["cache_enabled"] is True
+    assert metadata["prediction_frames_built"] == 5
+    assert isinstance(metadata["wall_clock_seconds"], float)
+    assert metadata["wall_clock_seconds"] >= 0.0
     for field, expected_value in contract_fields().items():
         assert metadata[field] == expected_value
 
@@ -686,6 +690,44 @@ def test_strict_alignment_policy_exclude_round_removes_invalid_round_before_trai
     }
     assert 3 not in set(result.player_predictions["rodada"].dropna().astype(int).tolist())
     assert 3 not in set(result.round_results["rodada"].dropna().astype(int).tolist())
+
+
+def test_run_backtest_does_not_build_prediction_frame_for_excluded_round(tmp_path, monkeypatch):
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    fixtures = _tiny_fixtures(range(1, 6))
+    fixtures = fixtures[fixtures["rodada"] != 3].copy()
+    calls: list[int] = []
+    original = runner_module.build_prediction_frame
+
+    def counting_build_prediction_frame(*args: object, **kwargs: object) -> pd.DataFrame:
+        calls.append(int(args[1]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "build_prediction_frame", counting_build_prediction_frame)
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_strict_fixtures",
+        lambda **kwargs: StrictFixturesLoadResult(
+            fixtures=fixtures,
+            manifest_paths=["data/01_raw/fixtures_strict/2025/partidas-1.manifest.json"],
+            manifest_sha256={"data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "abc"},
+            generator_versions=["fixture_snapshot_v1"],
+        ),
+    )
+
+    result = run_backtest(
+        BacktestConfig(
+            project_root=tmp_path,
+            start_round=3,
+            budget=100,
+            fixture_mode="strict",
+            strict_alignment_policy="exclude_round",
+        ),
+        season_df=season_df,
+    )
+
+    assert result.metadata.excluded_rounds == [3]
+    assert result.metadata.prediction_frames_built == 4
+    assert sorted(calls) == [1, 2, 4, 5]
 
 
 def test_strict_alignment_policy_exclude_round_removes_missing_strict_fixture_round(tmp_path, monkeypatch):

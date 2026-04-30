@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from time import perf_counter
 
 import pandas as pd
 
@@ -78,6 +79,9 @@ class BacktestMetadata:
     season: int
     start_round: int
     max_round: int
+    cache_enabled: bool
+    prediction_frames_built: int
+    wall_clock_seconds: float
     scoring_contract_version: str
     captain_scoring_enabled: bool
     captain_multiplier: float
@@ -189,6 +193,7 @@ def run_backtest(
     season_df: pd.DataFrame | None = None,
     fixtures: pd.DataFrame | None = None,
 ) -> BacktestResult:
+    started_at = perf_counter()
     data = (
         season_df.copy() if season_df is not None else load_season_data(config.season, project_root=config.project_root)
     )
@@ -236,6 +241,9 @@ def run_backtest(
         season=config.season,
         start_round=config.start_round,
         max_round=max_round,
+        cache_enabled=True,
+        prediction_frames_built=round_frame_store.prediction_frames_built,
+        wall_clock_seconds=0.0,
         scoring_contract_version=SCORING_CONTRACT_VERSION,
         captain_scoring_enabled=CAPTAIN_SCORING_ENABLED,
         captain_multiplier=CAPTAIN_MULTIPLIER,
@@ -360,6 +368,12 @@ def run_backtest(
     summary = _normalize_float_outputs(summary)
     diagnostics = _normalize_float_outputs(diagnostics)
 
+    metadata = BacktestMetadata(
+        **{
+            **metadata.__dict__,
+            "wall_clock_seconds": round(perf_counter() - started_at, OUTPUT_FLOAT_PRECISION),
+        }
+    )
     _write_outputs(config, round_results, selected_players, player_predictions, summary, diagnostics, metadata)
     return BacktestResult(
         round_results=round_results,
