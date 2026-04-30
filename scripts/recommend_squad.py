@@ -96,6 +96,7 @@ def _print_success(console: Console, result_summary: dict[str, object]) -> None:
     table.add_row("Predicted base", _format_points(_float_summary(result_summary, "predicted_points_base")))
     table.add_row("Captain bonus", _format_points(_float_summary(result_summary, "captain_bonus_predicted")))
     table.add_row("Captain", str(result_summary.get("captain_name", "n/a")))
+    table.add_row("Formation", str(result_summary.get("formation", "n/a")))
     table.add_row("Actual points", _format_actual_points(result_summary))
     table.add_row("Delta", _format_delta(result_summary))
     table.add_row("Best in candidate pool", _format_points(_float_summary(result_summary, "oracle_actual_points")))

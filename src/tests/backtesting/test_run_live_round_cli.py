@@ -56,6 +56,7 @@ def test_main_builds_workflow_config_and_prints_summary(
                 "predicted_points_base": 70.0,
                 "captain_bonus_predicted": 3.25,
                 "captain_name": "Captain A",
+                "formation": "4-3-3",
                 "budget_used": 99.5,
                 "recommendation_output_path": str(
                     tmp_path / "data/08_reporting/recommendations/2026/round-14/live/runs/run_started_at=x"
@@ -85,6 +86,8 @@ def test_main_builds_workflow_config_and_prints_summary(
     assert "3.25" in output
     assert "Captain" in output
     assert "Captain A" in output
+    assert "Formation" in output
+    assert "4-3-3" in output
     assert "Predicted points" not in output
     assert "FootyStats mode" in output
     assert "ppg" in output

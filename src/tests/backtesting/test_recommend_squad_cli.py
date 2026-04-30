@@ -65,6 +65,7 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
                 "captain_bonus_predicted": 3.0,
                 "predicted_points_with_captain": 42.0,
                 "captain_name": "Captain A",
+                "formation": "3-5-2",
                 "season": 2026,
                 "selected_count": 12,
                 "target_round": 14,
@@ -109,6 +110,8 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
     assert "3.00" in output
     assert "Captain" in output
     assert "Captain A" in output
+    assert "Formation" in output
+    assert "3-5-2" in output
     assert "Actual points" in output
     assert "38.25" in output
     assert "Delta" in output

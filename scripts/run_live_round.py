@@ -61,6 +61,7 @@ def _print_success(console: Console, metadata: dict[str, object]) -> None:
     table.add_row("Predicted base", _format_float(metadata.get("predicted_points_base")))
     table.add_row("Captain", str(metadata.get("captain_name", "n/a")))
     table.add_row("Captain bonus", _format_float(metadata.get("captain_bonus_predicted")))
+    table.add_row("Formation", str(metadata.get("formation", "n/a")))
     table.add_row("Budget used", _format_float(metadata.get("budget_used")))
     table.add_row("Recommendation output", str(metadata.get("recommendation_output_path")))
     table.add_row("Capture metadata", str(metadata.get("capture_metadata_path")))

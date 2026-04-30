@@ -144,6 +144,7 @@ def _workflow_metadata(
             else recommendation.summary.get("captain_bonus_predicted"),
             "captain_id": None if recommendation is None else recommendation.summary.get("captain_id"),
             "captain_name": None if recommendation is None else recommendation.summary.get("captain_name"),
+            "formation": None if recommendation is None else recommendation.summary.get("formation"),
             "scoring_contract_version": None
             if recommendation is None
             else recommendation.summary.get("scoring_contract_version"),

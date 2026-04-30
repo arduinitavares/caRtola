@@ -39,6 +39,7 @@ def _recommendation_result(config: RecommendationConfig) -> RecommendationResult
         "captain_bonus_predicted": 3.25,
         "captain_id": 123,
         "captain_name": "Captain A",
+        "formation": "4-3-3",
         "selected_count": 12,
         "output_directory": str(config.output_path),
         **contract_fields(),
@@ -105,6 +106,7 @@ def test_run_live_round_fresh_captures_and_uses_capture_round(
     assert result.workflow_metadata["captain_bonus_predicted"] == 3.25
     assert result.workflow_metadata["captain_id"] == 123
     assert result.workflow_metadata["captain_name"] == "Captain A"
+    assert result.workflow_metadata["formation"] == "4-3-3"
     assert result.workflow_metadata["formation_search"] == "all_official_formations"
     assert result.workflow_metadata["captain_scoring_enabled"] is True
     assert result.workflow_metadata["status"] == "ok"
