@@ -80,6 +80,22 @@ def test_candidate_pool_signature_missing_required_column_raises() -> None:
         candidate_pool_signature(frame)
 
 
+def test_candidate_pool_signature_missing_price_raises_comparability_error() -> None:
+    frame = pd.DataFrame(
+        {
+            "id_atleta": [1],
+            "posicao": ["ata"],
+            "id_clube": [10],
+            "status": ["Provavel"],
+            "preco_pre_rodada": [float("nan")],
+            "rodada": [5],
+        }
+    )
+
+    with pytest.raises(ComparabilityError, match="Missing preco_pre_rodada"):
+        candidate_pool_signature(frame)
+
+
 def test_solver_status_signature_maps_primary_role() -> None:
     rows = pd.DataFrame(
         {

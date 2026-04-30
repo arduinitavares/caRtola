@@ -39,7 +39,13 @@ def candidate_pool_signature(frame: pd.DataFrame) -> str:
     records = []
     for row in frame.loc[:, _CANDIDATE_SIGNATURE_COLUMNS].to_dict(orient="records"):
         record = dict(row)
-        record["preco_pre_rodada"] = CSV_FLOAT_FORMAT % float(record["preco_pre_rodada"])
+        price = record["preco_pre_rodada"]
+        if pd.isna(price):
+            raise ComparabilityError(
+                "Missing preco_pre_rodada for candidate "
+                f"id_atleta={record['id_atleta']} rodada={record['rodada']}"
+            )
+        record["preco_pre_rodada"] = CSV_FLOAT_FORMAT % float(price)
         records.append(_json_ready(record))
     records.sort(key=_candidate_signature_sort_key)
 
