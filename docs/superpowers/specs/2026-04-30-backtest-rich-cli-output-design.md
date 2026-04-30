@@ -260,6 +260,25 @@ The figure should contain three vertically stacked subplots:
 
 Use `actual_points` for strategy performance. In the current scoring contract, this is already the captain-aware total and includes the tecnico.
 
+### Skipped And Non-Optimal Rows
+
+`round_results` may contain rows for skipped or non-optimized rounds. Examples include `solver_status` values such as:
+
+- `Empty`;
+- `TrainingEmpty`;
+- `Infeasible`.
+
+These rows often carry `actual_points=0` and blank `formation`. They are status records, not real scoring results. The chart must not plot them as real zero-point performance.
+
+Chart data rules:
+
+- strategy performance traces must include only rows with `solver_status == "Optimal"`;
+- cumulative totals must cumulate only optimized rows;
+- skipped or non-optimal rows should appear as status annotations or hoverable markers on a separate status trace when practical;
+- if status markers are rendered, their hover text must include round, strategy, and `solver_status`;
+- the `random_forest` formation panel must include only rows where `strategy == "random_forest"`, `solver_status == "Optimal"`, and `formation` is non-empty;
+- if all rows are non-optimal, create the chart with an explanatory annotation and no misleading zero-point lines.
+
 ### Strategy Panels
 
 Render one interactive line trace per strategy:
@@ -316,10 +335,37 @@ If `result.round_results` lacks required columns for charting, fail loudly with 
 
 - `rodada`;
 - `strategy`;
+- `solver_status`;
 - `actual_points`;
 - `formation`.
 
 Do not silently create a partial or misleading chart.
+
+### Chart Failure Semantics
+
+Distinguish programmer/schema failures from environmental rendering failures.
+
+Mandatory failures:
+
+- missing required chart columns;
+- non-numeric `rodada` in non-empty `round_results`;
+- non-numeric `actual_points` in rows with `solver_status == "Optimal"`.
+
+These should raise `ValueError` because they indicate an invalid internal report contract.
+
+Best-effort failures:
+
+- filesystem errors while creating `charts/`;
+- Plotly import/export/runtime errors;
+- unexpected HTML write failures after a valid backtest result already exists.
+
+These should not turn a completed backtest into a failed command. Instead:
+
+- print a yellow warning panel or warning row;
+- print `Performance chart` as `n/a`;
+- do not delete or modify the already written CSV/JSON reports.
+
+The implementation should keep the original exception message visible in the warning text.
 
 ## Error Output
 
@@ -340,8 +386,11 @@ Required assertions:
 - chart generation writes `charts/strategy_performance_by_round.html` for non-empty round results;
 - generated chart contains visible references to all present strategies and `random_forest` formations;
 - generated chart embeds Plotly.js so it is usable offline from disk;
+- generated chart excludes skipped/non-optimal rows from score traces;
+- generated chart preserves skipped/non-optimal status information as annotations or status markers when present;
 - empty `round_results` does not fail and prints `Performance chart` as `n/a`;
 - missing chart columns fail with `ValueError`;
+- Plotly/filesystem chart-generation failures are non-fatal warnings and print `Performance chart` as `n/a`;
 - warnings render as `Backtest warnings`;
 - the success path no longer prints plain `WARNING:`;
 - the command still returns exit code `0`;
@@ -401,6 +450,13 @@ Plotly HTML is appropriate for this v1 because the user explicitly wants interac
 ### Dependency Boundary
 
 Adding Plotly as a direct dependency is acceptable. Adding Kaleido or browser automation for static export is not part of this feature.
+
+The implementation must update both:
+
+- `pyproject.toml`;
+- `uv.lock`.
+
+Frozen commands must not depend on Plotly being present only as a transitive dependency.
 
 ## Acceptance Criteria
 
