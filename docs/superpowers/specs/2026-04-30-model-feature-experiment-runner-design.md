@@ -83,6 +83,96 @@ All model parameters are fixed in v1. No parameter grid is exposed.
 
 The Ridge model must be implemented as a deterministic sklearn pipeline that can handle missing numeric values and feature scaling. It is included as a calibration sanity check, not because it is expected to win optimized squad points.
 
+### Fixed Model Parameters
+
+The v1 model registry is fixed. These parameters are part of the experiment contract and must be written to metadata.
+
+`random_forest`:
+
+- preprocessing: numeric median imputation; `posicao` most-frequent imputation plus one-hot encoding;
+- estimator: `RandomForestRegressor`;
+- `n_estimators=200`;
+- `min_samples_leaf=3`;
+- `random_state=config.random_seed`;
+- `n_jobs=model_n_jobs_effective`.
+
+`extra_trees`:
+
+- preprocessing: same as `random_forest`;
+- estimator: `ExtraTreesRegressor`;
+- `n_estimators=200`;
+- `min_samples_leaf=3`;
+- `random_state=config.random_seed`;
+- `n_jobs=model_n_jobs_effective`.
+
+`hist_gradient_boosting`:
+
+- preprocessing: numeric median imputation; `posicao` most-frequent imputation plus one-hot encoding;
+- estimator: `HistGradientBoostingRegressor`;
+- `max_iter=200`;
+- `learning_rate=0.05`;
+- `min_samples_leaf=20`;
+- `l2_regularization=0.0`;
+- `random_state=config.random_seed`.
+
+`ridge`:
+
+- preprocessing: numeric median imputation plus standard scaling; `posicao` most-frequent imputation plus one-hot encoding;
+- estimator: `Ridge`;
+- `alpha=1.0`;
+- no model-level parallelism.
+
+Changing any listed parameter requires a new spec revision or a later explicitly scoped hyperparameter experiment design.
+
+### Model Integration Boundary
+
+The normal backtest CLI must not expose model selection in v1.
+
+Add a private predictor factory below the backtest layer:
+
+```python
+create_point_predictor(
+    *,
+    model_id: str,
+    random_seed: int,
+    feature_columns: list[str],
+    n_jobs: int,
+) -> PointPredictor
+```
+
+The predictor interface is:
+
+```python
+class PointPredictor(Protocol):
+    feature_columns: list[str]
+
+    def fit(self, frame: pd.DataFrame) -> Self: ...
+
+    def predict(self, frame: pd.DataFrame) -> pd.Series: ...
+```
+
+The current public `run_backtest(config)` behavior remains equivalent to running with `primary_model_id="random_forest"`.
+
+The experiment runner uses a private/internal backtest entry point or override to set one `primary_model_id` per child run. Do not add `--model-id` to `python -m cartola.backtesting.cli` in v1.
+
+Each child run has exactly three strategy rows:
+
+- `baseline`;
+- `<primary_model_id>`;
+- `price`.
+
+For example, an Extra Trees child run writes `strategy=extra_trees`, not `strategy=random_forest`.
+
+`player_predictions.csv` must contain:
+
+- `baseline_score`;
+- `<primary_model_id>_score`;
+- `price_score`.
+
+The current normal CLI continues to write `random_forest_score` because its primary model id remains `random_forest`.
+
+Experiment reports must not infer model identity from output directory names. They must read model identity from metadata and strategy rows.
+
 ### Feature Packs
 
 The v1 feature-pack ids are:
@@ -205,6 +295,14 @@ Required metrics:
 
 If any metric is undefined because the input is empty or constant, record `null` plus a warning. Do not coerce undefined metrics to zero.
 
+Prediction metrics are computed from playable candidate rows with valid raw actual points.
+
+Top-K metrics are computed per season and target round, then aggregated. For each evaluated round, sort playable candidates by the primary model's predicted score and take `K=25` and `K=50`. If fewer than `K` candidates exist, use all available candidates and record the observed count.
+
+Selected-player metrics include tecnico rows because tecnico is part of the optimized selected squad.
+
+Calibration deciles are computed per season, model id, and feature-pack id over candidate rows. The aggregate report may also include all-season deciles, but it cannot replace the per-season decile output.
+
 ### Squad Metrics
 
 Squad metrics use the current optimizer and the current scoring contract.
@@ -215,22 +313,24 @@ Required metrics:
 - average actual points per optimized round;
 - total predicted active-contract points;
 - average predicted active-contract points;
-- actual delta vs current recommended baseline;
+- actual delta vs group baseline;
 - average actual delta per round;
 - per-season actual total and average;
 - worst-season delta vs baseline;
-- oracle gap and capture rate where existing report data supports it;
+- oracle gap and capture rate fields;
 - captain contribution;
 - formation distribution;
 - skipped rounds and solver statuses.
 
 The primary promotion metric is optimized squad performance. Selected-player and top-K calibration are mandatory guardrails.
 
+Current backtest round results do not produce oracle actual points or oracle capture rate. Until those columns exist, experiment reports must include nullable oracle fields with `null` values and reason `not_produced_by_backtest`. Do not silently omit the fields.
+
 ### Promotion Rule
 
 A model/feature pack is eligible for recommendation only if all are true:
 
-- aggregate actual points improve over the current recommended baseline;
+- aggregate actual points improve over the group baseline;
 - at least two of three seasons improve;
 - worst-season regression is no worse than `-1.5` average points per evaluated round;
 - selected-player calibration slope stays within `[0.75, 1.25]`;
@@ -256,12 +356,45 @@ Each comparison group must fail closed if any run differs unexpectedly in:
 - playable/status filters;
 - candidate counts by season and round;
 - skipped target rounds;
-- solver statuses by season, round, and strategy;
+- solver statuses by season, round, and strategy role;
 - source data hashes, using `null` only when the source is not file-backed.
 
 Expected feature-column differences are allowed. Candidate-pool differences are not allowed unless a future spec explicitly defines why a feature pack may change eligibility.
 
 The runner must raise a `ComparabilityError` before ranking results when the contract fails.
+
+### Signature Schemas
+
+Candidate-pool signatures are independent of strategy and model id.
+
+For each season and target round, construct a canonical candidate-pool signature from the scored candidate frame before strategy-specific optimization. It must include one sorted record per candidate:
+
+- `id_atleta`;
+- `posicao`;
+- `id_clube`;
+- `status`;
+- `preco_pre_rodada`;
+- `rodada`.
+
+Records are sorted by `id_atleta`, encoded as canonical JSON with sorted keys, and hashed with SHA-256. Floating prices use the same normalized CSV precision as backtest reports.
+
+Skipped-round signatures include:
+
+- season;
+- target round;
+- skip status or reason;
+- whether the round was excluded by fixture alignment;
+- whether training data was empty.
+
+Solver-status signatures are role based:
+
+- `baseline` role maps only from literal `strategy=baseline`;
+- `price` role maps only from literal `strategy=price`;
+- `primary_model` role maps from the child run's primary model strategy, such as `random_forest`, `extra_trees`, `hist_gradient_boosting`, or `ridge`.
+
+Common reference roles `baseline` and `price` must match literally across compared runs. Primary model statuses are compared by `primary_model` role, not by literal strategy name.
+
+Any unexpected strategy row outside `baseline`, `price`, and the declared primary model id is a comparability error.
 
 ## Metadata
 
@@ -275,6 +408,8 @@ The experiment runner must also write top-level metadata containing:
 - project root;
 - command arguments;
 - frozen matrix of model ids and feature-pack ids;
+- primary model id per child run;
+- strategy role mapping per child run;
 - model parameters;
 - feature modes;
 - seasons;
@@ -297,6 +432,26 @@ The config hash must include every field that can change predictions, eligibilit
 
 Missing metadata required for comparability is an error.
 
+## Execution Model
+
+V1 uses sequential child backtest execution.
+
+The experiment runner loops through model, feature-pack, and season child runs one at a time. It does not run child backtests concurrently.
+
+The `--jobs` flag belongs to each child backtest and is passed through to `run_backtest()` target-round parallelism. It is not experiment-level parallelism.
+
+Do not add `--experiment-jobs` in v1. Nested parallelism would combine experiment-level workers, child backtest target-round workers, and model-level workers, which can oversubscribe CPU and memory.
+
+If experiment-level parallelism is needed later, write a separate design with explicit worker allocation and benchmark rules.
+
+Child backtest failure behavior:
+
+- any child backtest operational failure aborts the whole experiment before ranking;
+- if the output directory has already been resolved and created, the runner writes `experiment_metadata.json` and `comparability_report.json` with `status="failed"` and the failed child run id;
+- if failure happens before the output directory is resolved, the runner prints the error to stderr and writes no partial reports;
+- `ranked_summary.csv` is not written after a child backtest failure;
+- completed but incomparable child runs are recorded in `comparability_report.json` and are excluded from ranking.
+
 ## Outputs
 
 The runner writes under:
@@ -304,6 +459,14 @@ The runner writes under:
 ```text
 data/08_reporting/experiments/model_feature/<experiment_id>/
 ```
+
+Default `experiment_id` format:
+
+```text
+group=<group>__started_at=<YYYYMMDDTHHMMSSffffffZ>__matrix=<12-char-config-hash>
+```
+
+If the target output directory already exists, the runner fails. V1 does not include `--force`.
 
 Required files:
 
@@ -320,7 +483,7 @@ Required HTML reports:
 - `calibration_plots.html`;
 - `squad_performance_comparison.html`;
 
-The ranked summary must rank only comparable runs. Failed or incomparable runs appear in the comparability report, not in the winner table.
+The ranked summary must rank only comparable runs. Completed but incomparable runs appear in the comparability report, not in the winner table. Failed child runs abort the experiment before ranking.
 
 HTML report generation failures are fatal for the experiment runner because chart outputs are part of the experiment artifact, not auxiliary terminal display.
 
@@ -352,6 +515,8 @@ uv run --frozen python scripts/run_model_experiments.py \
 
 The script chooses the allowed fixture mode and feature packs from the group. It must not accept arbitrary fixture-mode mixing inside one comparison group.
 
+`--jobs` is passed to each child backtest. It does not control experiment-level concurrency.
+
 ## Error Handling
 
 Expected operational failures must print a concise error and return non-zero:
@@ -374,18 +539,31 @@ Implementation bugs should not be swallowed as clean operational failures.
 Required tests before implementation is considered complete:
 
 - matrix generation includes exactly the allowed model and feature-pack ids;
+- model registry lists exact fixed parameters for all v1 model ids;
+- unknown model id is rejected by the predictor factory;
+- normal backtest CLI still emits `strategy=random_forest` and does not expose `--model-id`;
+- experiment child run for `extra_trees` emits `strategy=extra_trees`, not `strategy=random_forest`;
+- each child run emits exactly `baseline`, `<primary_model_id>`, and `price` strategies;
 - `2026` is rejected as an experiment season;
 - production-parity group uses `fixture_mode=none`;
 - matchup-research group uses `fixture_mode=exploratory`;
 - fixture-mode mixing inside one comparison group is rejected;
 - config hash changes when any model parameter, feature pack, fixture mode, budget, start round, scoring contract, or source hash changes;
+- candidate-pool signature is independent of model id and strategy rows;
+- candidate-pool signature changes when candidate athlete ids, statuses, positions, clubs, prices, or rounds change;
 - candidate-pool mismatch raises `ComparabilityError`;
 - skipped-round mismatch raises `ComparabilityError`;
-- solver-status mismatch raises `ComparabilityError`;
+- solver-status mismatch raises `ComparabilityError` by strategy role;
+- primary model solver statuses compare by `primary_model` role across different model ids;
+- unexpected strategy rows raise `ComparabilityError`;
 - missing scoring contract metadata raises `ComparabilityError`;
+- top-K metrics are computed per season and target round before aggregation;
+- selected-player metrics include tecnico rows;
 - prediction metrics do not consume price objective totals as predictions;
 - calibration slope/intercept handle empty and constant inputs as `null` plus warnings;
 - ranked summary excludes incomparable runs;
+- child backtest failure aborts before `ranked_summary.csv` is written;
+- `--jobs` is passed to child backtests and does not launch experiment-level workers;
 - promotion rule fails on aggregate-only wins with two losing seasons;
 - promotion rule fails on worst-season regression beyond the v1 threshold;
 - matchup feature experiment rejects `fixture_mode=none`;
