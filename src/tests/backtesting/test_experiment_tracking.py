@@ -113,6 +113,8 @@ class _FakeMlflow:
         self.calls: list[tuple[str, object]] = []
         self._next_run_id = 0
         self.end_run_error: Exception | None = None
+        self._active_run_ids: list[str] = []
+        self.artifact_run_ids: list[tuple[str | None, str]] = []
 
     def set_tracking_uri(self, uri: str) -> None:
         self.calls.append(("set_tracking_uri", uri))
@@ -123,6 +125,7 @@ class _FakeMlflow:
     def start_run(self, *, run_name: str, nested: bool = False) -> _FakeRun:
         self._next_run_id += 1
         run = _FakeRun(f"run-{self._next_run_id}")
+        self._active_run_ids.append(run.info.run_id)
         self.calls.append(
             (
                 "start_run",
@@ -145,9 +148,13 @@ class _FakeMlflow:
         self.calls.append(("log_metrics", metrics))
 
     def log_artifact(self, path: str) -> None:
+        active_run_id = self._active_run_ids[-1] if self._active_run_ids else None
+        self.artifact_run_ids.append((active_run_id, path))
         self.calls.append(("log_artifact", path))
 
     def end_run(self, status: str) -> None:
+        if self._active_run_ids:
+            self._active_run_ids.pop()
         if self.end_run_error is not None:
             raise self.end_run_error
         self.calls.append(("end_run", status))
@@ -268,8 +275,10 @@ def test_mlflow_tracker_does_not_log_parent_artifacts_while_child_is_active(
     assert tracker.warnings[-1].phase == "log_parent_artifacts"
 
 
-def test_mlflow_tracker_preserves_child_state_when_child_close_fails() -> None:
+def test_mlflow_tracker_reconciles_state_when_child_close_fails(tmp_path: Path) -> None:
     fake_mlflow = _FakeMlflow()
+    child_artifact = tmp_path / "summary.csv"
+    child_artifact.write_text("strategy,total\n", encoding="utf-8")
     tracker = MLflowExperimentTracker(
         tracking_uri=None,
         import_module=lambda _name: fake_mlflow,
@@ -285,19 +294,39 @@ def test_mlflow_tracker_preserves_child_state_when_child_close_fails() -> None:
     fake_mlflow.end_run_error = RuntimeError("cannot close child")
     tracker.end_child(status="failed")
 
-    assert tracker._child_active is True
+    assert tracker._child_active is False
     assert tracker._parent_active is True
+    assert fake_mlflow._active_run_ids == ["run-1"]
     assert tracker.warnings[-1].phase == "end_child"
-    tracker.end_experiment(status="failed")
+    tracker.log_child_artifacts([child_artifact])
 
-    assert ("end_run", "FAILED") not in fake_mlflow.calls
-    assert tracker._child_active is True
-    assert tracker._parent_active is True
-    assert tracker.warnings[-1].phase == "end_experiment"
-
+    assert ("log_artifact", str(child_artifact)) not in fake_mlflow.calls
+    assert tracker.warnings[-1].phase == "log_child_artifacts"
     fake_mlflow.end_run_error = None
     tracker.end_experiment(status="failed")
 
-    assert fake_mlflow.calls.count(("end_run", "FAILED")) == 2
+    assert fake_mlflow.calls.count(("end_run", "FAILED")) == 1
+    assert fake_mlflow._active_run_ids == []
     assert tracker._child_active is False
     assert tracker._parent_active is False
+
+
+def test_mlflow_tracker_reconciles_state_when_parent_close_fails() -> None:
+    fake_mlflow = _FakeMlflow()
+    tracker = MLflowExperimentTracker(
+        tracking_uri=None,
+        import_module=lambda _name: fake_mlflow,
+    )
+    tracker.start_experiment(
+        experiment_name="cartola-production-parity",
+        run_name="exp",
+        params={},
+        tags={},
+    )
+
+    fake_mlflow.end_run_error = RuntimeError("cannot close parent")
+    tracker.end_experiment(status="failed")
+
+    assert fake_mlflow._active_run_ids == []
+    assert tracker._parent_active is False
+    assert tracker.warnings[-1].phase == "end_experiment"
