@@ -353,6 +353,24 @@ def test_chart_accepts_non_random_forest_strategy(tmp_path: Path) -> None:
 
     assert output.path is not None
     assert output.warnings == []
+    chart_data = _prepare_chart_data(rows)
+    figure = _build_performance_figure(chart_data)
+    trace_names = {trace.name for trace in figure.data}
+
+    assert chart_data.score_rows[["strategy", "rodada", "actual_points", "cumulative_points"]].to_dict(
+        "records"
+    ) == [
+        {
+            "strategy": "extra_trees",
+            "rodada": 5,
+            "actual_points": 60.0,
+            "cumulative_points": 60.0,
+        }
+    ]
+    assert chart_data.formation_rows.empty
+    assert "extra_trees cumulative" in trace_names
+    assert "extra_trees per round" in trace_names
+    assert "extra_trees formation" not in trace_names
 
 
 def test_performance_figure_has_three_panels_without_zero_status_trace() -> None:
