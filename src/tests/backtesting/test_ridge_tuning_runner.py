@@ -190,6 +190,149 @@ def test_run_ridge_tuning_emits_child_progress_events(monkeypatch: pytest.Monkey
     assert all(event.child_id for event in events if event.event_type in {"child_started", "child_finished"})
 
 
+def test_final_reproducibility_compares_candidate_season_not_aggregate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    drifting_candidate_id = candidate_id_for(alpha=300.0, feature_pack="ppg_xg")
+
+    def total_for_run(stage: str, season: int, candidate_id: str, alpha: float) -> float:
+        total = _total_for_candidate(candidate_id, alpha=alpha)
+        if stage == "final" and candidate_id == drifting_candidate_id:
+            return total + (1.0 if season == 2024 else -1.0)
+        return total
+
+    _install_fake_backtest(monkeypatch, total_for_run=total_for_run)
+
+    result = run_ridge_tuning(
+        seasons=(2024, 2025),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=1,
+        project_root=tmp_path,
+        output_root=Path("data/08_reporting/experiments/model_tuning"),
+        started_at_utc="20260501T120000000005Z",
+    )
+
+    promotion_report = json.loads((result.output_path / "promotion_report.json").read_text(encoding="utf-8"))
+    candidate = result.ranked_summary[result.ranked_summary["candidate_id"].eq(drifting_candidate_id)].iloc[0]
+
+    assert candidate["promotion_eligible"] is False
+    assert candidate["promotion_reason"] == "non_reproducible"
+    assert promotion_report["promoted_candidate_id"] != drifting_candidate_id
+    assert {
+        (mismatch["candidate_id"], mismatch["season"], mismatch["absolute_delta"])
+        for mismatch in promotion_report["reproducibility_mismatches"]
+    } >= {
+        (drifting_candidate_id, 2024, 1.0),
+        (drifting_candidate_id, 2025, 1.0),
+    }
+
+
+def test_non_reproducible_comparison_control_blocks_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def total_for_run(stage: str, season: int, candidate_id: str, alpha: float) -> float:
+        total = _total_for_candidate(candidate_id, alpha=alpha)
+        if stage == "final" and candidate_id == PRIMARY_INCUMBENT_CANDIDATE_ID and season == 2025:
+            return total + 1.0
+        return total
+
+    _install_fake_backtest(monkeypatch, total_for_run=total_for_run)
+
+    result = run_ridge_tuning(
+        seasons=(2024, 2025),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=1,
+        project_root=tmp_path,
+        output_root=Path("data/08_reporting/experiments/model_tuning"),
+        started_at_utc="20260501T120000000006Z",
+    )
+
+    promotion_report = json.loads((result.output_path / "promotion_report.json").read_text(encoding="utf-8"))
+
+    assert promotion_report["recommendation"] == "keep_incumbent"
+    assert promotion_report["reason"] == "comparison_controls_non_reproducible"
+    assert promotion_report["promoted_candidate_id"] is None
+    assert result.ranked_summary["promotion_eligible"].eq(False).all()
+
+
+def test_comparison_report_contains_promotion_and_ranked_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_fake_backtest(monkeypatch)
+
+    result = run_ridge_tuning(
+        seasons=(2024, 2025),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=1,
+        project_root=tmp_path,
+        output_root=Path("data/08_reporting/experiments/model_tuning"),
+        started_at_utc="20260501T120000000007Z",
+    )
+
+    report = (result.output_path / "comparison_report.md").read_text(encoding="utf-8")
+
+    assert "Recommendation:" in report
+    assert "Reason:" in report
+    assert "ridge_alpha_300_0__ppg_xg" in report
+
+
+def test_html_report_contains_useful_summary_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_backtest(monkeypatch)
+
+    result = run_ridge_tuning(
+        seasons=(2024, 2025),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=1,
+        project_root=tmp_path,
+        output_root=Path("data/08_reporting/experiments/model_tuning"),
+        started_at_utc="20260501T120000000008Z",
+    )
+
+    html = (result.output_path / "squad_performance_comparison.html").read_text(encoding="utf-8")
+
+    assert "Recommendation:" in html
+    assert "Reason:" in html
+    assert "ridge_alpha_300_0__ppg_xg" in html
+
+
+def _install_fake_backtest(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    total_for_run: object | None = None,
+) -> None:
+    def fake_run_backtest_for_experiment(
+        config: object,
+        *,
+        primary_model_id: str,
+        model_params: dict[str, object],
+    ) -> BacktestResult:
+        candidate_id = _candidate_id_from_config(config, model_params=model_params)
+        alpha = float(model_params["alpha"])
+        stage = _stage_from_config(config)
+        season = int(getattr(config, "season"))
+        if callable(total_for_run):
+            total = float(total_for_run(stage, season, candidate_id, alpha))
+        else:
+            total = _total_for_candidate(candidate_id, alpha=alpha)
+        return _fake_result(config=config, total_actual_points=total)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.ridge_tuning_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+
+
 def _fake_result(*, config: object, total_actual_points: float) -> BacktestResult:
     season = int(getattr(config, "season"))
     footystats_mode = str(getattr(config, "footystats_mode"))
@@ -334,6 +477,14 @@ def _candidate_id_from_config(config: object, *, model_params: dict[str, object]
     if candidate_part.startswith("candidate="):
         return candidate_part.removeprefix("candidate=")
     return candidate_id_for(alpha=float(model_params["alpha"]), feature_pack=_feature_pack_from_config(config))
+
+
+def _stage_from_config(config: object) -> str:
+    output_path = getattr(config, "_output_path_override")
+    for part in Path(str(output_path)).parts:
+        if part.startswith("stage="):
+            return part.removeprefix("stage=")
+    return "screen"
 
 
 def _feature_pack_from_config(config: object) -> str:

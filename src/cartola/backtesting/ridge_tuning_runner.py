@@ -4,6 +4,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from html import escape
 from pathlib import Path
 from time import perf_counter
 from typing import Literal, SupportsFloat, cast
@@ -134,6 +135,7 @@ def run_ridge_tuning(
 
     run_state = _RunState()
     final_specs: list[RidgeTuningSpec] = []
+    reproducibility_mismatches: list[dict[str, object]] = []
 
     try:
         _run_specs(
@@ -165,6 +167,7 @@ def run_ridge_tuning(
                 "reason": "final_rerun_skipped",
                 "promoted_candidate_id": None,
                 "stage": "screen",
+                "reproducibility_mismatches": [],
             }
         else:
             selected_candidate_ids = _final_candidate_ids(screen_ranked)
@@ -196,15 +199,24 @@ def run_ridge_tuning(
             all_per_season = pd.DataFrame(run_state.per_season_rows)
             all_prediction_metrics = pd.DataFrame(run_state.prediction_metric_rows)
             final_reproducibility = _final_reproducibility_by_candidate(all_per_season)
+            reproducibility_mismatches = _final_reproducibility_mismatches(all_per_season)
+            controls_reproducible = _comparison_controls_reproducible(final_reproducibility)
+            ranking_reproducibility = (
+                final_reproducibility
+                if controls_reproducible
+                else {spec.candidate_id: False for spec in final_specs}
+            )
             ranked_summary = _rank_for_stage(
                 all_per_season,
                 all_prediction_metrics,
                 stage="final",
-                final_reproducibility_by_candidate=final_reproducibility,
+                final_reproducibility_by_candidate=ranking_reproducibility,
             )
             promotion_report = _promotion_report_from_final_ranked(
                 ranked_summary,
-                final_reproducibility_by_candidate=final_reproducibility,
+                final_reproducibility_by_candidate=ranking_reproducibility,
+                reproducibility_mismatches=reproducibility_mismatches,
+                controls_reproducible=controls_reproducible,
             )
 
         metadata = _metadata(
@@ -221,6 +233,7 @@ def run_ridge_tuning(
             candidate_pool_signatures=run_state.candidate_pool_signatures,
             solver_status_signatures=run_state.solver_status_signatures,
             final_candidate_ids=[spec.candidate_id for spec in final_specs],
+            reproducibility_mismatches=reproducibility_mismatches,
             failure=None,
         )
         _write_success_artifacts(
@@ -265,6 +278,7 @@ def run_ridge_tuning(
             candidate_pool_signatures=run_state.candidate_pool_signatures,
             solver_status_signatures=run_state.solver_status_signatures,
             final_candidate_ids=[spec.candidate_id for spec in final_specs],
+            reproducibility_mismatches=reproducibility_mismatches,
             failure={"phase": "run", "message": str(exc), "type": type(exc).__name__},
         )
         _write_failure_artifacts(output_path, metadata)
@@ -737,26 +751,72 @@ def _final_reproducibility_by_candidate(per_season_summary: pd.DataFrame) -> dic
     if per_season_summary.empty or "stage" not in per_season_summary.columns:
         return {}
     totals = (
-        per_season_summary.groupby(["stage", "candidate_id"], sort=False)["total_actual_points"].sum().reset_index()
+        per_season_summary.groupby(["stage", "candidate_id", "season"], sort=False)["total_actual_points"]
+        .sum()
+        .reset_index()
     )
     screen_totals = {
-        str(row["candidate_id"]): float(row["total_actual_points"])
+        (str(row["candidate_id"]), int(row["season"])): float(row["total_actual_points"])
         for row in totals[totals["stage"].eq("screen")].to_dict(orient="records")
     }
-    final_totals = {
-        str(row["candidate_id"]): float(row["total_actual_points"])
-        for row in totals[totals["stage"].eq("final")].to_dict(orient="records")
+    reproducibility_by_candidate = {
+        str(candidate_id): True for candidate_id in totals[totals["stage"].eq("final")]["candidate_id"].dropna().unique()
     }
-    return {
-        candidate_id: abs(final_total - screen_totals.get(candidate_id, float("nan"))) <= 0.01
-        for candidate_id, final_total in final_totals.items()
+    for row in totals[totals["stage"].eq("final")].to_dict(orient="records"):
+        candidate_id = str(row["candidate_id"])
+        season = int(row["season"])
+        final_total = float(row["total_actual_points"])
+        screen_total = screen_totals.get((candidate_id, season))
+        if screen_total is None or abs(final_total - screen_total) > 0.01:
+            reproducibility_by_candidate[candidate_id] = False
+    return reproducibility_by_candidate
+
+
+def _final_reproducibility_mismatches(per_season_summary: pd.DataFrame) -> list[dict[str, object]]:
+    if per_season_summary.empty or "stage" not in per_season_summary.columns:
+        return []
+    totals = (
+        per_season_summary.groupby(["stage", "candidate_id", "season"], sort=False)["total_actual_points"]
+        .sum()
+        .reset_index()
+    )
+    screen_totals = {
+        (str(row["candidate_id"]), int(row["season"])): float(row["total_actual_points"])
+        for row in totals[totals["stage"].eq("screen")].to_dict(orient="records")
     }
+    mismatches: list[dict[str, object]] = []
+    for row in totals[totals["stage"].eq("final")].to_dict(orient="records"):
+        candidate_id = str(row["candidate_id"])
+        season = int(row["season"])
+        final_total = float(row["total_actual_points"])
+        screen_total = screen_totals.get((candidate_id, season))
+        absolute_delta = None if screen_total is None else abs(final_total - screen_total)
+        if screen_total is None or absolute_delta is None or absolute_delta > 0.01:
+            mismatches.append(
+                {
+                    "candidate_id": candidate_id,
+                    "season": season,
+                    "screen_total_actual_points": screen_total,
+                    "final_total_actual_points": final_total,
+                    "absolute_delta": absolute_delta,
+                }
+            )
+    return mismatches
+
+
+def _comparison_controls_reproducible(final_reproducibility_by_candidate: Mapping[str, bool]) -> bool:
+    return (
+        final_reproducibility_by_candidate.get(PRIMARY_INCUMBENT_CANDIDATE_ID) is True
+        and final_reproducibility_by_candidate.get(SECONDARY_CONTROL_CANDIDATE_ID) is True
+    )
 
 
 def _promotion_report_from_final_ranked(
     ranked_summary: pd.DataFrame,
     *,
     final_reproducibility_by_candidate: Mapping[str, bool],
+    reproducibility_mismatches: Sequence[Mapping[str, object]],
+    controls_reproducible: bool,
 ) -> dict[str, object]:
     if ranked_summary.empty:
         return {
@@ -765,6 +825,19 @@ def _promotion_report_from_final_ranked(
             "promoted_candidate_id": None,
             "stage": "final",
             "final_reproducibility_by_candidate": dict(final_reproducibility_by_candidate),
+            "reproducibility_mismatches": [dict(mismatch) for mismatch in reproducibility_mismatches],
+        }
+
+    if not controls_reproducible:
+        top = ranked_summary.iloc[0].to_dict()
+        return {
+            "recommendation": "keep_incumbent",
+            "reason": "comparison_controls_non_reproducible",
+            "promoted_candidate_id": None,
+            "stage": "final",
+            "top_candidate_id": str(top.get("candidate_id")),
+            "final_reproducibility_by_candidate": dict(final_reproducibility_by_candidate),
+            "reproducibility_mismatches": [dict(mismatch) for mismatch in reproducibility_mismatches],
         }
 
     eligible = ranked_summary[
@@ -780,6 +853,7 @@ def _promotion_report_from_final_ranked(
             "stage": "final",
             "top_candidate_id": str(top.get("candidate_id")),
             "final_reproducibility_by_candidate": dict(final_reproducibility_by_candidate),
+            "reproducibility_mismatches": [dict(mismatch) for mismatch in reproducibility_mismatches],
         }
 
     promoted = eligible.iloc[0].to_dict()
@@ -790,6 +864,7 @@ def _promotion_report_from_final_ranked(
         "stage": "final",
         "aggregate_delta_vs_primary_incumbent": _float_or_none(promoted.get("aggregate_delta_vs_primary_incumbent")),
         "final_reproducibility_by_candidate": dict(final_reproducibility_by_candidate),
+        "reproducibility_mismatches": [dict(mismatch) for mismatch in reproducibility_mismatches],
     }
 
 
@@ -845,6 +920,7 @@ def _metadata(
     candidate_pool_signatures: Mapping[str, object],
     solver_status_signatures: Mapping[str, object],
     final_candidate_ids: Sequence[str],
+    reproducibility_mismatches: Sequence[Mapping[str, object]],
     failure: Mapping[str, object] | None,
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
@@ -862,6 +938,7 @@ def _metadata(
         "candidate_pool_signatures": dict(candidate_pool_signatures),
         "solver_status_signatures": dict(solver_status_signatures),
         "final_candidate_ids": list(final_candidate_ids),
+        "reproducibility_mismatches": [dict(mismatch) for mismatch in reproducibility_mismatches],
     }
     if failure is not None:
         metadata["failure"] = dict(failure)
@@ -895,15 +972,139 @@ def _write_success_artifacts(
     _write_json(output_path / "comparability_report.json", comparability_report)
     _write_json(output_path / "promotion_report.json", promotion_report)
     _write_json(output_path / "experiment_metadata.json", metadata)
-    (output_path / "comparison_report.md").write_text("# Ridge Tuning Experiment\n\nStatus: ok\n", encoding="utf-8")
+    (output_path / "comparison_report.md").write_text(
+        _comparison_report_markdown(
+            status="ok",
+            promotion_report=promotion_report,
+            ranked_summary=ranked_summary,
+        ),
+        encoding="utf-8",
+    )
     (output_path / "calibration_plots.html").write_text(
-        "<!doctype html><title>Ridge tuning calibration plots</title>\n",
+        _summary_html(
+            title="Ridge tuning calibration plots",
+            status="ok",
+            promotion_report=promotion_report,
+            ranked_summary=ranked_summary,
+        ),
         encoding="utf-8",
     )
     (output_path / "squad_performance_comparison.html").write_text(
-        "<!doctype html><title>Ridge tuning squad performance comparison</title>\n",
+        _summary_html(
+            title="Ridge tuning squad performance comparison",
+            status="ok",
+            promotion_report=promotion_report,
+            ranked_summary=ranked_summary,
+        ),
         encoding="utf-8",
     )
+
+
+def _comparison_report_markdown(
+    *,
+    status: str,
+    promotion_report: Mapping[str, object],
+    ranked_summary: pd.DataFrame,
+) -> str:
+    lines = [
+        "# Ridge Tuning Experiment",
+        "",
+        f"Status: {status}",
+        f"Recommendation: {promotion_report.get('recommendation')}",
+        f"Reason: {promotion_report.get('reason')}",
+        "",
+        "## Ranked Summary",
+        "",
+    ]
+    rows = _ranked_summary_rows(ranked_summary)
+    if not rows:
+        lines.append("No ranked candidates.")
+        return "\n".join(lines) + "\n"
+
+    lines.extend(
+        [
+            "| rank | candidate_id | total_actual_points | promotion_eligible | promotion_reason |",
+            "| --- | --- | ---: | --- | --- |",
+        ]
+    )
+    for row in rows:
+        lines.append(
+            "| {rank} | {candidate_id} | {total_actual_points} | {promotion_eligible} | {promotion_reason} |".format(
+                rank=row["rank"],
+                candidate_id=row["candidate_id"],
+                total_actual_points=row["total_actual_points"],
+                promotion_eligible=row["promotion_eligible"],
+                promotion_reason=row["promotion_reason"],
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _summary_html(
+    *,
+    title: str,
+    status: str,
+    promotion_report: Mapping[str, object],
+    ranked_summary: pd.DataFrame,
+) -> str:
+    rows = _ranked_summary_rows(ranked_summary)
+    table_rows = "\n".join(
+        "<tr>"
+        f"<td>{escape(str(row['rank']))}</td>"
+        f"<td>{escape(str(row['candidate_id']))}</td>"
+        f"<td>{escape(str(row['total_actual_points']))}</td>"
+        f"<td>{escape(str(row['promotion_eligible']))}</td>"
+        f"<td>{escape(str(row['promotion_reason']))}</td>"
+        "</tr>"
+        for row in rows
+    )
+    if not table_rows:
+        table_rows = "<tr><td colspan=\"5\">No ranked candidates.</td></tr>"
+    return (
+        "<!doctype html>\n"
+        f"<title>{escape(title)}</title>\n"
+        f"<h1>{escape(title)}</h1>\n"
+        f"<p>Status: {escape(status)}</p>\n"
+        f"<p>Recommendation: {escape(str(promotion_report.get('recommendation')))}</p>\n"
+        f"<p>Reason: {escape(str(promotion_report.get('reason')))}</p>\n"
+        "<table>\n"
+        "<thead><tr><th>rank</th><th>candidate_id</th><th>total_actual_points</th>"
+        "<th>promotion_eligible</th><th>promotion_reason</th></tr></thead>\n"
+        f"<tbody>{table_rows}</tbody>\n"
+        "</table>\n"
+    )
+
+
+def _ranked_summary_rows(ranked_summary: pd.DataFrame) -> list[dict[str, object]]:
+    if ranked_summary.empty:
+        return []
+    columns = [
+        "rank",
+        "candidate_id",
+        "total_actual_points",
+        "promotion_eligible",
+        "promotion_reason",
+    ]
+    available_columns = [column for column in columns if column in ranked_summary.columns]
+    rows = ranked_summary.loc[:, available_columns].head(5).to_dict(orient="records")
+    return [
+        {
+            "rank": row.get("rank", ""),
+            "candidate_id": row.get("candidate_id", ""),
+            "total_actual_points": _report_value(row.get("total_actual_points")),
+            "promotion_eligible": row.get("promotion_eligible", ""),
+            "promotion_reason": row.get("promotion_reason", ""),
+        }
+        for row in rows
+    ]
+
+
+def _report_value(value: object) -> object:
+    if value is None or pd.isna(value):
+        return ""
+    if isinstance(value, float):
+        return CSV_FLOAT_FORMAT % value
+    return value
 
 
 def _write_failure_artifacts(output_path: Path, metadata: Mapping[str, object]) -> None:
