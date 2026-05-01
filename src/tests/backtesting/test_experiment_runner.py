@@ -64,28 +64,47 @@ def _result(
     model_id: str,
     candidate_id: int = 101,
     candidate_price: float = 10.0,
+    candidate_count: int = 1,
+    total_actual_points: float = 2.0,
+    total_predicted_points: float | None = None,
 ) -> BacktestResult:
+    if total_predicted_points is None:
+        total_predicted_points = total_actual_points
+    candidate_rows = [
+        {
+            "rodada": 5,
+            "id_atleta": candidate_id + index,
+            "posicao": "ata",
+            "id_clube": 1,
+            "status": "Provavel",
+            "preco_pre_rodada": candidate_price + (index / 100),
+            "pontuacao": float(index + 1),
+            f"{model_id}_score": float(index + 1),
+        }
+        for index in range(candidate_count)
+    ]
+    selected_rows = [
+        {
+            **row,
+            "strategy": model_id,
+            "predicted_points": row[f"{model_id}_score"],
+        }
+        for row in candidate_rows[: min(candidate_count, 12)]
+    ]
     round_results = pd.DataFrame(
         [
             {"rodada": 5, "strategy": "baseline", "solver_status": "Optimal", "actual_points": 1.0, "predicted_points": 1.0},
-            {"rodada": 5, "strategy": model_id, "solver_status": "Optimal", "actual_points": 2.0, "predicted_points": 2.0},
+            {
+                "rodada": 5,
+                "strategy": model_id,
+                "solver_status": "Optimal",
+                "actual_points": total_actual_points,
+                "predicted_points": total_predicted_points,
+            },
             {"rodada": 5, "strategy": "price", "solver_status": "Optimal", "actual_points": 1.5, "predicted_points": 1.5},
         ]
     )
-    player_predictions = pd.DataFrame(
-        [
-            {
-                "rodada": 5,
-                "id_atleta": candidate_id,
-                "posicao": "ata",
-                "id_clube": 1,
-                "status": "Provavel",
-                "preco_pre_rodada": candidate_price,
-                "pontuacao": 2.0,
-                f"{model_id}_score": 2.0,
-            }
-        ]
-    )
+    player_predictions = pd.DataFrame(candidate_rows)
     summary = pd.DataFrame(
         [
             {
@@ -99,9 +118,9 @@ def _result(
             {
                 "strategy": model_id,
                 "rounds": 1,
-                "total_actual_points": 2.0,
-                "average_actual_points": 2.0,
-                "total_predicted_points": 2.0,
+                "total_actual_points": total_actual_points,
+                "average_actual_points": total_actual_points,
+                "total_predicted_points": total_predicted_points,
                 "actual_points_delta_vs_price": 0.5,
             },
             {
@@ -116,7 +135,7 @@ def _result(
     )
     return BacktestResult(
         round_results=round_results,
-        selected_players=pd.DataFrame(),
+        selected_players=pd.DataFrame(selected_rows),
         player_predictions=player_predictions,
         summary=summary,
         diagnostics=pd.DataFrame(),
@@ -308,12 +327,9 @@ def test_experiment_runner_rejects_output_collision(tmp_path: Path) -> None:
 def test_experiment_runner_fails_on_candidate_mismatch_before_ranking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    child_index = 0
-
     def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
-        nonlocal child_index
-        child_index += 1
-        candidate_price = 11.0 if child_index == 3 else 10.0
+        feature_pack = config.output_path.parts[-1]
+        candidate_price = 11.0 if feature_pack == "feature_pack=ppg_xg" else 10.0
         return _result(config, model_id=primary_model_id, candidate_price=candidate_price)
 
     monkeypatch.setattr(
@@ -351,6 +367,106 @@ def test_experiment_runner_fails_on_candidate_mismatch_before_ranking(
     )
     assert (output_path / "comparability_report.json").exists()
     assert not (output_path / "ranked_summary.csv").exists()
+
+
+def test_ranked_summary_aggregates_configs_across_seasons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual_points = {
+        (2024, "random_forest", "feature_pack=ppg"): 10.0,
+        (2025, "random_forest", "feature_pack=ppg"): 20.0,
+        (2024, "extra_trees", "feature_pack=ppg"): 13.0,
+        (2025, "extra_trees", "feature_pack=ppg"): 22.0,
+    }
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        feature_pack = config.output_path.parts[-1]
+        total_actual_points = actual_points.get((config.season, primary_model_id, feature_pack), 5.0)
+        return _result(
+            config,
+            model_id=primary_model_id,
+            candidate_count=60,
+            total_actual_points=total_actual_points,
+            total_predicted_points=total_actual_points + 1.0,
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    result = run_model_experiment(
+        group="production-parity",
+        seasons=(2024, 2025),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments"),
+        started_at_utc="20260430T200000000000Z",
+    )
+
+    ranked = pd.read_csv(result.output_path / "ranked_summary.csv")
+    per_season = pd.read_csv(result.output_path / "per_season_summary.csv")
+
+    assert len(per_season) == 16
+    assert len(ranked) == 8
+    assert ranked[["model_id", "feature_pack", "fixture_mode"]].duplicated().sum() == 0
+
+    row = ranked[(ranked["model_id"] == "extra_trees") & (ranked["feature_pack"] == "ppg")].iloc[0]
+    assert row["seasons_evaluated"] == 2
+    assert row["total_rounds"] == 2
+    assert row["total_actual_points"] == 35.0
+    assert row["baseline_total_actual_points"] == 30.0
+    assert row["aggregate_delta"] == 5.0
+    assert row["average_actual_delta_per_round"] == 2.5
+    assert row["improved_seasons"] == 2
+    assert row["worst_season_avg_delta"] == 2.0
+
+
+def test_prediction_metrics_and_calibration_deciles_are_populated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        return _result(config, model_id=primary_model_id, candidate_count=60)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    result = run_model_experiment(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments"),
+        started_at_utc="20260430T200000000000Z",
+    )
+
+    prediction_metrics = pd.read_csv(result.output_path / "prediction_metrics.csv")
+    calibration_deciles = pd.read_csv(result.output_path / "calibration_deciles.csv")
+
+    assert not prediction_metrics.empty
+    assert not calibration_deciles.empty
+    assert {"candidate_pool", "top50_candidates", "selected_players"}.issubset(
+        set(prediction_metrics["metric_scope"])
+    )
+    assert prediction_metrics[prediction_metrics["metric_scope"] == "top50_candidates"]["observed_count"].min() == 50
+    assert prediction_metrics[prediction_metrics["metric_scope"] == "selected_players"]["observed_count"].min() == 12
+    assert calibration_deciles["decile"].between(1, 10).all()
 
 
 def test_experiment_runner_writes_failure_artifacts_when_candidate_signature_build_fails(
