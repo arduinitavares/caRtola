@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import pandas as pd
 
 
@@ -94,5 +92,12 @@ def promotion_status(
     return {"eligible": True, "reason": "passes_v1_guardrails"}
 
 
-def _is_missing(value: float | int | None) -> bool:
-    return value is None or (isinstance(value, float) and math.isnan(value))
+def _is_missing(value: object) -> bool:
+    if value is None:
+        return True
+
+    missing = pd.isna(value)
+    if isinstance(missing, bool):
+        return missing
+
+    return False

@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -86,6 +87,19 @@ def test_promotion_status_fails_null_guardrail() -> None:
 def test_promotion_status_fails_nan_guardrail() -> None:
     result = promotion_status(
         aggregate_delta=math.nan,
+        improved_seasons=2,
+        worst_season_avg_delta=-1.5,
+        selected_calibration_slope=1.0,
+        top50_spearman_delta=-0.03,
+        comparable=True,
+    )
+
+    assert result == {"eligible": False, "reason": "insufficient_metric_data"}
+
+
+def test_promotion_status_fails_numpy_scalar_nan_guardrail() -> None:
+    result = promotion_status(
+        aggregate_delta=np.float32("nan"),
         improved_seasons=2,
         worst_season_avg_delta=-1.5,
         selected_calibration_slope=1.0,
