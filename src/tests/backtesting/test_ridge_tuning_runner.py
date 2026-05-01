@@ -92,6 +92,8 @@ def test_run_ridge_tuning_skip_final_rerun_does_not_promote(monkeypatch: pytest.
     assert promotion_report["recommendation"] == "keep_incumbent"
     assert promotion_report["reason"] == "final_rerun_skipped"
     assert promotion_report["promoted_candidate_id"] is None
+    assert result.ranked_summary["promotion_eligible"].eq(False).all()
+    assert set(result.ranked_summary["promotion_reason"]) == {"final_rerun_skipped"}
 
 
 def test_run_ridge_tuning_rejects_current_year(tmp_path: Path) -> None:

@@ -48,6 +48,17 @@ def test_promotion_decision_rejects_null_required_metric() -> None:
     assert result == {"eligible": False, "reason": "insufficient_metric_data"}
 
 
+def test_promotion_decision_rejects_non_positive_round_count() -> None:
+    result = promotion_decision(
+        **_passing_promotion_inputs(
+            aggregate_delta_vs_primary_incumbent=1.0,
+            total_rounds=0,
+        ),
+    )
+
+    assert result == {"eligible": False, "reason": "insufficient_metric_data"}
+
+
 def test_rank_tuning_summary_keeps_alpha_candidates_distinct() -> None:
     per_season_summary = pd.DataFrame(
         [

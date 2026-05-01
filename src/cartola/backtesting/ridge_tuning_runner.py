@@ -161,7 +161,7 @@ def run_ridge_tuning(
         )
 
         if skip_final_rerun:
-            ranked_summary = screen_ranked
+            ranked_summary = _mark_final_rerun_skipped(screen_ranked)
             promotion_report = {
                 "recommendation": "keep_incumbent",
                 "reason": "final_rerun_skipped",
@@ -727,6 +727,15 @@ def _all_reproducible(per_season_summary: pd.DataFrame) -> dict[str, bool]:
     if "candidate_id" not in per_season_summary.columns:
         return {}
     return {str(candidate_id): True for candidate_id in per_season_summary["candidate_id"].dropna().unique()}
+
+
+def _mark_final_rerun_skipped(ranked_summary: pd.DataFrame) -> pd.DataFrame:
+    safe_ranked = ranked_summary.copy()
+    if "promotion_eligible" in safe_ranked.columns:
+        safe_ranked["promotion_eligible"] = False
+    if "promotion_reason" in safe_ranked.columns:
+        safe_ranked["promotion_reason"] = "final_rerun_skipped"
+    return safe_ranked
 
 
 def _final_candidate_ids(screen_ranked: pd.DataFrame) -> set[str]:

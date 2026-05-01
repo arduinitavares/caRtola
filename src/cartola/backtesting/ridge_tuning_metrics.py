@@ -73,6 +73,9 @@ def promotion_decision(
     candidate_pool_mae_delta_pct = cast("float", candidate_pool_mae_delta_pct_vs_primary_incumbent)
     selected_players_mae_delta_pct = cast("float", selected_players_mae_delta_pct_vs_primary_incumbent)
 
+    if rounds <= 0:
+        return {"eligible": False, "reason": "insufficient_metric_data"}
+
     required_aggregate_lift = PRACTICAL_LIFT_PER_ROUND * rounds
     if aggregate_delta < required_aggregate_lift:
         return {"eligible": False, "reason": "lift_below_practical_threshold"}
