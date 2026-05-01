@@ -464,11 +464,13 @@ uv run --frozen scripts/pyrepo-check --all
    - Baseline: `random_forest + ppg + fixture_mode=exploratory + matchup_context_mode=none`.
    - Treat this as research evidence only, not strict live proof.
 3. Add a constrained sklearn tuning experiment before adding external model libraries.
-   - Start with fixed, predeclared variants, not an open grid search.
-   - Ridge candidates: `alpha` values such as `0.1`, `1.0`, `10.0`, and `100.0`.
-   - RandomForest/ExtraTrees candidates: shallow/default/more-trees variants with explicit `n_estimators`, `max_depth`, and `min_samples_leaf`.
-   - Keep the same comparability gates and promotion rules as the model/feature experiment runner.
-   - Preserve `2025` as a decision season as much as possible; do not keep iterating until one variant happens to win.
+   - Spec: `docs/superpowers/specs/2026-05-01-constrained-ridge-tuning-design.md`.
+   - Start with a fixed Ridge-only alpha matrix, not an open grid search.
+   - Include both `ppg` and `ppg_xg` for every alpha so xG is not advantaged only because it received tuning attention.
+   - Rerun `ridge + ppg_xg + alpha=1.0` and `ridge + ppg + alpha=1.0` inside the same tuning generation.
+   - Require final reruns, exact comparability, null-metric failure, and a practical lift threshold before promotion.
+   - Defer RandomForest/ExtraTrees tuning until calibration wrappers are designed; the first production-parity result suggests tree overprediction is structural, not just a small hyperparameter miss.
+   - Defer HGB, Optuna, XGBoost, LightGBM, and CatBoost until the Ridge tuning baseline is measured.
 4. Interpret experiment outputs before building broader modeling features.
    - Start with `ranked_summary.csv`.
    - Check `per_season_summary.csv` for season robustness.
