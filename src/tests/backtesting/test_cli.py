@@ -55,7 +55,7 @@ def _metadata_for_config(config: BacktestConfig, *, warnings: list[str] | None =
     )
 
 
-def test_parse_args_accepts_v1_options():
+def test_parse_args_accepts_v1_options() -> None:
     args = parse_args(["--season", "2025", "--start-round", "5", "--budget", "100"])
 
     assert args.season == 2025
@@ -68,7 +68,7 @@ def test_parse_args_does_not_expose_model_id() -> None:
         parse_args(["--model-id", "extra_trees"])
 
 
-def test_parse_args_uses_v1_defaults():
+def test_parse_args_uses_v1_defaults() -> None:
     args = parse_args([])
 
     assert args.season == 2025
@@ -145,7 +145,7 @@ def test_parse_args_uses_jobs_default() -> None:
     assert args.jobs == 1
 
 
-def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path):
+def test_main_builds_config_and_prints_completion(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     observed_configs: list[BacktestConfig] = []
 
     def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
@@ -195,7 +195,7 @@ def test_main_builds_config_and_prints_completion(monkeypatch, capsys, tmp_path)
     assert "Backtest complete" in capsys.readouterr().out
 
 
-def test_main_passes_footystats_options_and_output_root_to_config(monkeypatch) -> None:
+def test_main_passes_footystats_options_and_output_root_to_config(monkeypatch: pytest.MonkeyPatch) -> None:
     observed_configs: list[BacktestConfig] = []
 
     def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
@@ -241,7 +241,7 @@ def test_main_passes_footystats_options_and_output_root_to_config(monkeypatch) -
     assert config.current_year == 2026
 
 
-def test_main_passes_jobs_to_config(monkeypatch, tmp_path) -> None:
+def test_main_passes_jobs_to_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     observed_configs: list[BacktestConfig] = []
 
     def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
@@ -263,7 +263,7 @@ def test_main_passes_jobs_to_config(monkeypatch, tmp_path) -> None:
     assert observed_configs[0].jobs == 3
 
 
-def test_main_prints_metadata_warnings(monkeypatch, capsys, tmp_path):
+def test_main_prints_metadata_warnings(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
         return BacktestResult(
             round_results=pd.DataFrame(),
@@ -287,7 +287,7 @@ def test_main_prints_metadata_warnings(monkeypatch, capsys, tmp_path):
     assert "WARNING:" not in output
 
 
-def test_main_writes_performance_chart_and_prints_path(monkeypatch, capsys, tmp_path):
+def test_main_writes_performance_chart_and_prints_path(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     output_root = tmp_path / "backtests"
 
     def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
@@ -338,7 +338,7 @@ def test_main_writes_performance_chart_and_prints_path(monkeypatch, capsys, tmp_
     assert "strategy_performance_by_round.html" in output
 
 
-def test_main_prints_chart_warning_without_failing(monkeypatch, capsys, tmp_path):
+def test_main_prints_chart_warning_without_failing(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
         return BacktestResult(
             round_results=pd.DataFrame(),
@@ -364,7 +364,7 @@ def test_main_prints_chart_warning_without_failing(monkeypatch, capsys, tmp_path
     assert "Backtest complete" in output
 
 
-def test_main_propagates_chart_schema_errors(monkeypatch, tmp_path):
+def test_main_propagates_chart_schema_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def fake_run_backtest(config: BacktestConfig) -> BacktestResult:
         return BacktestResult(
             round_results=pd.DataFrame(

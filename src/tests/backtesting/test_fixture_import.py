@@ -12,7 +12,7 @@ from cartola.backtesting.fixture_import import (
 )
 
 
-def test_load_club_mapping_reads_external_names_to_cartola_ids(tmp_path):
+def test_load_club_mapping_reads_external_names_to_cartola_ids(tmp_path: Path) -> None:
     mapping_file = tmp_path / "club_mapping.csv"
     pd.DataFrame(
         {
@@ -26,7 +26,7 @@ def test_load_club_mapping_reads_external_names_to_cartola_ids(tmp_path):
     assert mapping == {"Flamengo": 262, "Santos": 277}
 
 
-def test_events_to_fixture_frame_maps_names_and_filters_to_played_clubs():
+def test_events_to_fixture_frame_maps_names_and_filters_to_played_clubs() -> None:
     events = [
         {
             "strHomeTeam": "Flamengo",
@@ -54,7 +54,7 @@ def test_events_to_fixture_frame_maps_names_and_filters_to_played_clubs():
     assert fixtures.columns.tolist() == ["rodada", "id_clube_home", "id_clube_away", "data"]
 
 
-def test_events_to_fixture_frame_rejects_unmapped_teams():
+def test_events_to_fixture_frame_rejects_unmapped_teams() -> None:
     events = [
         {
             "strHomeTeam": "Flamengo",
@@ -77,7 +77,7 @@ def test_events_to_fixture_frame_rejects_unmapped_teams():
 
 
 @pytest.mark.parametrize("date_event", [None, "NaT", "nan"])
-def test_events_to_fixture_frame_rejects_invalid_event_dates(date_event):
+def test_events_to_fixture_frame_rejects_invalid_event_dates(date_event: str) -> None:
     events = [
         {
             "strHomeTeam": "Flamengo",
@@ -94,17 +94,17 @@ def test_events_to_fixture_frame_rejects_invalid_event_dates(date_event):
         )
 
 
-def test_fetch_thesportsdb_round_calls_round_endpoint(monkeypatch):
+def test_fetch_thesportsdb_round_calls_round_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 
     class Response:
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             calls.append(("raise_for_status",))
 
-        def json(self):
+        def json(self) -> dict[str, list[dict[str, str]]]:
             return {"events": [{"idEvent": "1"}]}
 
-    def fake_get(url, *, params, timeout):
+    def fake_get(url: str, *, params: dict[str, int | str], timeout: int) -> Response:
         calls.append((url, params, timeout))
         return Response()
 
@@ -123,7 +123,7 @@ def test_fetch_thesportsdb_round_calls_round_endpoint(monkeypatch):
     ]
 
 
-def test_import_thesportsdb_fixtures_writes_canonical_round_files_and_returns_result(tmp_path, monkeypatch):
+def test_import_thesportsdb_fixtures_writes_canonical_round_files_and_returns_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_mapping(tmp_path)
     season_df = pd.DataFrame(
         [
@@ -141,7 +141,7 @@ def test_import_thesportsdb_fixtures_writes_canonical_round_files_and_returns_re
         2: [{"strHomeTeam": "Palmeiras", "strAwayTeam": "Gremio", "dateEvent": "2025-04-12"}],
     }
 
-    def fake_fetch(*, round_number, season, api_key, league_id):
+    def fake_fetch(*, round_number: int, season: int, api_key: str, league_id: int) -> list[dict[str, str]]:
         assert season == 2025
         assert api_key == "abc"
         assert league_id == 4351
@@ -175,7 +175,7 @@ def test_import_thesportsdb_fixtures_writes_canonical_round_files_and_returns_re
     assert pd.read_csv(round_1_file).columns.tolist() == ["rodada", "id_clube_home", "id_clube_away", "data"]
 
 
-def test_import_thesportsdb_fixtures_rejects_missing_played_clubs_before_writing(tmp_path, monkeypatch):
+def test_import_thesportsdb_fixtures_rejects_missing_played_clubs_before_writing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_mapping(tmp_path)
     season_df = pd.DataFrame(
         [
@@ -185,7 +185,7 @@ def test_import_thesportsdb_fixtures_rejects_missing_played_clubs_before_writing
         ]
     )
 
-    def fake_fetch(*, round_number, season, api_key, league_id):
+    def fake_fetch(*, round_number: int, season: int, api_key: str, league_id: int) -> list[dict[str, str]]:
         assert round_number == 2
         return [{"strHomeTeam": "Flamengo", "strAwayTeam": "Santos", "dateEvent": "2025-04-05"}]
 
@@ -203,7 +203,7 @@ def test_import_thesportsdb_fixtures_rejects_missing_played_clubs_before_writing
     assert not (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv").exists()
 
 
-def test_import_thesportsdb_fixtures_rejects_duplicate_generated_clubs_before_writing(tmp_path, monkeypatch):
+def test_import_thesportsdb_fixtures_rejects_duplicate_generated_clubs_before_writing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_mapping(tmp_path)
     season_df = pd.DataFrame(
         [
@@ -213,7 +213,7 @@ def test_import_thesportsdb_fixtures_rejects_duplicate_generated_clubs_before_wr
         ]
     )
 
-    def fake_fetch(*, round_number, season, api_key, league_id):
+    def fake_fetch(*, round_number: int, season: int, api_key: str, league_id: int) -> list[dict[str, str]]:
         assert round_number == 2
         return [
             {"strHomeTeam": "Flamengo", "strAwayTeam": "Santos", "dateEvent": "2025-04-05"},
@@ -234,11 +234,11 @@ def test_import_thesportsdb_fixtures_rejects_duplicate_generated_clubs_before_wr
     assert not (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv").exists()
 
 
-def test_import_thesportsdb_fixtures_rejects_self_matches_before_writing(tmp_path, monkeypatch):
+def test_import_thesportsdb_fixtures_rejects_self_matches_before_writing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_mapping(tmp_path)
     season_df = pd.DataFrame([{"rodada": 2, "id_clube": 262, "entrou_em_campo": True}])
 
-    def fake_fetch(*, round_number, season, api_key, league_id):
+    def fake_fetch(*, round_number: int, season: int, api_key: str, league_id: int) -> list[dict[str, str]]:
         assert round_number == 2
         return [{"strHomeTeam": "Flamengo", "strAwayTeam": "Flamengo", "dateEvent": "2025-04-05"}]
 
@@ -256,7 +256,7 @@ def test_import_thesportsdb_fixtures_rejects_self_matches_before_writing(tmp_pat
     assert not (tmp_path / "data" / "01_raw" / "fixtures" / "2025" / "partidas-2.csv").exists()
 
 
-def test_import_thesportsdb_fixtures_does_not_write_partial_files_when_later_round_fails(tmp_path, monkeypatch):
+def test_import_thesportsdb_fixtures_does_not_write_partial_files_when_later_round_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_mapping(tmp_path)
     season_df = pd.DataFrame(
         [
@@ -271,7 +271,7 @@ def test_import_thesportsdb_fixtures_does_not_write_partial_files_when_later_rou
         2: [{"strHomeTeam": "Palmeiras", "strAwayTeam": "Unknown FC", "dateEvent": "2025-04-12"}],
     }
 
-    def fake_fetch(*, round_number, season, api_key, league_id):
+    def fake_fetch(*, round_number: int, season: int, api_key: str, league_id: int) -> list[dict[str, str]]:
         return events_by_round[round_number]
 
     monkeypatch.setattr("cartola.backtesting.fixture_import.fetch_thesportsdb_round", fake_fetch)

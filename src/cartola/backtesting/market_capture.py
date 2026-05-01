@@ -209,7 +209,7 @@ def _athletes(market_payload: dict[str, Any]) -> list[dict[str, Any]]:
     return athletes
 
 
-def _required_athlete_value(athlete: dict[str, Any], field_name: str) -> Any:
+def _required_athlete_value(athlete: dict[str, Any], field_name: str) -> object:
     if field_name not in athlete:
         raise ValueError(f"athlete payload missing required field {field_name!r}")
     return athlete[field_name]

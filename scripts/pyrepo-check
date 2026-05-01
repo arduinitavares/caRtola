@@ -24,7 +24,7 @@ CHECKS: tuple[Check, ...] = (
             "check",
             "src/cartola",
             "src/tests",
-            "scripts/pyrepo-check",
+            "scripts",
         ),
     ),
     Check("ty", (sys.executable, "-m", "ty", "check")),

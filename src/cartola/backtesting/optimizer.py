@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -292,7 +291,11 @@ def _with_formation_scores(
     )
 
 
-def _optional_int(value: Any) -> int | None:
+def _optional_int(value: object) -> int | None:
     if pd.isna(value):
         return None
-    return int(value)
+    if isinstance(value, int | float):
+        return int(value)
+    if isinstance(value, np.integer | np.floating):
+        return int(value.item())
+    return int(str(value))

@@ -12,6 +12,7 @@ from cartola.backtesting.data import load_round_file
 from cartola.backtesting.market_capture import (
     CAPTURE_VERSION,
     CapturedJsonResponse,
+    Fetch,
     MarketCaptureConfig,
     build_live_market_frame,
     capture_market_round,
@@ -90,7 +91,7 @@ def _captured(payload: dict[str, object], url: str) -> CapturedJsonResponse:
 def _fetch_pair(
     status_payload: dict[str, object] | None = None,
     market_payload: dict[str, object] | None = None,
-):
+) -> Fetch:
     status_payload = _status_payload() if status_payload is None else status_payload
     market_payload = _market_payload() if market_payload is None else market_payload
 

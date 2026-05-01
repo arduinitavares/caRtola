@@ -2,13 +2,19 @@
 as `cartola` and `python -m cartola`
 """
 import importlib
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
+from typing import Protocol
 
 from kedro.framework.cli.utils import KedroCliError, load_entry_points
 from kedro.framework.project import configure_project
 
 
-def _find_run_command(package_name):
+class _CommandGroup(Protocol):
+    commands: Mapping[str, Callable[..., object]]
+
+
+def _find_run_command(package_name: str) -> Callable[..., object]:
     try:
         project_cli = importlib.import_module(f"{package_name}.cli")
         # fail gracefully if cli.py does not exist
@@ -30,13 +36,14 @@ def _find_run_command(package_name):
     return project_cli.run
 
 
-def _find_run_command_in_plugins(plugins):
+def _find_run_command_in_plugins(plugins: Iterable[_CommandGroup]) -> Callable[..., object] | None:
     for group in plugins:
         if "run" in group.commands:
             return group.commands["run"]
+    return None
 
 
-def main(*args, **kwargs):
+def main(*args: object, **kwargs: object) -> None:
     package_name = Path(__file__).parent.name
     configure_project(package_name)
     run = _find_run_command(package_name)

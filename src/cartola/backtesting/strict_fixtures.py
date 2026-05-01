@@ -429,11 +429,11 @@ def _resolve_under_root(project_root: Path, path_value: str | Path) -> Path:
     return resolved
 
 
-def _parse_manifest_utc(value: Any, *, field_name: str) -> datetime:
+def _parse_manifest_utc(value: object, *, field_name: str) -> datetime:
     return parse_iso_utc_z(value, field_name=field_name)
 
 
-def _verify_hash(path: Path, expected_hash: Any, *, field_name: str) -> None:
+def _verify_hash(path: Path, expected_hash: object, *, field_name: str) -> None:
     if not isinstance(expected_hash, str) or not expected_hash:
         raise ValueError(f"{field_name} must be a non-empty SHA-256 hash")
     actual_hash = sha256_file(path)
@@ -443,8 +443,8 @@ def _verify_hash(path: Path, expected_hash: Any, *, field_name: str) -> None:
 
 def _verify_optional_path_hash(
     root: Path,
-    path_value: Any,
-    expected_hash: Any,
+    path_value: object,
+    expected_hash: object,
     *,
     path_field: str,
     hash_field: str,
@@ -455,6 +455,8 @@ def _verify_optional_path_hash(
         return
     if expected_hash is None:
         raise ValueError(f"{hash_field} is required when {path_field} is set")
+    if not isinstance(path_value, str | Path):
+        raise ValueError(f"{path_field} must be a path string")
     _verify_hash(_resolve_under_root(root, path_value), expected_hash, field_name=hash_field)
 
 

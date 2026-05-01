@@ -12,7 +12,7 @@ from cartola.backtesting.config import (
 )
 
 
-def test_default_config_matches_v1_scope():
+def test_default_config_matches_v1_scope() -> None:
     config = BacktestConfig()
 
     assert config.season == 2025
@@ -22,7 +22,7 @@ def test_default_config_matches_v1_scope():
     assert config.output_path == Path("data/08_reporting/backtests/2025")
 
 
-def test_output_path_override_is_private_and_exact(tmp_path) -> None:
+def test_output_path_override_is_private_and_exact(tmp_path: Path) -> None:
     override = tmp_path / "runs" / "season=2025" / "model=extra_trees" / "feature_pack=ppg"
     config = BacktestConfig(project_root=tmp_path, _output_path_override=override)
 
@@ -48,7 +48,7 @@ def test_backtest_config_has_no_public_fixed_formation_fields() -> None:
     assert not hasattr(BacktestConfig(), "selected_formation")
 
 
-def test_default_mappings_cover_cartola_values():
+def test_default_mappings_cover_cartola_values() -> None:
     assert STATUS_ID_TO_NAME[7] == "Provavel"
     assert STATUS_ID_TO_NAME[2] == "Duvida"
     assert POSITION_ID_TO_CODE[1] == "gol"
@@ -59,7 +59,7 @@ def test_default_mappings_cover_cartola_values():
     assert POSITION_ID_TO_CODE[6] == "tec"
 
 
-def test_default_scout_columns_include_v():
+def test_default_scout_columns_include_v() -> None:
     assert "V" in DEFAULT_SCOUT_COLUMNS
     assert {"G", "A", "DS", "SG", "CA", "FC"}.issubset(DEFAULT_SCOUT_COLUMNS)
 

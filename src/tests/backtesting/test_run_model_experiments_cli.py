@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import NoReturn
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -19,10 +22,10 @@ def test_parse_args_defaults() -> None:
     assert args.jobs == 1
 
 
-def test_main_calls_runner(monkeypatch, tmp_path) -> None:
+def test_main_calls_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     observed: dict[str, object] = {}
 
-    def fake_run_model_experiment(**kwargs):
+    def fake_run_model_experiment(**kwargs: object) -> object:
         observed.update(kwargs)
 
         class Result:
@@ -60,7 +63,7 @@ def test_main_calls_runner(monkeypatch, tmp_path) -> None:
     assert callable(observed["progress_callback"])
 
 
-def test_main_rejects_empty_seasons_without_traceback(capsys) -> None:
+def test_main_rejects_empty_seasons_without_traceback(capsys: pytest.CaptureFixture[str]) -> None:
     exit_code = main(["--group", "production-parity", "--seasons", "", "--current-year", "2026"])
 
     assert exit_code == 1
@@ -69,8 +72,8 @@ def test_main_rejects_empty_seasons_without_traceback(capsys) -> None:
     assert "Traceback" not in captured.err
 
 
-def test_main_reports_child_run_failure_without_traceback(monkeypatch, capsys) -> None:
-    def fake_run_model_experiment(**_kwargs):
+def test_main_reports_child_run_failure_without_traceback(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    def fake_run_model_experiment(**_kwargs: object) -> NoReturn:
         raise RuntimeError("child failed")
 
     monkeypatch.setattr("scripts.run_model_experiments.run_model_experiment", fake_run_model_experiment)

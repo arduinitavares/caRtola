@@ -29,7 +29,7 @@ def test_effective_model_n_jobs() -> None:
     assert runner_module._effective_model_n_jobs(4) == 1
 
 
-def test_thread_env_records_explicit_keys(monkeypatch) -> None:
+def test_thread_env_records_explicit_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
     monkeypatch.setenv("MKL_NUM_THREADS", "2")
     monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
@@ -129,7 +129,7 @@ def _tiny_footystats_rows(rounds: range, clubs: range = range(1, 19)) -> pd.Data
     return pd.DataFrame(rows)
 
 
-def test_round_frame_store_training_frame_matches_public_builder(tmp_path):
+def test_round_frame_store_training_frame_matches_public_builder(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     fixtures = _tiny_fixtures(range(1, 6))
     footystats_rows = _tiny_footystats_rows(range(1, 6))
@@ -174,7 +174,7 @@ def test_round_frame_store_training_frame_matches_public_builder(tmp_path):
     assert store.prediction_frames_built == 5
 
 
-def test_round_frame_store_returns_deep_copies_for_candidates_and_training():
+def test_round_frame_store_returns_deep_copies_for_candidates_and_training() -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 4)], ignore_index=True)
     store = runner_module.RoundFrameStore(
         season_df=season_df,
@@ -273,7 +273,7 @@ def test_round_frame_store_concurrent_reads_do_not_mutate_cached_frames() -> Non
     assert_frame_equal(before, after)
 
 
-def test_round_frame_store_preserves_target_round_temporal_boundary():
+def test_round_frame_store_preserves_target_round_temporal_boundary() -> None:
     base = pd.concat([_tiny_round(round_number) for round_number in range(1, 5)], ignore_index=True)
     spiked = base.copy()
     spiked.loc[spiked["rodada"].eq(4), "pontuacao"] = 9999.0
@@ -300,7 +300,7 @@ def test_round_frame_store_preserves_target_round_temporal_boundary():
     )
 
 
-def test_run_backtest_builds_each_detected_round_prediction_frame_once(tmp_path, monkeypatch):
+def test_run_backtest_builds_each_detected_round_prediction_frame_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
     calls: list[int] = []
     original = runner_module.build_prediction_frame
@@ -318,7 +318,7 @@ def test_run_backtest_builds_each_detected_round_prediction_frame_once(tmp_path,
     assert sorted(calls) == [1, 2, 3, 4, 5, 6]
 
 
-def test_public_run_backtest_keeps_random_forest_strategy(tmp_path, monkeypatch) -> None:
+def test_public_run_backtest_keeps_random_forest_strategy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     monkeypatch.setattr(runner_module, "load_season_data", lambda season, project_root: data)
 
@@ -330,7 +330,7 @@ def test_public_run_backtest_keeps_random_forest_strategy(tmp_path, monkeypatch)
     assert "random_forest_score" in result.player_predictions.columns
 
 
-def test_experiment_run_uses_primary_model_strategy(tmp_path, monkeypatch) -> None:
+def test_experiment_run_uses_primary_model_strategy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     monkeypatch.setattr(runner_module, "load_season_data", lambda season, project_root: data)
 
@@ -343,7 +343,7 @@ def test_experiment_run_uses_primary_model_strategy(tmp_path, monkeypatch) -> No
     assert "random_forest_score" not in result.player_predictions.columns
 
 
-def test_baseline_and_price_are_equal_across_model_ids(tmp_path, monkeypatch) -> None:
+def test_baseline_and_price_are_equal_across_model_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     monkeypatch.setattr("cartola.backtesting.runner.load_season_data", lambda season, project_root: data)
 
@@ -365,7 +365,7 @@ def test_baseline_and_price_are_equal_across_model_ids(tmp_path, monkeypatch) ->
     assert_frame_equal(rf_common, et_common)
 
 
-def test_experiment_run_rejects_unknown_primary_model(tmp_path, monkeypatch) -> None:
+def test_experiment_run_rejects_unknown_primary_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     monkeypatch.setattr(runner_module, "load_season_data", lambda season, project_root: data)
 
@@ -375,7 +375,7 @@ def test_experiment_run_rejects_unknown_primary_model(tmp_path, monkeypatch) -> 
         runner_module.run_backtest_for_experiment(config, primary_model_id="xgboost")
 
 
-def test_evaluate_target_round_returns_round_records_and_frames(tmp_path):
+def test_evaluate_target_round_returns_round_records_and_frames(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
     store = runner_module.RoundFrameStore(
@@ -408,7 +408,7 @@ def test_evaluate_target_round_returns_round_records_and_frames(tmp_path):
     assert not (tmp_path / "data/08_reporting/backtests/2025").exists()
 
 
-def test_evaluate_target_round_passes_effective_model_n_jobs(tmp_path, monkeypatch):
+def test_evaluate_target_round_passes_effective_model_n_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     observed_n_jobs: list[int] = []
 
     class RecordingRandomForestPointPredictor:
@@ -459,7 +459,7 @@ def test_evaluate_target_round_passes_effective_model_n_jobs(tmp_path, monkeypat
     assert observed_n_jobs == [1]
 
 
-def test_run_backtest_records_empty_for_missing_non_excluded_round(tmp_path):
+def test_run_backtest_records_empty_for_missing_non_excluded_round(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(1), _tiny_round(3)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=2, budget=100)
 
@@ -471,7 +471,7 @@ def test_run_backtest_records_empty_for_missing_non_excluded_round(tmp_path):
     assert 2 not in set(result.player_predictions.get("rodada", pd.Series(dtype=int)).dropna().astype(int).tolist())
 
 
-def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
+def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 
@@ -485,7 +485,7 @@ def test_run_backtest_writes_round_players_predictions_and_summary(tmp_path):
     assert (tmp_path / "data/08_reporting/backtests/2025/diagnostics.csv").exists()
 
 
-def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
+def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 
@@ -507,7 +507,7 @@ def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path):
         assert metadata[field] == expected_value
 
 
-def test_run_backtest_records_parallel_metadata_defaults(tmp_path):
+def test_run_backtest_records_parallel_metadata_defaults(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
 
     result = run_backtest(BacktestConfig(project_root=tmp_path, start_round=5, budget=100), season_df=season_df)
@@ -536,7 +536,7 @@ def test_run_backtest_records_parallel_metadata_defaults(tmp_path):
     }
 
 
-def test_run_backtest_jobs_2_matches_jobs_1_outputs(tmp_path):
+def test_run_backtest_jobs_2_matches_jobs_1_outputs(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
 
     sequential = run_backtest(
@@ -560,7 +560,7 @@ def test_run_backtest_jobs_2_matches_jobs_1_outputs(tmp_path):
     assert parallel.metadata.parallel_backend == "threads"
 
 
-def test_run_backtest_jobs_above_worker_rounds_records_effective_workers(tmp_path):
+def test_run_backtest_jobs_above_worker_rounds_records_effective_workers(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
 
     result = run_backtest(
@@ -587,7 +587,7 @@ def test_run_backtest_jobs_above_worker_rounds_records_effective_workers(tmp_pat
         (2, 1),
     ],
 )
-def test_run_backtest_start_after_max_round_records_no_workers(tmp_path, jobs, expected_model_n_jobs):
+def test_run_backtest_start_after_max_round_records_no_workers(tmp_path: Path, jobs: int, expected_model_n_jobs: int) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
 
     result = run_backtest(
@@ -615,7 +615,7 @@ def test_run_backtest_start_after_max_round_records_no_workers(tmp_path, jobs, e
     assert metadata["parallel_backend"] == "none"
 
 
-def test_run_backtest_missing_round_is_not_submitted_to_worker(tmp_path, monkeypatch):
+def test_run_backtest_missing_round_is_not_submitted_to_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(1), _tiny_round(3)], ignore_index=True)
     called_rounds: list[int] = []
     original = runner_module._evaluate_target_round
@@ -638,7 +638,7 @@ def test_run_backtest_missing_round_is_not_submitted_to_worker(tmp_path, monkeyp
     assert 2 not in set(result.player_predictions.get("rodada", pd.Series(dtype=int)).dropna().astype(int).tolist())
 
 
-def test_parallel_worker_failure_preserves_round_context(tmp_path, monkeypatch) -> None:
+def test_parallel_worker_failure_preserves_round_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
     original = runner_module._evaluate_target_round
 
@@ -660,7 +660,7 @@ def test_parallel_worker_failure_preserves_round_context(tmp_path, monkeypatch) 
     assert not (tmp_path / "data/08_reporting/backtests/2025/round_results.csv").exists()
 
 
-def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):
+def test_run_backtest_metadata_records_default_footystats_mode(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 
@@ -678,7 +678,7 @@ def test_run_backtest_metadata_records_default_footystats_mode(tmp_path):
     assert metadata["footystats_extra_club_rows_by_round"] == {}
 
 
-def test_run_backtest_rejects_live_current_scope(tmp_path):
+def test_run_backtest_rejects_live_current_scope(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(
         project_root=tmp_path,
@@ -692,7 +692,7 @@ def test_run_backtest_rejects_live_current_scope(tmp_path):
         run_backtest(config, season_df=season_df)
 
 
-def test_run_backtest_rejects_live_current_scope_with_footystats_none(tmp_path):
+def test_run_backtest_rejects_live_current_scope_with_footystats_none(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(
         project_root=tmp_path,
@@ -706,7 +706,7 @@ def test_run_backtest_rejects_live_current_scope_with_footystats_none(tmp_path):
         run_backtest(config, season_df=season_df)
 
 
-def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path, monkeypatch):
+def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     observed_calls: list[dict[str, object]] = []
     source_path = tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv"
@@ -764,7 +764,7 @@ def test_run_backtest_ppg_passes_footystats_rows_and_metadata(tmp_path, monkeypa
     assert metadata["footystats_feature_columns"] == FOOTYSTATS_PPG_FEATURE_COLUMNS
 
 
-def test_run_backtest_ppg_xg_passes_mode_and_records_feature_columns(tmp_path, monkeypatch):
+def test_run_backtest_ppg_xg_passes_mode_and_records_feature_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     source_path = tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv"
     rows = _tiny_footystats_rows(range(1, 6))
@@ -799,7 +799,7 @@ def test_run_backtest_ppg_xg_passes_mode_and_records_feature_columns(tmp_path, m
     assert "footystats_xg_diff" in result.player_predictions.columns
 
 
-def test_run_backtest_ppg_rejects_missing_join_keys(tmp_path, monkeypatch):
+def test_run_backtest_ppg_rejects_missing_join_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     rows = _tiny_footystats_rows(range(1, 6))
     rows = rows[~((rows["rodada"] == 5) & (rows["id_clube"] == 18))].copy()
@@ -823,7 +823,7 @@ def test_run_backtest_ppg_rejects_missing_join_keys(tmp_path, monkeypatch):
         run_backtest(config, season_df=season_df)
 
 
-def test_run_backtest_ppg_records_extra_footystats_rows(tmp_path, monkeypatch):
+def test_run_backtest_ppg_records_extra_footystats_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     rows = pd.concat(
         [
@@ -865,7 +865,7 @@ def test_run_backtest_ppg_records_extra_footystats_rows(tmp_path, monkeypatch):
     assert result.metadata.footystats_extra_club_rows_by_round == {"5": [{"rodada": 5, "id_clube": 99}]}
 
 
-def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path):
+def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     _write_tiny_fixture_files(tmp_path, range(1, 6))
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
@@ -878,7 +878,7 @@ def test_run_backtest_default_none_ignores_exploratory_fixture_files(tmp_path):
     assert "matchup_is_home" not in result.player_predictions.columns
 
 
-def test_run_backtest_default_none_ignores_explicit_fixtures(tmp_path):
+def test_run_backtest_default_none_ignores_explicit_fixtures(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     fixtures = _tiny_fixtures(range(1, 6))
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
@@ -889,7 +889,7 @@ def test_run_backtest_default_none_ignores_explicit_fixtures(tmp_path):
     assert "matchup_is_home" not in result.player_predictions.columns
 
 
-def test_run_backtest_rejects_matchup_context_with_fixture_mode_none(tmp_path):
+def test_run_backtest_rejects_matchup_context_with_fixture_mode_none(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(
         project_root=tmp_path,
@@ -902,7 +902,7 @@ def test_run_backtest_rejects_matchup_context_with_fixture_mode_none(tmp_path):
         run_backtest(config, season_df=season_df)
 
 
-def test_run_backtest_exploratory_without_matchup_mode_does_not_emit_matchup_features(tmp_path):
+def test_run_backtest_exploratory_without_matchup_mode_does_not_emit_matchup_features(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     _write_tiny_fixture_files(tmp_path, range(1, 6))
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
@@ -916,7 +916,7 @@ def test_run_backtest_exploratory_without_matchup_mode_does_not_emit_matchup_fea
     assert "matchup_is_home" not in result.player_predictions.columns
 
 
-def test_run_backtest_uses_fixture_files_for_matchup_context_when_enabled(tmp_path):
+def test_run_backtest_uses_fixture_files_for_matchup_context_when_enabled(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     _write_tiny_fixture_files(tmp_path, range(1, 6))
     config = BacktestConfig(
@@ -940,7 +940,7 @@ def test_run_backtest_uses_fixture_files_for_matchup_context_when_enabled(tmp_pa
     assert "opponent_id_clube" not in result.player_predictions.columns
 
 
-def test_run_backtest_exploratory_without_files_records_no_source(tmp_path):
+def test_run_backtest_exploratory_without_files_records_no_source(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
 
@@ -952,7 +952,7 @@ def test_run_backtest_exploratory_without_files_records_no_source(tmp_path):
     assert "matchup_is_home" not in result.player_predictions.columns
 
 
-def test_run_backtest_rejects_matchup_context_when_exploratory_fixture_files_are_missing(tmp_path):
+def test_run_backtest_rejects_matchup_context_when_exploratory_fixture_files_are_missing(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(
         project_root=tmp_path,
@@ -966,7 +966,7 @@ def test_run_backtest_rejects_matchup_context_when_exploratory_fixture_files_are
         run_backtest(config, season_df=season_df)
 
 
-def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
+def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     fixtures = _tiny_fixtures(range(1, 6))
     config = BacktestConfig(
@@ -986,7 +986,7 @@ def test_run_backtest_uses_explicit_fixtures_without_fixture_files(tmp_path):
     assert club_2["matchup_is_home"] == 0
 
 
-def test_run_backtest_strict_mode_missing_files_raises_for_first_required_round(tmp_path):
+def test_run_backtest_strict_mode_missing_files_raises_for_first_required_round(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="strict")
 
@@ -994,7 +994,7 @@ def test_run_backtest_strict_mode_missing_files_raises_for_first_required_round(
         run_backtest(config, season_df=season_df)
 
 
-def test_run_backtest_strict_mode_loads_required_rounds_and_records_manifest_metadata(tmp_path, monkeypatch):
+def test_run_backtest_strict_mode_loads_required_rounds_and_records_manifest_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     observed_calls: list[dict[str, object]] = []
 
@@ -1038,7 +1038,7 @@ def test_run_backtest_strict_mode_loads_required_rounds_and_records_manifest_met
     assert result.metadata.generator_versions == ["fixture_snapshot_v1"]
 
 
-def test_run_backtest_rejects_fixture_alignment_gaps(tmp_path):
+def test_run_backtest_rejects_fixture_alignment_gaps(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     fixtures = pd.DataFrame(
         [
@@ -1052,7 +1052,7 @@ def test_run_backtest_rejects_fixture_alignment_gaps(tmp_path):
         run_backtest(config, season_df=season_df, fixtures=fixtures)
 
 
-def test_strict_alignment_policy_exclude_round_removes_invalid_round_before_training(tmp_path, monkeypatch):
+def test_strict_alignment_policy_exclude_round_removes_invalid_round_before_training(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     fixtures = _tiny_fixtures(range(1, 6))
     fixtures = fixtures[fixtures["rodada"] != 3].copy()
@@ -1085,7 +1085,7 @@ def test_strict_alignment_policy_exclude_round_removes_invalid_round_before_trai
     assert 3 not in set(result.round_results["rodada"].dropna().astype(int).tolist())
 
 
-def test_run_backtest_does_not_build_prediction_frame_for_excluded_round(tmp_path, monkeypatch):
+def test_run_backtest_does_not_build_prediction_frame_for_excluded_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     fixtures = _tiny_fixtures(range(1, 6))
     fixtures = fixtures[fixtures["rodada"] != 3].copy()
@@ -1123,7 +1123,7 @@ def test_run_backtest_does_not_build_prediction_frame_for_excluded_round(tmp_pat
     assert sorted(calls) == [1, 2, 4, 5]
 
 
-def test_strict_alignment_policy_exclude_round_removes_missing_strict_fixture_round(tmp_path, monkeypatch):
+def test_strict_alignment_policy_exclude_round_removes_missing_strict_fixture_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(
         project_root=tmp_path,
@@ -1171,7 +1171,7 @@ def test_strict_alignment_policy_exclude_round_removes_missing_strict_fixture_ro
     assert result.metadata.generator_versions == ["fixture_snapshot_v1"]
 
 
-def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_path):
+def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 
@@ -1223,7 +1223,7 @@ def test_run_backtest_records_selected_players_and_prediction_diagnostics(tmp_pa
     assert not result.diagnostics.empty
 
 
-def test_sort_outputs_canonicalizes_report_order(tmp_path, monkeypatch):
+def test_sort_outputs_canonicalizes_report_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
 
     def round_row(round_number: int, strategy: str) -> dict[str, object]:
@@ -1347,7 +1347,7 @@ def test_sort_outputs_canonicalizes_report_order(tmp_path, monkeypatch):
     assert all(frame.empty for frame in empty_outputs)
 
 
-def test_sort_outputs_rejects_missing_required_sort_key():
+def test_sort_outputs_rejects_missing_required_sort_key() -> None:
     selected_players = pd.DataFrame(
         [
             {
@@ -1368,7 +1368,7 @@ def test_sort_outputs_rejects_missing_required_sort_key():
         )
 
 
-def test_run_backtest_records_captain_policy_flags_and_actual_totals(tmp_path):
+def test_run_backtest_records_captain_policy_flags_and_actual_totals(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 
@@ -1393,7 +1393,7 @@ def test_run_backtest_records_captain_policy_flags_and_actual_totals(tmp_path):
             assert round_row[f"actual_points_with_{policy}_captain"] == pytest.approx(expected_actual)
 
 
-def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path, monkeypatch):
+def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     class NoisyRandomForestPointPredictor:
         calls = 0
 
@@ -1440,7 +1440,7 @@ def test_run_backtest_normalizes_tiny_float_drift_in_returned_outputs(tmp_path, 
     assert_frame_equal(first.summary, second.summary, check_exact=True)
 
 
-def test_selected_players_predicted_points_match_strategy_score_column(tmp_path):
+def test_selected_players_predicted_points_match_strategy_score_column(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 
@@ -1458,7 +1458,7 @@ def test_selected_players_predicted_points_match_strategy_score_column(tmp_path)
         assert captain["predicted_points"] * 1.5 != captain["predicted_points"]
 
 
-def test_run_backtest_skipped_round_uses_empty_formation_without_config_formation_name(tmp_path):
+def test_run_backtest_skipped_round_uses_empty_formation_without_config_formation_name(tmp_path: Path) -> None:
     season_df = _tiny_round(1)
     config = BacktestConfig(project_root=tmp_path, start_round=1, budget=100)
 
@@ -1471,7 +1471,7 @@ def test_run_backtest_skipped_round_uses_empty_formation_without_config_formatio
     assert result.round_results["actual_points"].eq(0.0).all()
 
 
-def test_price_strategy_scores_market_open_price_not_post_round_price(tmp_path):
+def test_price_strategy_scores_market_open_price_not_post_round_price(tmp_path: Path) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100)
 

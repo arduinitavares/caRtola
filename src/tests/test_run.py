@@ -18,12 +18,12 @@ from kedro.framework.project import settings
 
 
 @pytest.fixture
-def config_loader():
+def config_loader() -> ConfigLoader:
     return ConfigLoader(conf_source=str(Path.cwd() / settings.CONF_SOURCE))
 
 
 @pytest.fixture
-def project_context(config_loader):
+def project_context(config_loader: ConfigLoader) -> KedroContext:
     return KedroContext(
         package_name="cartola",
         project_path=Path.cwd(),
@@ -36,5 +36,5 @@ def project_context(config_loader):
 # and should be replaced with the ones testing the project
 # functionality
 class TestProjectContext:
-    def test_project_path(self, project_context):
+    def test_project_path(self, project_context: KedroContext) -> None:
         assert project_context.project_path == Path.cwd()

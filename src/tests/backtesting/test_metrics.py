@@ -4,7 +4,7 @@ import pytest
 from cartola.backtesting.metrics import _random_valid_squad_points, build_diagnostics, build_summary
 
 
-def test_build_summary_computes_strategy_totals_and_benchmark_delta():
+def test_build_summary_computes_strategy_totals_and_benchmark_delta() -> None:
     round_results = pd.DataFrame(
         [
             {
@@ -47,7 +47,7 @@ def test_build_summary_computes_strategy_totals_and_benchmark_delta():
     assert model["actual_points_delta_vs_price"] == 15.0
 
 
-def test_build_summary_returns_expected_columns_for_empty_input():
+def test_build_summary_returns_expected_columns_for_empty_input() -> None:
     summary = build_summary(pd.DataFrame(), benchmark_strategy="model")
 
     assert summary.empty
@@ -61,7 +61,7 @@ def test_build_summary_returns_expected_columns_for_empty_input():
     ]
 
 
-def test_build_summary_ignores_non_optimal_rows():
+def test_build_summary_ignores_non_optimal_rows() -> None:
     round_results = pd.DataFrame(
         [
             {
@@ -97,7 +97,7 @@ def test_build_summary_ignores_non_optimal_rows():
     assert model["actual_points_delta_vs_price"] == 2.0
 
 
-def test_build_summary_uses_missing_delta_when_benchmark_absent_from_optimal_rows():
+def test_build_summary_uses_missing_delta_when_benchmark_absent_from_optimal_rows() -> None:
     round_results = pd.DataFrame(
         [
             {
@@ -122,7 +122,7 @@ def test_build_summary_uses_missing_delta_when_benchmark_absent_from_optimal_row
     assert summary["actual_points_delta_vs_price"].isna().all()
 
 
-def test_build_summary_uses_missing_delta_when_benchmark_is_only_non_optimal():
+def test_build_summary_uses_missing_delta_when_benchmark_is_only_non_optimal() -> None:
     round_results = pd.DataFrame(
         [
             {
@@ -147,7 +147,7 @@ def test_build_summary_uses_missing_delta_when_benchmark_is_only_non_optimal():
     assert summary["actual_points_delta_vs_price"].isna().all()
 
 
-def test_build_summary_returns_expected_columns_when_all_rows_are_non_optimal():
+def test_build_summary_returns_expected_columns_when_all_rows_are_non_optimal() -> None:
     round_results = pd.DataFrame(
         [
             {
@@ -180,7 +180,7 @@ def test_build_summary_returns_expected_columns_when_all_rows_are_non_optimal():
     ]
 
 
-def test_build_summary_sorts_by_total_actual_points_and_resets_index():
+def test_build_summary_sorts_by_total_actual_points_and_resets_index() -> None:
     round_results = pd.DataFrame(
         [
             {
@@ -213,7 +213,7 @@ def test_build_summary_sorts_by_total_actual_points_and_resets_index():
     assert summary.index.tolist() == [0, 1, 2]
 
 
-def test_build_diagnostics_reports_prediction_round_selection_and_random_metrics():
+def test_build_diagnostics_reports_prediction_round_selection_and_random_metrics() -> None:
     round_results = pd.DataFrame(
         [
             _round("random_forest", 1, 12.0),
@@ -288,7 +288,7 @@ def test_build_diagnostics_reports_prediction_round_selection_and_random_metrics
     ) == -0.04
 
 
-def test_build_diagnostics_random_expected_points_include_captain_bonus():
+def test_build_diagnostics_random_expected_points_include_captain_bonus() -> None:
     round_results = pd.DataFrame([_round("random_forest", 1, 70.0)])
     selected_players = pd.DataFrame(
         [
@@ -322,7 +322,7 @@ def test_build_diagnostics_random_expected_points_include_captain_bonus():
     )
 
 
-def test_random_valid_squad_points_rejects_missing_pontuacao_column():
+def test_random_valid_squad_points_rejects_missing_pontuacao_column() -> None:
     candidate_pool = pd.DataFrame(
         [
             {"posicao": "gol", "preco_pre_rodada": 1.0},
@@ -342,7 +342,7 @@ def test_random_valid_squad_points_rejects_missing_pontuacao_column():
 
 
 @pytest.mark.parametrize("pontuacao", [None, float("nan"), float("inf")])
-def test_random_valid_squad_points_rejects_non_finite_pontuacao(pontuacao: float | None):
+def test_random_valid_squad_points_rejects_non_finite_pontuacao(pontuacao: float | None) -> None:
     candidate_pool = pd.DataFrame(
         [
             {"posicao": "gol", "pontuacao": 20.0, "preco_pre_rodada": 1.0},
@@ -361,7 +361,7 @@ def test_random_valid_squad_points_rejects_non_finite_pontuacao(pontuacao: float
         )
 
 
-def test_build_diagnostics_returns_expected_columns_for_empty_inputs():
+def test_build_diagnostics_returns_expected_columns_for_empty_inputs() -> None:
     diagnostics = build_diagnostics(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
 
     assert diagnostics.empty

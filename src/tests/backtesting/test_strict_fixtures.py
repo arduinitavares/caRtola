@@ -4,6 +4,7 @@ import importlib.util
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pandas as pd
@@ -628,7 +629,7 @@ def _relative(root: Path, path: Path) -> str:
     return str(path.relative_to(root))
 
 
-def _load_generate_script() -> Any:
+def _load_generate_script() -> ModuleType:
     script_path = Path(__file__).parents[3] / "scripts" / "generate_strict_fixtures.py"
     spec = importlib.util.spec_from_file_location("generate_strict_fixtures", script_path)
     assert spec is not None

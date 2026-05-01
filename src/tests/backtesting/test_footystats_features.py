@@ -10,6 +10,7 @@ import pytest
 from cartola.backtesting.footystats_features import (
     FOOTYSTATS_XG_SOURCE_COLUMNS,
     REQUIRED_MATCH_COLUMNS,
+    FootyStatsPPGLoadResult,
     build_footystats_join_diagnostics,
     load_footystats_feature_rows,
     load_footystats_feature_rows_for_recommendation,
@@ -75,7 +76,7 @@ def test_load_footystats_ppg_rows_reads_only_required_safe_columns(tmp_path: Pat
     original_read_csv = pd.read_csv
     footystats_usecols: list[object] = []
 
-    def capture_read_csv(*args, **kwargs):
+    def capture_read_csv(*args: object, **kwargs: object) -> pd.DataFrame:
         if args and Path(args[0]) == source_path:
             footystats_usecols.append(kwargs.get("usecols"))
         return original_read_csv(*args, **kwargs)
@@ -129,7 +130,7 @@ def test_load_footystats_feature_rows_ppg_xg_reads_only_required_safe_columns(
     original_read_csv = pd.read_csv
     footystats_usecols: list[object] = []
 
-    def capture_read_csv(*args, **kwargs):
+    def capture_read_csv(*args: object, **kwargs: object) -> pd.DataFrame:
         if args and Path(args[0]) == source_path:
             footystats_usecols.append(kwargs.get("usecols"))
         return original_read_csv(*args, **kwargs)
@@ -560,7 +561,7 @@ def test_load_footystats_recommendation_rows_rejects_duplicate_required_key(tmp_
         )
 
 
-def _load_historical(project_root: Path, *, footystats_mode: str = "ppg"):
+def _load_historical(project_root: Path, *, footystats_mode: str = "ppg") -> FootyStatsPPGLoadResult:
     if footystats_mode == "ppg":
         return load_footystats_ppg_rows(
             season=SEASON,

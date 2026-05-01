@@ -22,7 +22,7 @@ def test_parse_args_requires_target_round() -> None:
         parse_args(["--season", "2026", "--mode", "live"])
 
 
-def test_parse_args_has_no_fixture_mode(capsys) -> None:
+def test_parse_args_has_no_fixture_mode(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         parse_args(["--season", "2026", "--target-round", "14", "--mode", "live", "--fixture-mode", "none"])
 
@@ -42,7 +42,7 @@ def test_parse_args_builds_live_defaults() -> None:
     assert args.output_root == Path("data/08_reporting/recommendations")
 
 
-def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_main_builds_recommendation_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     observed: list[RecommendationConfig] = []
 
     def fake_run_recommendation(config: RecommendationConfig) -> RecommendationResult:
@@ -125,7 +125,7 @@ def test_main_builds_recommendation_config(monkeypatch, tmp_path: Path, capsys) 
     assert "Budget used" in output
 
 
-def test_main_prints_live_summary_without_actual_points(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_main_prints_live_summary_without_actual_points(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     def fake_run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         return RecommendationResult(
             recommended_squad=None,
@@ -186,7 +186,7 @@ def test_main_prints_live_summary_without_actual_points(monkeypatch, tmp_path: P
     assert "Capture rate" in output
 
 
-def test_main_prints_expected_error_without_traceback(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_main_prints_expected_error_without_traceback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     def fake_run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         raise ValueError("Target round 14 not found in season 2026 data.")
 

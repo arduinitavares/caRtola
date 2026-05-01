@@ -317,7 +317,7 @@ def _format_club_set(values: list[int]) -> str:
     return ",".join(str(value) for value in sorted(values))
 
 
-def _is_saved_index_column(column: Any) -> bool:
+def _is_saved_index_column(column: object) -> bool:
     if column is None:
         return True
     column_name = str(column)
@@ -332,7 +332,7 @@ def _map_values(
     source: Path,
     label: str,
 ) -> pd.Series:
-    def map_one(value: Any) -> str | None:
+    def map_one(value: object) -> str | None:
         if pd.isna(value):
             return None
         if isinstance(value, str) and value in known_names:
@@ -369,7 +369,7 @@ def _add_market_open_price(frame: pd.DataFrame) -> None:
     frame[MARKET_OPEN_PRICE_COLUMN] = (frame["preco"] - frame["variacao"].fillna(0)).round(2)
 
 
-def _slugify(value: Any) -> str:
+def _slugify(value: object) -> str:
     text = "" if pd.isna(value) else str(value)
     ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cartola.backtesting.market_capture import MarketCaptureResult
+from cartola.backtesting.market_capture import MarketCaptureConfig, MarketCaptureResult
 
 SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "capture_market_round.py"
 SPEC = importlib.util.spec_from_file_location("capture_market_round", SCRIPT_PATH)
@@ -26,7 +26,7 @@ def test_parse_args_rejects_target_and_auto_together() -> None:
 
 
 def test_main_prints_capture_summary(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    def fake_capture(config):
+    def fake_capture(config: MarketCaptureConfig) -> MarketCaptureResult:
         assert config.season == 2026
         assert config.target_round == 14
         assert config.current_year == 2026

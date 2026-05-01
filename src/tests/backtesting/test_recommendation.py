@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
+from cartola.backtesting.footystats_features import FootyStatsPPGLoadResult
 from cartola.backtesting.recommendation import (
     RecommendationConfig,
     _finalized_live_data_evidence,
@@ -232,7 +233,7 @@ def test_run_recommendation_ignores_future_cartola_rows(
     season_df = _season_frame(range(1, 6), target_round=3, live_target=True)
     load_calls: list[dict[str, object]] = []
 
-    def fake_load_footystats(**kwargs: object):
+    def fake_load_footystats(**kwargs: object) -> FootyStatsPPGLoadResult:
         load_calls.append(kwargs)
         from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 
@@ -293,7 +294,7 @@ def test_run_recommendation_replay_reports_actual_points(
 ) -> None:
     season_df = _season_frame(range(1, 4))
 
-    def fake_load_footystats(**kwargs: object):
+    def fake_load_footystats(**kwargs: object) -> FootyStatsPPGLoadResult:
         from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 
         return FootyStatsPPGLoadResult(
@@ -339,7 +340,7 @@ def test_run_recommendation_replay_nulls_missing_actual_points(
     season_df = _season_frame(range(1, 4))
     season_df.loc[season_df["rodada"].eq(3), "pontuacao"] = pd.NA
 
-    def fake_load_footystats(**kwargs: object):
+    def fake_load_footystats(**kwargs: object) -> FootyStatsPPGLoadResult:
         from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 
         return FootyStatsPPGLoadResult(
@@ -388,7 +389,7 @@ def test_run_recommendation_replay_nulls_oracle_when_any_candidate_actual_is_mis
     season_df.loc[target_low_value, "pontuacao"] = pd.NA
     season_df.loc[target_low_value, "preco_pre_rodada"] = 999.0
 
-    def fake_load_footystats(**kwargs: object):
+    def fake_load_footystats(**kwargs: object) -> FootyStatsPPGLoadResult:
         from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 
         return FootyStatsPPGLoadResult(
@@ -430,7 +431,7 @@ def test_run_recommendation_replay_nulls_capture_rate_when_oracle_is_not_positiv
     season_df = _season_frame(range(1, 4))
     season_df.loc[season_df["rodada"].eq(3), "pontuacao"] = 0.0
 
-    def fake_load_footystats(**kwargs: object):
+    def fake_load_footystats(**kwargs: object) -> FootyStatsPPGLoadResult:
         from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 
         return FootyStatsPPGLoadResult(
@@ -473,7 +474,7 @@ def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowe
 ) -> None:
     season_df = _season_frame(range(1, 4))
 
-    def fake_load_footystats(**kwargs: object):
+    def fake_load_footystats(**kwargs: object) -> FootyStatsPPGLoadResult:
         from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 
         return FootyStatsPPGLoadResult(
@@ -585,7 +586,7 @@ def test_live_mode_rejects_finalized_target_round_without_escape_hatch(
 def test_run_recommendation_writes_expected_output_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = _season_frame(range(1, 4), target_round=3, live_target=True)
 
-    def fake_load_footystats(**kwargs: object):
+    def fake_load_footystats(**kwargs: object) -> FootyStatsPPGLoadResult:
         from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 
         return FootyStatsPPGLoadResult(

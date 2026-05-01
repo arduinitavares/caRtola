@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from cartola.backtesting.fixture_import import FixtureImportResult
 
@@ -13,7 +14,7 @@ import_fixture_schedule = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(import_fixture_schedule)
 
 
-def test_import_fixture_schedule_main_writes_report_on_success(tmp_path, monkeypatch):
+def test_import_fixture_schedule_main_writes_report_on_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.DataFrame([{"rodada": 1, "id_clube": 262, "entrou_em_campo": True}])
     fixtures = pd.DataFrame([{"rodada": 1, "id_clube_home": 262, "id_clube_away": 277, "data": "2025-04-05"}])
     official_fixtures = fixtures.copy()
@@ -38,7 +39,7 @@ def test_import_fixture_schedule_main_writes_report_on_success(tmp_path, monkeyp
     assert (tmp_path / "data" / "08_reporting" / "fixtures" / "2025" / "round_alignment.csv").exists()
 
 
-def test_import_fixture_schedule_main_returns_one_for_invalid_alignment(tmp_path, monkeypatch):
+def test_import_fixture_schedule_main_returns_one_for_invalid_alignment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.DataFrame([{"rodada": 1, "id_clube": 262, "entrou_em_campo": True}])
     fixtures = pd.DataFrame([{"rodada": 1, "id_clube_home": 262, "id_clube_away": 277, "data": "2025-04-05"}])
     official_fixtures = fixtures.copy()

@@ -13,7 +13,7 @@ from cartola.backtesting.data import (
 )
 
 
-def _base_raw_round(**overrides):
+def _base_raw_round(**overrides: object) -> pd.DataFrame:
     data = {
         "atletas.rodada_id": [1],
         "atletas.status_id": [7],
@@ -31,7 +31,7 @@ def _base_raw_round(**overrides):
     return pd.DataFrame(data)
 
 
-def test_normalize_round_frame_drops_index_maps_columns_and_fills_scouts():
+def test_normalize_round_frame_drops_index_maps_columns_and_fills_scouts() -> None:
     raw = pd.DataFrame(
         {
             "Unnamed: 0": [0],
@@ -68,7 +68,7 @@ def test_normalize_round_frame_drops_index_maps_columns_and_fills_scouts():
     assert bool(normalized.loc[0, "entrou_em_campo"]) is True
 
 
-def test_normalize_round_frame_accepts_already_normalized_status_and_position_values():
+def test_normalize_round_frame_accepts_already_normalized_status_and_position_values() -> None:
     raw = _base_raw_round(**{"atletas.status_id": ["Provavel"], "atletas.posicao_id": ["ata"]})
 
     normalized = normalize_round_frame(raw, source=Path("rodada-1.csv"))
@@ -77,7 +77,7 @@ def test_normalize_round_frame_accepts_already_normalized_status_and_position_va
     assert normalized.loc[0, "posicao"] == "ata"
 
 
-def test_normalize_round_frame_fills_blank_scout_values_with_zero():
+def test_normalize_round_frame_fills_blank_scout_values_with_zero() -> None:
     raw = _base_raw_round(G=[None], V=[""])
 
     normalized = normalize_round_frame(raw, source=Path("rodada-1.csv"))
@@ -86,7 +86,7 @@ def test_normalize_round_frame_fills_blank_scout_values_with_zero():
     assert normalized.loc[0, "V"] == 0
 
 
-def test_normalize_round_frame_reconstructs_market_open_price_from_price_variation():
+def test_normalize_round_frame_reconstructs_market_open_price_from_price_variation() -> None:
     raw = _base_raw_round(**{"atletas.preco_num": [15.75], "atletas.variacao_num": [1.25]})
 
     normalized = normalize_round_frame(raw, source=Path("rodada-5.csv"))
@@ -95,7 +95,7 @@ def test_normalize_round_frame_reconstructs_market_open_price_from_price_variati
     assert normalized.loc[0, "preco_pre_rodada"] == 14.5
 
 
-def test_normalize_round_frame_rejects_unknown_status():
+def test_normalize_round_frame_rejects_unknown_status() -> None:
     raw = pd.DataFrame(
         {
             "atletas.rodada_id": [1],
@@ -116,14 +116,14 @@ def test_normalize_round_frame_rejects_unknown_status():
         normalize_round_frame(raw, source=Path("rodada-1.csv"))
 
 
-def test_normalize_round_frame_reports_missing_required_columns():
+def test_normalize_round_frame_reports_missing_required_columns() -> None:
     raw = _base_raw_round().drop(columns=["atletas.atleta_id"])
 
     with pytest.raises(ValueError, match="Missing required columns"):
         normalize_round_frame(raw, source=Path("rodada-1.csv"))
 
 
-def test_load_round_file_reads_and_normalizes_csv(tmp_path):
+def test_load_round_file_reads_and_normalizes_csv(tmp_path: Path) -> None:
     round_file = tmp_path / "rodada-1.csv"
     _base_raw_round(**{"": ["saved-index"]}).to_csv(round_file, index=False)
 
@@ -138,7 +138,7 @@ def test_load_round_file_reads_and_normalizes_csv(tmp_path):
     assert "" not in loaded.columns
 
 
-def test_load_season_data_orders_rounds_numerically(tmp_path):
+def test_load_season_data_orders_rounds_numerically(tmp_path: Path) -> None:
     season_dir = tmp_path / "data" / "01_raw" / "2025"
     season_dir.mkdir(parents=True)
     base = {
@@ -161,12 +161,12 @@ def test_load_season_data_orders_rounds_numerically(tmp_path):
     assert loaded["rodada"].tolist() == [2, 10]
 
 
-def test_load_season_data_reports_missing_directory(tmp_path):
+def test_load_season_data_reports_missing_directory(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="Season directory not found"):
         load_season_data(2025, project_root=tmp_path)
 
 
-def test_load_season_data_reports_empty_directory(tmp_path):
+def test_load_season_data_reports_empty_directory(tmp_path: Path) -> None:
     season_dir = tmp_path / "data" / "01_raw" / "2025"
     season_dir.mkdir(parents=True)
 
@@ -183,7 +183,7 @@ def _write_fixture_round(root: Path, round_number: int, rows: list[dict[str, obj
     )
 
 
-def test_load_fixtures_reads_and_normalizes_round_files(tmp_path):
+def test_load_fixtures_reads_and_normalizes_round_files(tmp_path: Path) -> None:
     _write_fixture_round(
         tmp_path,
         2,
@@ -201,7 +201,7 @@ def test_load_fixtures_reads_and_normalizes_round_files(tmp_path):
     assert str(loaded.loc[0, "data"]) == "2025-04-05"
 
 
-def test_load_fixtures_drops_extra_columns(tmp_path):
+def test_load_fixtures_drops_extra_columns(tmp_path: Path) -> None:
     fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
     fixture_dir.mkdir(parents=True)
     pd.DataFrame(
@@ -219,7 +219,7 @@ def test_load_fixtures_drops_extra_columns(tmp_path):
     assert loaded.columns.tolist() == ["rodada", "id_clube_home", "id_clube_away", "data"]
 
 
-def test_load_fixtures_rejects_file_round_mismatch(tmp_path):
+def test_load_fixtures_rejects_file_round_mismatch(tmp_path: Path) -> None:
     fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
     fixture_dir.mkdir(parents=True)
     pd.DataFrame(
@@ -235,7 +235,7 @@ def test_load_fixtures_rejects_file_round_mismatch(tmp_path):
         load_fixtures(2025, project_root=tmp_path)
 
 
-def test_load_fixtures_rejects_missing_required_columns(tmp_path):
+def test_load_fixtures_rejects_missing_required_columns(tmp_path: Path) -> None:
     fixture_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
     fixture_dir.mkdir(parents=True)
     pd.DataFrame({"rodada": [2], "id_clube_home": [10], "data": ["2025-04-05"]}).to_csv(
@@ -247,7 +247,7 @@ def test_load_fixtures_rejects_missing_required_columns(tmp_path):
         load_fixtures(2025, project_root=tmp_path)
 
 
-def test_load_fixtures_rejects_duplicate_club_appearance_in_round(tmp_path):
+def test_load_fixtures_rejects_duplicate_club_appearance_in_round(tmp_path: Path) -> None:
     _write_fixture_round(
         tmp_path,
         2,
@@ -261,7 +261,7 @@ def test_load_fixtures_rejects_duplicate_club_appearance_in_round(tmp_path):
         load_fixtures(2025, project_root=tmp_path)
 
 
-def test_load_fixtures_rejects_self_matches(tmp_path):
+def test_load_fixtures_rejects_self_matches(tmp_path: Path) -> None:
     _write_fixture_round(
         tmp_path,
         2,
@@ -272,7 +272,7 @@ def test_load_fixtures_rejects_self_matches(tmp_path):
         load_fixtures(2025, project_root=tmp_path)
 
 
-def test_played_club_set_parses_bool_like_entry_flags():
+def test_played_club_set_parses_bool_like_entry_flags() -> None:
     season_df = pd.DataFrame(
         {
             "rodada": ["2"] * 12,
@@ -297,14 +297,14 @@ def test_played_club_set_parses_bool_like_entry_flags():
     assert played_club_set(season_df, 2) == {10, 11, 12, 13}
 
 
-def test_played_club_set_rejects_ambiguous_entry_flags():
+def test_played_club_set_rejects_ambiguous_entry_flags() -> None:
     season_df = pd.DataFrame([{"rodada": 2, "id_clube": 10, "entrou_em_campo": "maybe"}])
 
     with pytest.raises(ValueError, match="Invalid entrou_em_campo values"):
         played_club_set(season_df, 2)
 
 
-def test_build_round_alignment_report_compares_fixture_and_played_clubs():
+def test_build_round_alignment_report_compares_fixture_and_played_clubs() -> None:
     fixtures = pd.DataFrame(
         [
             {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
@@ -339,7 +339,7 @@ def test_build_round_alignment_report_compares_fixture_and_played_clubs():
     assert round_3["discarded_official_clubs"] == "50,60"
 
 
-def test_round_alignment_report_handles_string_round_values():
+def test_round_alignment_report_handles_string_round_values() -> None:
     fixtures = pd.DataFrame(
         [
             {"rodada": "2", "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},
@@ -374,7 +374,7 @@ def test_round_alignment_report_handles_string_round_values():
     assert round_3["discarded_official_clubs"] == "50,60"
 
 
-def test_build_round_alignment_report_rejects_extra_canonical_fixture_clubs_without_missing_played_clubs():
+def test_build_round_alignment_report_rejects_extra_canonical_fixture_clubs_without_missing_played_clubs() -> None:
     fixtures = pd.DataFrame(
         [
             {"rodada": 2, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-05"},

@@ -41,7 +41,7 @@ def _candidates() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_optimizer_searches_all_formations_and_returns_captain_aware_scores():
+def test_optimizer_searches_all_formations_and_returns_captain_aware_scores() -> None:
     result = optimize_squad(_candidates(), score_column="predicted_points", config=BacktestConfig(budget=80))
 
     assert result.status == "Optimal"
@@ -80,7 +80,7 @@ def test_optimizer_searches_all_formations_and_returns_captain_aware_scores():
     assert result.captain_policy_diagnostics == []
 
 
-def test_optimizer_never_captains_unselected_phantom_player_or_tecnico():
+def test_optimizer_never_captains_unselected_phantom_player_or_tecnico() -> None:
     candidates = _candidates()
     phantom = _row(999, "ata", score=1000.0, price=500.0)
     candidates = pd.concat([candidates, pd.DataFrame([phantom])], ignore_index=True)
@@ -94,7 +94,7 @@ def test_optimizer_never_captains_unselected_phantom_player_or_tecnico():
     assert result.captain_predicted_points == pytest.approx(18.0)
 
 
-def test_optimizer_rejects_high_scoring_unexpected_position_from_selected_roster():
+def test_optimizer_rejects_high_scoring_unexpected_position_from_selected_roster() -> None:
     candidates = _candidates()
     unexpected = _row(999, "ban", score=1000.0, price=0.1)
     candidates = pd.concat([candidates, pd.DataFrame([unexpected])], ignore_index=True)
@@ -108,7 +108,7 @@ def test_optimizer_rejects_high_scoring_unexpected_position_from_selected_roster
     assert sum(result.selected.groupby("posicao").size().to_dict().values()) == 12
 
 
-def test_optimizer_reports_per_formation_scores_for_infeasible_and_chosen_formations():
+def test_optimizer_reports_per_formation_scores_for_infeasible_and_chosen_formations() -> None:
     candidates = _candidates().loc[lambda frame: frame["posicao"] != "lat"].copy()
 
     result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
@@ -123,7 +123,7 @@ def test_optimizer_reports_per_formation_scores_for_infeasible_and_chosen_format
     )
 
 
-def test_optimizer_breaks_exact_ties_with_lower_player_and_captain_ids():
+def test_optimizer_breaks_exact_ties_with_lower_player_and_captain_ids() -> None:
     rows = []
     player_id = 1
     for posicao, count in {
@@ -152,7 +152,7 @@ def test_optimizer_breaks_exact_ties_with_lower_player_and_captain_ids():
     assert captain_ids[0] == 1
 
 
-def test_tie_break_objective_penalizes_captain_variables_separately():
+def test_tie_break_objective_penalizes_captain_variables_separately() -> None:
     player_rows = pd.DataFrame({"id_atleta": [10, 20]})
     selected_vars = {
         0: pulp.LpVariable("selected_0", cat=pulp.LpBinary),
@@ -172,7 +172,7 @@ def test_tie_break_objective_penalizes_captain_variables_separately():
     assert coefficients[captain_vars[1]] < coefficients[captain_vars[0]]
 
 
-def test_optimizer_reports_all_formations_without_exposing_fixed_formation_api():
+def test_optimizer_reports_all_formations_without_exposing_fixed_formation_api() -> None:
     candidates = _candidates().loc[lambda frame: frame["posicao"] != "lat"].copy()
 
     result = optimize_squad(candidates, score_column="predicted_points", config=BacktestConfig(budget=80))
@@ -184,7 +184,7 @@ def test_optimizer_reports_all_formations_without_exposing_fixed_formation_api()
     assert "formation_name" not in inspect.signature(optimize_squad).parameters
 
 
-def test_optimizer_returns_empty_result_for_empty_candidates():
+def test_optimizer_returns_empty_result_for_empty_candidates() -> None:
     result = optimize_squad(pd.DataFrame(), score_column="predicted_points", config=BacktestConfig())
 
     assert result.status == "Empty"
@@ -201,7 +201,7 @@ def test_optimizer_returns_empty_result_for_empty_candidates():
     assert result.captain_multiplier == CAPTAIN_MULTIPLIER
 
 
-def test_optimizer_reports_infeasible_budget_with_formation_scores():
+def test_optimizer_reports_infeasible_budget_with_formation_scores() -> None:
     result = optimize_squad(_candidates(), score_column="predicted_points", config=BacktestConfig(budget=1))
 
     assert result.status == "Infeasible"
@@ -212,7 +212,7 @@ def test_optimizer_reports_infeasible_budget_with_formation_scores():
     assert all(score["infeasibility_reason"] for score in result.formation_scores)
 
 
-def test_optimizer_deduplicates_candidates_by_player_before_solving():
+def test_optimizer_deduplicates_candidates_by_player_before_solving() -> None:
     duplicate = _candidates().iloc[[0]].copy()
     duplicate["preco"] = 0.1
     duplicate["preco_pre_rodada"] = 0.1
@@ -233,7 +233,7 @@ def test_optimizer_deduplicates_candidates_by_player_before_solving():
     ] == pytest.approx(8.0)
 
 
-def test_optimizer_uses_pre_round_price_for_budget():
+def test_optimizer_uses_pre_round_price_for_budget() -> None:
     candidates = _candidates()
     candidates["preco"] = 100.0
     candidates["preco_pre_rodada"] = 5.0
@@ -246,7 +246,7 @@ def test_optimizer_uses_pre_round_price_for_budget():
 
 
 @pytest.mark.parametrize("column", ["id_atleta", "apelido", "posicao", "preco_pre_rodada", "predicted_points"])
-def test_optimizer_rejects_missing_required_columns(column):
+def test_optimizer_rejects_missing_required_columns(column: str) -> None:
     candidates = _candidates().drop(columns=[column])
 
     with pytest.raises(ValueError, match=column):
@@ -254,7 +254,7 @@ def test_optimizer_rejects_missing_required_columns(column):
 
 
 @pytest.mark.parametrize("column", ["preco_pre_rodada", "predicted_points"])
-def test_optimizer_rejects_non_numeric_solver_columns(column):
+def test_optimizer_rejects_non_numeric_solver_columns(column: str) -> None:
     candidates = _candidates()
     candidates[column] = candidates[column].astype(object)
     candidates.loc[0, column] = "bad"

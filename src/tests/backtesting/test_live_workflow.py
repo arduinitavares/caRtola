@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 
 import pandas as pd
 import pytest
 
 from cartola.backtesting.live_workflow import LiveWorkflowConfig, run_live_round
-from cartola.backtesting.market_capture import LiveCaptureMetadata, MarketCaptureResult
+from cartola.backtesting.market_capture import LiveCaptureMetadata, MarketCaptureConfig, MarketCaptureResult
 from cartola.backtesting.recommendation import RecommendationConfig, RecommendationResult
 from cartola.backtesting.scoring_contract import contract_fields
 
@@ -65,7 +66,7 @@ def test_run_live_round_fresh_captures_and_uses_capture_round(
     recommendation_calls = []
     metadata = _capture_metadata(tmp_path, round_number=14)
 
-    def fake_capture(config, **kwargs):
+    def fake_capture(config: MarketCaptureConfig, **kwargs: object) -> MarketCaptureResult:
         capture_calls.append(config)
         return MarketCaptureResult(
             csv_path=metadata.csv_path,
@@ -77,11 +78,11 @@ def test_run_live_round_fresh_captures_and_uses_capture_round(
             deadline_parse_status="ok",
         )
 
-    def fake_load_capture(**kwargs):
+    def fake_load_capture(**kwargs: object) -> LiveCaptureMetadata:
         assert kwargs == {"project_root": tmp_path, "season": 2026, "target_round": 14}
         return metadata
 
-    def fake_recommend(config):
+    def fake_recommend(config: RecommendationConfig) -> RecommendationResult:
         recommendation_calls.append(config)
         return _recommendation_result(config)
 
@@ -121,18 +122,18 @@ def test_run_live_round_missing_reuses_valid_capture(
     status_calls = []
     recommendation_calls = []
 
-    def fake_fetch_status(config):
+    def fake_fetch_status(config: LiveWorkflowConfig) -> int:
         status_calls.append(config)
         return 14
 
-    def fake_load_capture(**kwargs):
+    def fake_load_capture(**kwargs: object) -> LiveCaptureMetadata:
         return metadata
 
-    def fake_capture(config, **kwargs):
+    def fake_capture(config: MarketCaptureConfig, **kwargs: object) -> NoReturn:
         capture_calls.append(config)
         raise AssertionError("missing policy should not capture when valid capture exists")
 
-    def fake_recommend(config):
+    def fake_recommend(config: RecommendationConfig) -> RecommendationResult:
         recommendation_calls.append(config)
         return _recommendation_result(config)
 
@@ -160,17 +161,17 @@ def test_run_live_round_missing_captures_when_capture_is_absent(
     capture_calls = []
     load_calls = 0
 
-    def fake_fetch_status(config):
+    def fake_fetch_status(config: LiveWorkflowConfig) -> int:
         return 14
 
-    def fake_load_capture(**kwargs):
+    def fake_load_capture(**kwargs: object) -> LiveCaptureMetadata:
         nonlocal load_calls
         load_calls += 1
         if load_calls == 1:
             raise FileNotFoundError("live capture files missing for season=2026 target_round=14")
         return metadata
 
-    def fake_capture(config, **kwargs):
+    def fake_capture(config: MarketCaptureConfig, **kwargs: object) -> MarketCaptureResult:
         capture_calls.append(config)
         return MarketCaptureResult(
             csv_path=metadata.csv_path,
@@ -200,10 +201,10 @@ def test_run_live_round_skip_requires_valid_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_fetch_status(config):
+    def fake_fetch_status(config: LiveWorkflowConfig) -> int:
         return 14
 
-    def fake_load_capture(**kwargs):
+    def fake_load_capture(**kwargs: object) -> NoReturn:
         raise ValueError("destination is not a previous valid live capture")
 
     monkeypatch.setattr("cartola.backtesting.live_workflow._active_open_round", fake_fetch_status)
@@ -224,13 +225,13 @@ def test_run_live_round_missing_fails_on_invalid_existing_capture(
 ) -> None:
     capture_calls = []
 
-    def fake_fetch_status(config):
+    def fake_fetch_status(config: LiveWorkflowConfig) -> int:
         return 14
 
-    def fake_load_capture(**kwargs):
+    def fake_load_capture(**kwargs: object) -> NoReturn:
         raise ValueError("destination is not a previous valid live capture")
 
-    def fake_capture(config, **kwargs):
+    def fake_capture(config: MarketCaptureConfig, **kwargs: object) -> NoReturn:
         capture_calls.append(config)
         raise AssertionError("invalid existing capture must not be overwritten by missing policy")
 
@@ -268,7 +269,7 @@ def test_run_live_round_recommendation_failure_writes_failed_workflow_metadata(
     )
     monkeypatch.setattr("cartola.backtesting.live_workflow.load_valid_live_capture", lambda **kwargs: metadata)
 
-    def fail_recommendation(config):
+    def fail_recommendation(config: RecommendationConfig) -> NoReturn:
         raise ValueError("FootyStats recommendation missing join keys: {14: [264]}")
 
     monkeypatch.setattr("cartola.backtesting.live_workflow.run_recommendation", fail_recommendation)

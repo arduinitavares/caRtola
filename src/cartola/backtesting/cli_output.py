@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, SupportsFloat, SupportsIndex, SupportsInt, cast
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -24,6 +24,8 @@ _STRATEGY_COLORS = {
     "price": "#d97706",
 }
 _FALLBACK_STRATEGY_COLOR = "#6b7280"
+_IntConvertible = str | bytes | bytearray | SupportsInt | SupportsIndex
+_FloatConvertible = str | bytes | bytearray | SupportsFloat | SupportsIndex
 
 
 @dataclass(frozen=True)
@@ -115,26 +117,26 @@ def _build_run_details_table(
     return table
 
 
-def _format_text(value: Any) -> str:
+def _format_text(value: object) -> str:
     if _is_missing(value):
         return "n/a"
     return str(value)
 
 
-def _format_int(value: Any) -> str:
+def _format_int(value: object) -> str:
     if _is_missing(value):
         return "n/a"
     try:
-        return str(int(value))
+        return str(int(cast(_IntConvertible, value)))
     except (TypeError, ValueError):
         return "n/a"
 
 
-def _format_points(value: Any, *, signed: bool = False) -> str:
+def _format_points(value: object, *, signed: bool = False) -> str:
     if _is_missing(value):
         return "n/a"
     try:
-        number = float(value)
+        number = float(cast(_FloatConvertible, value))
     except (TypeError, ValueError):
         return "n/a"
     return f"{number:+.2f}" if signed else f"{number:.2f}"
@@ -156,7 +158,7 @@ def _format_chart_path(path: Path | None, *, project_root: Path) -> str:
     return f"{path.name} ({formatted_path})"
 
 
-def _is_missing(value: Any) -> bool:
+def _is_missing(value: object) -> bool:
     if value is None:
         return True
     try:

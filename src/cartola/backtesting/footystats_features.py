@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from cartola.backtesting.footystats_audit import compare_teams_to_cartola, parse_footystats_filename
+from cartola.backtesting.footystats_audit import TeamComparison, compare_teams_to_cartola, parse_footystats_filename
 
 REQUIRED_MATCH_COLUMNS: tuple[str, ...] = (
     "Game Week",
@@ -401,7 +401,7 @@ def _team_names(df: pd.DataFrame) -> list[str]:
     return sorted({str(team) for team in teams})
 
 
-def _validate_team_mapping(comparison, *, require_all_cartola_teams: bool = True) -> None:
+def _validate_team_mapping(comparison: TeamComparison, *, require_all_cartola_teams: bool = True) -> None:
     failures: list[str] = []
     if comparison.unmapped_footystats_teams:
         failures.append(f"unmapped FootyStats teams: {', '.join(comparison.unmapped_footystats_teams)}")

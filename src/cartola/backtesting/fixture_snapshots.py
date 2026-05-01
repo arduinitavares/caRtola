@@ -14,7 +14,7 @@ CARTOLA_FIXTURE_ENDPOINT = "https://api.cartola.globo.com/partidas/{round_number
 CARTOLA_DEADLINE_ENDPOINT = "https://api.cartola.globo.com/mercado/status"
 FROZEN_CLOCK_SKEW_TOLERANCE_SECONDS = 300
 CAPTURE_VERSION = "fixture_capture_v1"
-Fetch = Callable[[str], Any]
+Fetch = Callable[[str], requests.Response]
 Clock = Callable[[], datetime]
 
 
@@ -54,7 +54,7 @@ def parse_http_date_utc(value: str) -> datetime:
     return parsed.replace(tzinfo=UTC)
 
 
-def parse_iso_utc_z(value: Any, *, field_name: str) -> datetime:
+def parse_iso_utc_z(value: object, *, field_name: str) -> datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise ValueError(f"{field_name} must be an ISO-8601 UTC timestamp ending in Z")
     try:
@@ -344,7 +344,7 @@ def _validated_http_status(capture: dict[str, Any], response_name: str) -> None:
         raise ValueError(f"{field} must be 200")
 
 
-def _fixture_date(value: Any) -> str:
+def _fixture_date(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Invalid partida_data: {value!r}")
     try:
@@ -357,7 +357,7 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _fetch_url(url: str) -> Any:
+def _fetch_url(url: str) -> requests.Response:
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     return response
@@ -369,18 +369,21 @@ def _capture_response(fetch: Fetch, url: str) -> CapturedResponse:
     payload = response.json()
     if not isinstance(payload, dict):
         raise ValueError(f"Cartola response payload must be a JSON object: {url}")
+    status_code = response.status_code
+    if not isinstance(status_code, int):
+        raise ValueError(f"Cartola response status_code must be an integer: {url}")
 
     http_date_header = _http_date_header(response)
     return CapturedResponse(
         payload=payload,
         http_date_header=http_date_header,
         http_date_utc=parse_http_date_utc(http_date_header),
-        status_code=int(response.status_code),
+        status_code=status_code,
         final_url=str(response.url),
     )
 
 
-def _http_date_header(response: Any) -> str:
+def _http_date_header(response: requests.Response) -> str:
     headers = response.headers
     value = headers.get("Date")
     if value is None:
