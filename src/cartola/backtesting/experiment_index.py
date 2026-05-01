@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, TypedDict
 
 SCHEMA_VERSION = 1
 BUSY_TIMEOUT_MS = 5000
@@ -72,6 +72,18 @@ CHILD_RUN_COLUMNS = (
     "source_hash_summary",
     "mlflow_child_run_id",
 )
+
+
+class ArtifactPointerEntry(TypedDict):
+    path: str
+    size_bytes: int
+    sha256: str
+
+
+class ArtifactPointerPayload(TypedDict):
+    child_run_id: str
+    output_path: str
+    artifacts: dict[str, ArtifactPointerEntry]
 
 
 class ExperimentIndex:
@@ -167,9 +179,9 @@ def artifact_pointer_payload(
     child_run_id: str,
     output_path: Path,
     artifact_paths: Sequence[Path],
-) -> dict[str, object]:
+) -> ArtifactPointerPayload:
     resolved_project_root = project_root.resolve()
-    artifacts: dict[str, object] = {}
+    artifacts: dict[str, ArtifactPointerEntry] = {}
     for path in artifact_paths:
         if not path.exists():
             continue
