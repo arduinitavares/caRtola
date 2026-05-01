@@ -56,6 +56,10 @@ extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
+extend-select = ["ANN"]
+
+[tool.ruff.lint.per-file-ignores]
+"generated/**/*.py" = ["ANN"]
 
 [tool.pytest.ini_options]
 addopts = """

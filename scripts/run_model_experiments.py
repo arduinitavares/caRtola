@@ -8,8 +8,16 @@ from typing import Sequence
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
-from rich.progress import TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 from cartola.backtesting.experiment_runner import ExperimentProgressEvent, run_model_experiment
 
@@ -96,9 +104,7 @@ class _ExperimentProgressDisplay:
                 completed=event.completed_children,
                 current=f"output={event.output_path}",
             )
-            self.progress.log(
-                f"Experiment started: total_child_runs={event.total_children} output={event.output_path}"
-            )
+            self.progress.log(f"Experiment started: total_child_runs={event.total_children} output={event.output_path}")
             return
         if self.task_id is None:
             return
@@ -109,7 +115,9 @@ class _ExperimentProgressDisplay:
             return
         if event.event_type == "child_finished":
             duration = _format_duration(event.child_duration_seconds)
-            self.progress.update(self.task_id, completed=event.completed_children, current=f"last: {current} {duration}")
+            self.progress.update(
+                self.task_id, completed=event.completed_children, current=f"last: {current} {duration}"
+            )
             self.progress.log(f"DONE  {event.child_index}/{event.total_children} {current} duration={duration}")
             return
         if event.event_type == "child_failed":
@@ -130,9 +138,7 @@ class _ExperimentProgressDisplay:
 
     def _handle_line_mode(self, event: ExperimentProgressEvent) -> None:
         if event.event_type == "experiment_started":
-            self.console.print(
-                f"START experiment total_child_runs={event.total_children} output={event.output_path}"
-            )
+            self.console.print(f"START experiment total_child_runs={event.total_children} output={event.output_path}")
             return
         if event.event_type == "child_started":
             self.console.print(f"START child {event.child_index}/{event.total_children} {_event_label(event)}")
