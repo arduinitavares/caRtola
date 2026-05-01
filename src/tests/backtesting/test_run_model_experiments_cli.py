@@ -66,3 +66,17 @@ def test_main_rejects_empty_seasons_without_traceback(capsys) -> None:
     captured = capsys.readouterr()
     assert "At least one season is required" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_main_reports_child_run_failure_without_traceback(monkeypatch, capsys) -> None:
+    def fake_run_model_experiment(**_kwargs):
+        raise RuntimeError("child failed")
+
+    monkeypatch.setattr("scripts.run_model_experiments.run_model_experiment", fake_run_model_experiment)
+
+    exit_code = main(["--group", "production-parity", "--current-year", "2026"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "child failed" in captured.err
+    assert "Traceback" not in captured.err

@@ -66,7 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_root=args.output_root,
             started_at_utc=_timestamp(),
         )
-    except (FileExistsError, FileNotFoundError, ValueError) as error:
+    except Exception as error:
         _print_error(stderr, error)
         return 1
     _print_success(stdout, experiment_id=result.experiment_id, output_path=result.output_path)
