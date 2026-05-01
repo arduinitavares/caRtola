@@ -1,6 +1,7 @@
 import math
 
 import pandas as pd
+import pytest
 
 from cartola.backtesting.ridge_tuning_metrics import promotion_decision, rank_tuning_summary
 
@@ -98,8 +99,8 @@ def test_rank_tuning_summary_mae_regression_percentage_rejects_candidate() -> No
     )
     prediction_metrics = pd.DataFrame(
         [
-            *_metric_rows("ridge_alpha_1_0__ppg_xg", alpha=1.0, mae=10.0, spearman=0.8),
-            *_metric_rows("ridge_alpha_3_0__ppg_xg", alpha=3.0, mae=10.6, spearman=0.8),
+            *_metric_rows_for_seasons("ridge_alpha_1_0__ppg_xg", alpha=1.0, mae=10.0, spearman=0.8, seasons=(2023, 2024)),
+            *_metric_rows_for_seasons("ridge_alpha_3_0__ppg_xg", alpha=3.0, mae=10.6, spearman=0.8, seasons=(2023, 2024)),
         ]
     )
 
@@ -142,6 +143,130 @@ def test_rank_tuning_summary_missing_incumbent_fails_without_crashing() -> None:
     assert candidate["promotion_reason"] == "insufficient_metric_data"
 
 
+def test_rank_tuning_summary_rejects_duplicate_candidate_season_rows() -> None:
+    per_season_summary = pd.DataFrame(
+        [
+            _season_row("ridge_alpha_1_0__ppg_xg", 2023, alpha=1.0, actual=100.0, predicted=105.0),
+            _season_row("ridge_alpha_1_0__ppg_xg", 2023, alpha=1.0, actual=101.0, predicted=106.0),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Duplicate per-season summary rows"):
+        rank_tuning_summary(
+            per_season_summary,
+            pd.DataFrame(),
+            primary_incumbent_candidate_id="ridge_alpha_1_0__ppg_xg",
+            final_reproducibility_by_candidate={"ridge_alpha_1_0__ppg_xg": True},
+        )
+
+
+def test_rank_tuning_summary_candidate_missing_incumbent_season_is_not_comparable() -> None:
+    per_season_summary = pd.DataFrame(
+        [
+            _season_row("ridge_alpha_1_0__ppg_xg", 2023, alpha=1.0, actual=100.0, predicted=105.0),
+            _season_row("ridge_alpha_1_0__ppg_xg", 2024, alpha=1.0, actual=100.0, predicted=105.0),
+            _season_row("ridge_alpha_3_0__ppg_xg", 2023, alpha=3.0, actual=152.0, predicted=152.0),
+        ]
+    )
+    prediction_metrics = pd.DataFrame(
+        [
+            *_metric_rows_for_seasons("ridge_alpha_1_0__ppg_xg", alpha=1.0, mae=10.0, spearman=0.8, seasons=(2023, 2024)),
+            *_metric_rows_for_seasons("ridge_alpha_3_0__ppg_xg", alpha=3.0, mae=10.0, spearman=0.8, seasons=(2023,)),
+        ]
+    )
+
+    ranked = rank_tuning_summary(
+        per_season_summary,
+        prediction_metrics,
+        primary_incumbent_candidate_id="ridge_alpha_1_0__ppg_xg",
+        final_reproducibility_by_candidate={
+            "ridge_alpha_1_0__ppg_xg": True,
+            "ridge_alpha_3_0__ppg_xg": True,
+        },
+    )
+
+    candidate = ranked.loc[ranked["candidate_id"].eq("ridge_alpha_3_0__ppg_xg")].iloc[0]
+    assert candidate["promotion_eligible"] is False
+    assert candidate["promotion_reason"] == "not_comparable"
+
+
+def test_rank_tuning_summary_rejects_duplicate_candidate_season_metric_scope_rows() -> None:
+    per_season_summary = pd.DataFrame(
+        [
+            _season_row("ridge_alpha_1_0__ppg_xg", 2023, alpha=1.0, actual=100.0, predicted=105.0),
+            _season_row("ridge_alpha_3_0__ppg_xg", 2023, alpha=3.0, actual=152.0, predicted=152.0),
+        ]
+    )
+    duplicate_metric = _metric_rows_for_seasons(
+        "ridge_alpha_1_0__ppg_xg",
+        alpha=1.0,
+        mae=10.0,
+        spearman=0.8,
+        seasons=(2023,),
+    )
+    prediction_metrics = pd.DataFrame(
+        [
+            *duplicate_metric,
+            duplicate_metric[0],
+            *_metric_rows_for_seasons("ridge_alpha_3_0__ppg_xg", alpha=3.0, mae=10.0, spearman=0.8, seasons=(2023,)),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Duplicate prediction metric rows"):
+        rank_tuning_summary(
+            per_season_summary,
+            prediction_metrics,
+            primary_incumbent_candidate_id="ridge_alpha_1_0__ppg_xg",
+            final_reproducibility_by_candidate={
+                "ridge_alpha_1_0__ppg_xg": True,
+                "ridge_alpha_3_0__ppg_xg": True,
+            },
+        )
+
+
+def test_rank_tuning_summary_missing_required_metric_for_incumbent_season_is_insufficient() -> None:
+    per_season_summary = pd.DataFrame(
+        [
+            _season_row("ridge_alpha_1_0__ppg_xg", 2023, alpha=1.0, actual=100.0, predicted=105.0),
+            _season_row("ridge_alpha_1_0__ppg_xg", 2024, alpha=1.0, actual=100.0, predicted=105.0),
+            _season_row("ridge_alpha_3_0__ppg_xg", 2023, alpha=3.0, actual=126.0, predicted=126.0),
+            _season_row("ridge_alpha_3_0__ppg_xg", 2024, alpha=3.0, actual=126.0, predicted=126.0),
+        ]
+    )
+    candidate_metrics = _metric_rows_for_seasons(
+        "ridge_alpha_3_0__ppg_xg",
+        alpha=3.0,
+        mae=10.0,
+        spearman=0.8,
+        seasons=(2023, 2024),
+    )
+    candidate_metrics = [
+        metric
+        for metric in candidate_metrics
+        if not (metric["season"] == 2024 and metric["metric_scope"] == "selected_players")
+    ]
+    prediction_metrics = pd.DataFrame(
+        [
+            *_metric_rows_for_seasons("ridge_alpha_1_0__ppg_xg", alpha=1.0, mae=10.0, spearman=0.8, seasons=(2023, 2024)),
+            *candidate_metrics,
+        ]
+    )
+
+    ranked = rank_tuning_summary(
+        per_season_summary,
+        prediction_metrics,
+        primary_incumbent_candidate_id="ridge_alpha_1_0__ppg_xg",
+        final_reproducibility_by_candidate={
+            "ridge_alpha_1_0__ppg_xg": True,
+            "ridge_alpha_3_0__ppg_xg": True,
+        },
+    )
+
+    candidate = ranked.loc[ranked["candidate_id"].eq("ridge_alpha_3_0__ppg_xg")].iloc[0]
+    assert candidate["promotion_eligible"] is False
+    assert candidate["promotion_reason"] == "insufficient_metric_data"
+
+
 def _season_row(candidate_id: str, season: int, *, alpha: float, actual: float, predicted: float) -> dict[str, object]:
     return {
         "candidate_id": candidate_id,
@@ -156,12 +281,37 @@ def _season_row(candidate_id: str, season: int, *, alpha: float, actual: float, 
 
 
 def _metric_rows(candidate_id: str, *, alpha: float, mae: float, spearman: float) -> list[dict[str, object]]:
+    return _metric_rows_for_seasons(candidate_id, alpha=alpha, mae=mae, spearman=spearman, seasons=(2023,))
+
+
+def _metric_rows_for_seasons(
+    candidate_id: str,
+    *,
+    alpha: float,
+    mae: float,
+    spearman: float,
+    seasons: tuple[int, ...],
+) -> list[dict[str, object]]:
+    rows = []
+    for season in seasons:
+        rows.extend(_metric_rows_for_season(candidate_id, alpha=alpha, mae=mae, spearman=spearman, season=season))
+    return rows
+
+
+def _metric_rows_for_season(
+    candidate_id: str,
+    *,
+    alpha: float,
+    mae: float,
+    spearman: float,
+    season: int,
+) -> list[dict[str, object]]:
     common = {
         "candidate_id": candidate_id,
         "model_id": "ridge",
         "feature_pack": "ppg_xg",
         "alpha": alpha,
-        "season": 2023,
+        "season": season,
     }
     return [
         {

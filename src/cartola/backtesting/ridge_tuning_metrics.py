@@ -6,6 +6,7 @@ from typing import cast
 import pandas as pd
 
 PRACTICAL_LIFT_PER_ROUND = 0.5
+_REQUIRED_PROMOTION_METRIC_SCOPES = frozenset({"candidate_pool", "selected_players", "top50_candidates"})
 
 _RANKED_TUNING_SUMMARY_COLUMNS = [
     "candidate_id",
@@ -103,28 +104,34 @@ def rank_tuning_summary(
         ranked.insert(0, "rank", pd.Series(dtype="int64"))
         return ranked
 
+    _validate_per_season_summary(per_season_summary)
+    _validate_prediction_metrics(prediction_metrics)
     incumbent_by_season = _incumbent_actual_points_by_season(
         per_season_summary,
         incumbent_candidate_id=primary_incumbent_candidate_id,
     )
+    incumbent_seasons = set(incumbent_by_season)
     primary_incumbent_total_actual_points = _sum_or_none(list(incumbent_by_season.values()))
-    incumbent_selected_players_mae = _mean_metric(
+    incumbent_selected_players_mae = _season_aligned_mean_metric(
         prediction_metrics,
         candidate_id=primary_incumbent_candidate_id,
         metric_scope="selected_players",
         metric_column="mae",
+        required_seasons=incumbent_seasons,
     )
-    incumbent_candidate_pool_mae = _mean_metric(
+    incumbent_candidate_pool_mae = _season_aligned_mean_metric(
         prediction_metrics,
         candidate_id=primary_incumbent_candidate_id,
         metric_scope="candidate_pool",
         metric_column="mae",
+        required_seasons=incumbent_seasons,
     )
-    incumbent_top50_spearman = _mean_metric(
+    incumbent_top50_spearman = _season_aligned_mean_metric(
         prediction_metrics,
         candidate_id=primary_incumbent_candidate_id,
         metric_scope="top50_candidates",
         metric_column="spearman",
+        required_seasons=incumbent_seasons,
     )
 
     rows = [
@@ -132,6 +139,7 @@ def rank_tuning_summary(
             group_frame,
             prediction_metrics=prediction_metrics,
             incumbent_by_season=incumbent_by_season,
+            incumbent_seasons=incumbent_seasons,
             primary_incumbent_total_actual_points=primary_incumbent_total_actual_points,
             incumbent_selected_players_mae=incumbent_selected_players_mae,
             incumbent_candidate_pool_mae=incumbent_candidate_pool_mae,
@@ -166,6 +174,7 @@ def _aggregate_tuning_summary_row(
     *,
     prediction_metrics: pd.DataFrame,
     incumbent_by_season: Mapping[int, float],
+    incumbent_seasons: set[int],
     primary_incumbent_total_actual_points: float | None,
     incumbent_selected_players_mae: float | None,
     incumbent_candidate_pool_mae: float | None,
@@ -174,6 +183,8 @@ def _aggregate_tuning_summary_row(
 ) -> dict[str, object]:
     first = group_frame.iloc[0]
     candidate_id = str(first["candidate_id"])
+    candidate_seasons = set(group_frame["season"].astype(int))
+    comparable = True if not incumbent_seasons else candidate_seasons == incumbent_seasons
     total_rounds = int(group_frame["rounds"].sum())
     total_actual_points = float(group_frame["total_actual_points"].sum())
     total_predicted_points = float(group_frame["total_predicted_points"].sum())
@@ -182,29 +193,33 @@ def _aggregate_tuning_summary_row(
     average_delta_per_round = None if aggregate_delta is None or total_rounds == 0 else aggregate_delta / total_rounds
     season_average_deltas = [delta / rounds for delta, rounds in season_deltas if rounds > 0]
     worst_season_avg_delta = min(season_average_deltas) if season_average_deltas else None
-    selected_calibration_slope = _mean_metric(
+    selected_calibration_slope = _season_aligned_mean_metric(
         prediction_metrics,
         candidate_id=candidate_id,
         metric_scope="selected_players",
         metric_column="calibration_slope",
+        required_seasons=incumbent_seasons,
     )
-    top50_spearman = _mean_metric(
+    top50_spearman = _season_aligned_mean_metric(
         prediction_metrics,
         candidate_id=candidate_id,
         metric_scope="top50_candidates",
         metric_column="spearman",
+        required_seasons=incumbent_seasons,
     )
-    selected_players_mae = _mean_metric(
+    selected_players_mae = _season_aligned_mean_metric(
         prediction_metrics,
         candidate_id=candidate_id,
         metric_scope="selected_players",
         metric_column="mae",
+        required_seasons=incumbent_seasons,
     )
-    candidate_pool_mae = _mean_metric(
+    candidate_pool_mae = _season_aligned_mean_metric(
         prediction_metrics,
         candidate_id=candidate_id,
         metric_scope="candidate_pool",
         metric_column="mae",
+        required_seasons=incumbent_seasons,
     )
     top50_spearman_delta = (
         None if top50_spearman is None or incumbent_top50_spearman is None else top50_spearman - incumbent_top50_spearman
@@ -212,7 +227,7 @@ def _aggregate_tuning_summary_row(
     candidate_pool_mae_delta_pct = _percent_delta(candidate_pool_mae, incumbent_candidate_pool_mae)
     selected_players_mae_delta_pct = _percent_delta(selected_players_mae, incumbent_selected_players_mae)
     promotion = promotion_decision(
-        comparable=True,
+        comparable=comparable,
         final_reproducible=final_reproducibility_by_candidate.get(candidate_id, False),
         aggregate_delta_vs_primary_incumbent=aggregate_delta,
         total_rounds=total_rounds,
@@ -277,21 +292,47 @@ def _season_deltas(
     return deltas
 
 
-def _mean_metric(
+def _validate_per_season_summary(per_season_summary: pd.DataFrame) -> None:
+    required_columns = {"candidate_id", "season"}
+    if not required_columns.issubset(per_season_summary.columns):
+        return
+
+    duplicate_mask = per_season_summary.duplicated(subset=["candidate_id", "season"], keep=False)
+    if duplicate_mask.any():
+        raise ValueError("Duplicate per-season summary rows")
+
+
+def _validate_prediction_metrics(prediction_metrics: pd.DataFrame) -> None:
+    required_columns = {"candidate_id", "season", "metric_scope"}
+    if prediction_metrics.empty or not required_columns.issubset(prediction_metrics.columns):
+        return
+
+    scoped_metrics = prediction_metrics[prediction_metrics["metric_scope"].isin(_REQUIRED_PROMOTION_METRIC_SCOPES)]
+    duplicate_mask = scoped_metrics.duplicated(subset=["candidate_id", "season", "metric_scope"], keep=False)
+    if duplicate_mask.any():
+        raise ValueError("Duplicate prediction metric rows")
+
+
+def _season_aligned_mean_metric(
     prediction_metrics: pd.DataFrame,
     *,
     candidate_id: str,
     metric_scope: str,
     metric_column: str,
+    required_seasons: set[int],
 ) -> float | None:
-    required_columns = {"candidate_id", "metric_scope", metric_column}
-    if prediction_metrics.empty or not required_columns.issubset(prediction_metrics.columns):
+    required_columns = {"candidate_id", "season", "metric_scope", metric_column}
+    if not required_seasons or prediction_metrics.empty or not required_columns.issubset(prediction_metrics.columns):
         return None
 
-    values = prediction_metrics[
+    rows = prediction_metrics[
         prediction_metrics["candidate_id"].eq(candidate_id) & prediction_metrics["metric_scope"].eq(metric_scope)
-    ][metric_column].dropna()
-    if values.empty:
+    ].copy()
+    if set(rows["season"].astype(int)) != required_seasons:
+        return None
+    rows = rows.sort_values("season", kind="mergesort")
+    values = rows[metric_column]
+    if values.isna().any():
         return None
     return float(values.mean())
 
