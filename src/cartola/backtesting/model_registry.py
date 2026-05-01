@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, SupportsFloat, SupportsIndex, cast
 
 import pandas as pd
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
@@ -16,6 +16,7 @@ from cartola.backtesting.models import (
 )
 
 ModelId = Literal["random_forest", "extra_trees", "hist_gradient_boosting", "ridge"]
+_FloatConvertible = str | bytes | bytearray | SupportsFloat | SupportsIndex
 
 
 class PointPredictor(Protocol):
@@ -124,7 +125,7 @@ def _validate_model_param_overrides(
     if unknown:
         raise ValueError(f"Unsupported model parameter for ridge: {unknown[0]}")
 
-    alpha = float(cast("object", model_params["alpha"]))
+    alpha = float(cast(_FloatConvertible, model_params["alpha"]))
     if alpha <= 0:
         raise ValueError("ridge alpha must be positive")
     return {"alpha": alpha}
