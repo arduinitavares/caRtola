@@ -3,6 +3,5 @@ from __future__ import annotations
 
 from cartola.backtesting.matchup_fixture_audit import main
 
-
 if __name__ == "__main__":
     raise SystemExit(main())
