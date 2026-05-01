@@ -126,6 +126,14 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - `scripts/recommend_squad.py` and `scripts/run_live_round.py` now accept `--model-id`,
   - live/replay recommendations can use any model in the controlled registry,
   - current best no-fixture candidate can be deployed directly instead of being experiment-only.
+- Constrained Ridge alpha tuning runner:
+  - `scripts/run_ridge_tuning.py`,
+  - fixed, predeclared Ridge alpha matrix: `0.01`, `0.03`, `0.1`, `0.3`, `1.0`, `3.0`, `10.0`, `30.0`, `100.0`, and `300.0`,
+  - evaluates both `ppg` and `ppg_xg` for every alpha so xG is not advantaged only because it received tuning attention,
+  - uses private experiment-only Ridge `model_params` plumbing while keeping normal backtest and live defaults unchanged,
+  - screen stage ranks the full fixed matrix and final stage reruns the primary incumbent, secondary control, and top challengers,
+  - writes `ranked_summary.csv`, `prediction_metrics.csv`, `calibration_deciles.csv`, `comparability_report.json`, `promotion_report.json`, `tuning_generation_manifest.json`, Markdown, and HTML reports under `data/08_reporting/experiments/model_tuning/`,
+  - refuses promotion when final reruns are skipped, comparison controls drift, comparability fails, required metrics are missing, or lift is below the practical threshold.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -170,6 +178,12 @@ candidate profile. The result does **not** prove that matchup context is useful,
 because this group intentionally used `fixture_mode=none`. The next
 prediction-quality bet is the matchup-research group plus a constrained
 hyperparameter/model-spec experiment around the winning sklearn families.
+
+The constrained Ridge tuning runner is now implemented and smoke-tested on a
+single 2025 screen-only run. That smoke run validates the real backtest path,
+artifact writing, fixed candidate matrix, and `--skip-final-rerun` promotion
+guard. It is **not** promotion evidence: the full `2023,2024,2025` run with
+final reruns still needs to be executed before changing the live model profile.
 
 The FootyStats compatibility audit is now implemented and the current `data/footystats/` files are Brazil Serie A seasons, not sample EPL data. The audit result is:
 
@@ -323,15 +337,46 @@ uv run --frozen python scripts/run_model_experiments.py \
   --jobs 12
 ```
 
+Constrained Ridge alpha tuning experiment:
+
+```bash
+uv run --frozen python scripts/run_ridge_tuning.py \
+  --seasons 2023,2024,2025 \
+  --start-round 5 \
+  --budget 100 \
+  --current-year 2026 \
+  --jobs 12
+```
+
+Fast implementation smoke for the tuning runner:
+
+```bash
+uv run --frozen python scripts/run_ridge_tuning.py \
+  --seasons 2025 \
+  --start-round 5 \
+  --budget 100 \
+  --current-year 2026 \
+  --jobs 4 \
+  --skip-final-rerun
+```
+
 The experiment runner writes outputs under:
 
 ```text
 data/08_reporting/experiments/model_feature/<experiment_id>/
 ```
 
+The Ridge tuning runner writes outputs under:
+
+```text
+data/08_reporting/experiments/model_tuning/<experiment_id>/
+```
+
 Start with `ranked_summary.csv`, `per_season_summary.csv`,
 `prediction_metrics.csv`, `calibration_deciles.csv`,
 `comparability_report.json`, and `experiment_metadata.json`.
+For Ridge tuning, also inspect `promotion_report.json` before changing any
+production recommendation default.
 
 Single-season no-fixture FootyStats PPG backtest:
 
@@ -463,12 +508,11 @@ uv run --frozen scripts/pyrepo-check --all
    - Purpose: decide whether `cartola_matchup_v1` is worth promoting into the next strict-fixture integration design.
    - Baseline: `random_forest + ppg + fixture_mode=exploratory + matchup_context_mode=none`.
    - Treat this as research evidence only, not strict live proof.
-3. Add a constrained sklearn tuning experiment before adding external model libraries.
+3. Run the constrained Ridge tuning experiment before adding external model libraries.
    - Spec: `docs/superpowers/specs/2026-05-01-constrained-ridge-tuning-design.md`.
-   - Start with a fixed Ridge-only alpha matrix, not an open grid search.
-   - Include both `ppg` and `ppg_xg` for every alpha so xG is not advantaged only because it received tuning attention.
-   - Rerun `ridge + ppg_xg + alpha=1.0` and `ridge + ppg + alpha=1.0` inside the same tuning generation.
-   - Require final reruns, exact comparability, null-metric failure, and a practical lift threshold before promotion.
+   - Implementation exists; the remaining step is a full `2023,2024,2025` execution with final reruns enabled.
+   - Use the generated `promotion_report.json` as the authority for whether a tuned candidate can replace `ridge + ppg_xg + alpha=1.0`.
+   - Keep `ridge + ppg_xg + alpha=1.0` as the live no-fixture profile unless the full tuning run clears final-rerun reproducibility, exact comparability, null-metric, and practical-lift gates.
    - Defer RandomForest/ExtraTrees tuning until calibration wrappers are designed; the first production-parity result suggests tree overprediction is structural, not just a small hyperparameter miss.
    - Defer HGB, Optuna, XGBoost, LightGBM, and CatBoost until the Ridge tuning baseline is measured.
 4. Interpret experiment outputs before building broader modeling features.
