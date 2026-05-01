@@ -831,6 +831,9 @@ def test_tracker_close_failure_does_not_mask_child_failure(
     assert metadata["tracking_warnings"] == [
         {"message": "RuntimeError: tracker close failed: failed", "phase": "end_experiment"}
     ]
+    assert [event for event in tracker.events if event["event"] == "end_experiment"] == [
+        {"event": "end_experiment", "status": "failed"}
+    ]
 
 
 def test_experiment_runner_writes_artifact_pointers_for_large_child_artifacts(

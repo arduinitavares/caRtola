@@ -766,7 +766,6 @@ def _safe_finalize_tracker(tracker: ExperimentTracker, *, status: TrackerStatus)
                 message=f"{type(exc).__name__}: {exc}",
             )
         )
-        return False
     return True
 
 
