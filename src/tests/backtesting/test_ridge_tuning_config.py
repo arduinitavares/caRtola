@@ -109,6 +109,21 @@ def test_distinct_alphas_have_distinct_model_params_hashes_for_feature_pack() ->
     assert len({spec.model_params_hash for spec in specs}) == 3
 
 
+def test_build_ridge_tuning_specs_rejects_unknown_candidate_id() -> None:
+    with pytest.raises(ValueError, match="Unknown ridge tuning candidate_id: missing_candidate"):
+        build_ridge_tuning_specs(
+            seasons=(2025,),
+            start_round=5,
+            budget=100.0,
+            project_root=Path("/repo"),
+            output_root=Path("data/08_reporting/experiments/ridge_tuning/test"),
+            current_year=2026,
+            jobs=12,
+            stage="final",
+            candidate_ids={"ridge_alpha_1_0__ppg_xg", "missing_candidate"},
+        )
+
+
 def test_specs_share_one_tuning_generation_hash() -> None:
     specs = build_ridge_tuning_specs(
         seasons=(2024, 2025),

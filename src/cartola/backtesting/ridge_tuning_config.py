@@ -59,6 +59,16 @@ def build_ridge_tuning_specs(
     if any(season >= current_year for season in seasons):
         raise ValueError("Tuning seasons must be before current_year")
 
+    valid_candidate_ids = {
+        candidate_id_for(alpha=alpha, feature_pack=feature_pack_id)
+        for alpha in RIDGE_ALPHA_VALUES
+        for feature_pack_id in RIDGE_TUNING_FEATURE_PACKS
+    }
+    if candidate_ids is not None:
+        unknown_candidate_ids = sorted(candidate_ids - valid_candidate_ids)
+        if unknown_candidate_ids:
+            raise ValueError(f"Unknown ridge tuning candidate_id: {unknown_candidate_ids[0]}")
+
     fixture_mode = "none"
     matchup_context_mode = "none"
     tuning_generation_hash = config_hash(
