@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -350,6 +351,74 @@ def test_experiment_runner_fails_on_candidate_mismatch_before_ranking(
     )
     assert (output_path / "comparability_report.json").exists()
     assert not (output_path / "ranked_summary.csv").exists()
+
+
+def test_experiment_runner_writes_failure_artifacts_when_candidate_signature_build_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_child_ids: list[str] = []
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        child_id = f"season={config.season}/model={primary_model_id}/{config.output_path.parts[-1]}"
+        observed_child_ids.append(child_id)
+        result = _result(config, model_id=primary_model_id)
+        if len(observed_child_ids) == 2:
+            return replace(result, player_predictions=result.player_predictions.drop(columns=["preco_pre_rodada"]))
+        return result
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    with pytest.raises(ComparabilityError, match="Missing required candidate columns: preco_pre_rodada"):
+        run_model_experiment(
+            group="production-parity",
+            seasons=(2025,),
+            start_round=5,
+            budget=100.0,
+            current_year=2026,
+            jobs=4,
+            project_root=tmp_path,
+            output_root=Path("experiments"),
+            started_at_utc="20260430T200000000000Z",
+        )
+
+    output_path = _expected_output_path(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments"),
+        started_at_utc="20260430T200000000000Z",
+    )
+    metadata_path = output_path / "experiment_metadata.json"
+    report_path = output_path / "comparability_report.json"
+
+    assert metadata_path.exists()
+    assert report_path.exists()
+    assert not (output_path / "ranked_summary.csv").exists()
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert len(observed_child_ids) == 2
+    assert metadata["status"] == "failed"
+    assert metadata["failure"]["phase"] == "comparability"
+    assert metadata["failure"]["message"] == "Missing required candidate columns: preco_pre_rodada"
+    assert metadata["failure"]["child_id"] == observed_child_ids[1]
+    assert len(metadata["child_runs"]) == 2
+    assert observed_child_ids[0] in metadata["candidate_pool_signatures"]
+    assert observed_child_ids[1] not in metadata["candidate_pool_signatures"]
+    assert report["status"] == "failed"
+    assert report["failure"] == metadata["failure"]
 
 
 def test_experiment_runner_allows_candidate_pools_to_differ_across_seasons(
