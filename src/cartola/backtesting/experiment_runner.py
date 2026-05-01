@@ -274,6 +274,8 @@ def run_model_experiment(
                     raw_sources=raw_sources,
                     candidate_pool_signatures=candidate_pool_signatures,
                     solver_status_signatures=solver_status_signatures,
+                    tracking_warnings=[asdict(warning) for warning in tracker.warnings],
+                    index_warnings=index_warnings,
                     failure={"phase": "child_run", "message": str(exc), "child_id": child_id},
                 )
                 _write_failure_artifacts(output_path, metadata)
@@ -375,6 +377,8 @@ def run_model_experiment(
                     raw_sources=raw_sources,
                     candidate_pool_signatures=candidate_pool_signatures,
                     solver_status_signatures=solver_status_signatures,
+                    tracking_warnings=[asdict(warning) for warning in tracker.warnings],
+                    index_warnings=index_warnings,
                     failure={"phase": "comparability", "message": str(exc), "child_id": child_id},
                 )
                 _write_failure_artifacts(output_path, metadata)
@@ -433,6 +437,8 @@ def run_model_experiment(
                     raw_sources=raw_sources,
                     candidate_pool_signatures=candidate_pool_signatures,
                     solver_status_signatures=solver_status_signatures,
+                    tracking_warnings=[asdict(warning) for warning in tracker.warnings],
+                    index_warnings=index_warnings,
                     failure={"phase": "child_post_processing", "message": str(exc), "child_id": child_id},
                 )
                 _write_failure_artifacts(output_path, metadata)
@@ -491,6 +497,8 @@ def run_model_experiment(
                 raw_sources=raw_sources,
                 candidate_pool_signatures=candidate_pool_signatures,
                 solver_status_signatures=solver_status_signatures,
+                tracking_warnings=[asdict(warning) for warning in tracker.warnings],
+                index_warnings=index_warnings,
                 failure={"phase": "comparability", "message": str(exc)},
             )
             _write_failure_artifacts(output_path, metadata)
@@ -534,6 +542,8 @@ def run_model_experiment(
             raw_sources=raw_sources,
             candidate_pool_signatures=candidate_pool_signatures,
             solver_status_signatures=solver_status_signatures,
+            tracking_warnings=[asdict(warning) for warning in tracker.warnings],
+            index_warnings=index_warnings,
             failure=None,
         )
         _write_success_artifacts(
@@ -1433,6 +1443,8 @@ def _metadata(
     candidate_pool_signatures: Mapping[str, object],
     solver_status_signatures: Mapping[str, object],
     failure: Mapping[str, object] | None,
+    tracking_warnings: Sequence[Mapping[str, object]] | None = None,
+    index_warnings: Sequence[str] | None = None,
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
         "status": status,
@@ -1449,6 +1461,8 @@ def _metadata(
         "raw_sources": dict(raw_sources),
         "candidate_pool_signatures": dict(candidate_pool_signatures),
         "solver_status_signatures": dict(solver_status_signatures),
+        "tracking_warnings": [dict(warning) for warning in tracking_warnings or []],
+        "index_warnings": list(index_warnings or []),
     }
     if failure is not None:
         metadata["failure"] = dict(failure)

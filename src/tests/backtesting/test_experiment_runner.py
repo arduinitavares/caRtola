@@ -795,6 +795,44 @@ def test_experiment_runner_writes_artifact_pointers_for_large_child_artifacts(
     assert payload["artifacts"]["selected_players.csv"]["size_bytes"] > 0
 
 
+def test_tracker_none_does_not_change_scientific_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        return _result(config, model_id=primary_model_id, candidate_count=60)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    result = run_model_experiment(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments/model_feature"),
+        started_at_utc="20260430T200000000000Z",
+    )
+
+    metadata = json.loads((result.output_path / "experiment_metadata.json").read_text(encoding="utf-8"))
+    ranked = pd.read_csv(result.output_path / "ranked_summary.csv")
+
+    assert metadata["status"] == "ok"
+    assert metadata["tracking_warnings"] == []
+    assert metadata["index_warnings"] == []
+    assert len(ranked) == 8
+    assert (tmp_path / "data/08_reporting/experiments/experiment_index.sqlite").exists()
+
+
 def _expected_output_path(
     *,
     group: ExperimentGroup,
