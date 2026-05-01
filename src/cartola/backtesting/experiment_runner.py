@@ -180,6 +180,7 @@ def run_model_experiment(
     solver_status_signatures: dict[str, dict[str, str]] = {}
     comparability_partitions: dict[str, list[str]] = {}
     experiment_status: Literal["ok", "failed"] = "failed"
+    tracker_finalized = False
 
     try:
         tracker.start_experiment(
@@ -278,7 +279,6 @@ def run_model_experiment(
                     index_warnings=index_warnings,
                     failure={"phase": "child_run", "message": str(exc), "child_id": child_id},
                 )
-                _write_failure_artifacts(output_path, metadata)
                 _upsert_failed_experiment_row(
                     index=index,
                     index_warnings=index_warnings,
@@ -298,6 +298,10 @@ def run_model_experiment(
                     project_root=project_root,
                     tracker=tracker,
                 )
+                tracker.end_experiment(status="failed")
+                tracker_finalized = True
+                metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
+                _write_failure_artifacts(output_path, metadata)
                 raise
             child_runs.append(_child_record(spec, result, child_id=child_id))
             try:
@@ -381,7 +385,6 @@ def run_model_experiment(
                     index_warnings=index_warnings,
                     failure={"phase": "comparability", "message": str(exc), "child_id": child_id},
                 )
-                _write_failure_artifacts(output_path, metadata)
                 _upsert_failed_experiment_row(
                     index=index,
                     index_warnings=index_warnings,
@@ -401,6 +404,10 @@ def run_model_experiment(
                     project_root=project_root,
                     tracker=tracker,
                 )
+                tracker.end_experiment(status="failed")
+                tracker_finalized = True
+                metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
+                _write_failure_artifacts(output_path, metadata)
                 raise
             except Exception as exc:
                 failed_at = perf_counter()
@@ -441,7 +448,6 @@ def run_model_experiment(
                     index_warnings=index_warnings,
                     failure={"phase": "child_post_processing", "message": str(exc), "child_id": child_id},
                 )
-                _write_failure_artifacts(output_path, metadata)
                 _upsert_failed_experiment_row(
                     index=index,
                     index_warnings=index_warnings,
@@ -461,6 +467,10 @@ def run_model_experiment(
                     project_root=project_root,
                     tracker=tracker,
                 )
+                tracker.end_experiment(status="failed")
+                tracker_finalized = True
+                metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
+                _write_failure_artifacts(output_path, metadata)
                 raise
             _emit_progress(
                 progress_callback,
@@ -501,7 +511,6 @@ def run_model_experiment(
                 index_warnings=index_warnings,
                 failure={"phase": "comparability", "message": str(exc)},
             )
-            _write_failure_artifacts(output_path, metadata)
             _upsert_failed_experiment_row(
                 index=index,
                 index_warnings=index_warnings,
@@ -521,6 +530,10 @@ def run_model_experiment(
                 project_root=project_root,
                 tracker=tracker,
             )
+            tracker.end_experiment(status="failed")
+            tracker_finalized = True
+            metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
+            _write_failure_artifacts(output_path, metadata)
             raise
 
         per_season_summary = pd.DataFrame(per_season_rows)
@@ -591,6 +604,10 @@ def run_model_experiment(
                 output_path / "squad_performance_comparison.html",
             ]
         )
+        tracker.end_experiment(status="ok")
+        tracker_finalized = True
+        metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
+        _write_json(output_path / "experiment_metadata.json", metadata)
         _emit_progress(
             progress_callback,
             ExperimentProgressEvent(
@@ -610,7 +627,8 @@ def run_model_experiment(
             metadata=metadata,
         )
     finally:
-        tracker.end_experiment(status="ok" if experiment_status == "ok" else "failed")
+        if not tracker_finalized:
+            tracker.end_experiment(status="ok" if experiment_status == "ok" else "failed")
 
 
 def _emit_progress(
@@ -1467,6 +1485,18 @@ def _metadata(
     if failure is not None:
         metadata["failure"] = dict(failure)
     return metadata
+
+
+def _metadata_with_current_warnings(
+    metadata: Mapping[str, object],
+    *,
+    tracker: ExperimentTracker,
+    index_warnings: Sequence[str],
+) -> dict[str, object]:
+    updated = dict(metadata)
+    updated["tracking_warnings"] = [asdict(warning) for warning in tracker.warnings]
+    updated["index_warnings"] = list(index_warnings)
+    return updated
 
 
 def _write_success_artifacts(

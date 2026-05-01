@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -9,9 +10,10 @@ import pytest
 
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.experiment_config import ExperimentGroup, build_child_run_specs, config_hash, experiment_id
+from cartola.backtesting.experiment_index import ExperimentIndex
 from cartola.backtesting.experiment_runner import ExperimentProgressEvent, run_model_experiment
 from cartola.backtesting.experiment_signatures import ComparabilityError
-from cartola.backtesting.experiment_tracking import InMemoryExperimentTracker
+from cartola.backtesting.experiment_tracking import InMemoryExperimentTracker, TrackerStatus, TrackerWarning
 from cartola.backtesting.runner import BacktestMetadata, BacktestResult
 from cartola.backtesting.scoring_contract import contract_fields
 
@@ -144,6 +146,16 @@ def _result(
         diagnostics=pd.DataFrame(),
         metadata=_metadata(config),
     )
+
+
+class _FinalizeWarningTracker(InMemoryExperimentTracker):
+    def log_parent_artifacts(self, artifact_paths: Sequence[Path]) -> None:
+        super().log_parent_artifacts(artifact_paths)
+        self.warnings.append(TrackerWarning(phase="log_parent_artifacts", message="late artifact warning"))
+
+    def end_experiment(self, *, status: TrackerStatus) -> None:
+        super().end_experiment(status=status)
+        self.warnings.append(TrackerWarning(phase="end_experiment", message=f"late close warning: {status}"))
 
 
 def test_experiment_runner_executes_child_runs_sequentially(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -697,7 +709,7 @@ def test_experiment_runner_sends_tracker_events_and_finalizes(
 def test_experiment_runner_finalizes_tracker_and_index_on_child_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tracker = InMemoryExperimentTracker()
+    tracker = _FinalizeWarningTracker()
 
     def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
         if primary_model_id == "extra_trees":
@@ -737,6 +749,25 @@ def test_experiment_runner_finalizes_tracker_and_index_on_child_failure(
     assert (status, completed, failed) == ("failed", 2, 1)
     assert completed_children == 2
     assert tracker.events[-2:] == [{"event": "end_child", "status": "failed"}, {"event": "end_experiment", "status": "failed"}]
+    metadata = json.loads(
+        (
+            _expected_output_path(
+                group="production-parity",
+                seasons=(2025,),
+                start_round=5,
+                budget=100.0,
+                current_year=2026,
+                jobs=4,
+                project_root=tmp_path,
+                output_root=Path("experiments/model_feature"),
+                started_at_utc="20260430T200000000000Z",
+            )
+            / "experiment_metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert metadata["tracking_warnings"] == [
+        {"message": "late close warning: failed", "phase": "end_experiment"}
+    ]
 
 
 def test_experiment_runner_writes_artifact_pointers_for_large_child_artifacts(
@@ -831,6 +862,54 @@ def test_tracker_none_does_not_change_scientific_reports(
     assert metadata["index_warnings"] == []
     assert len(ranked) == 8
     assert (tmp_path / "data/08_reporting/experiments/experiment_index.sqlite").exists()
+
+
+def test_success_metadata_records_late_observability_warnings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = _FinalizeWarningTracker()
+    original_upsert_experiment = ExperimentIndex.upsert_experiment
+
+    def flaky_upsert_experiment(self: ExperimentIndex, row: Mapping[str, object]) -> None:
+        if row["status"] == "ok":
+            raise RuntimeError("final index failed")
+        original_upsert_experiment(self, row)
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        return _result(config, model_id=primary_model_id, candidate_count=60)
+
+    monkeypatch.setattr(ExperimentIndex, "upsert_experiment", flaky_upsert_experiment)
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    result = run_model_experiment(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments/model_feature"),
+        started_at_utc="20260430T200000000000Z",
+        tracker=tracker,
+    )
+
+    metadata = json.loads((result.output_path / "experiment_metadata.json").read_text(encoding="utf-8"))
+
+    assert result.ranked_summary.shape[0] == 8
+    assert "upsert_experiment: RuntimeError: final index failed" in metadata["index_warnings"]
+    assert metadata["tracking_warnings"] == [
+        {"message": "late artifact warning", "phase": "log_parent_artifacts"},
+        {"message": "late close warning: ok", "phase": "end_experiment"},
+    ]
 
 
 def _expected_output_path(
