@@ -20,6 +20,8 @@ def test_parse_args_defaults() -> None:
     assert args.start_round == 5
     assert args.budget == 100.0
     assert args.jobs == 1
+    assert args.tracker == "none"
+    assert args.mlflow_tracking_uri is None
 
 
 def test_main_calls_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -61,6 +63,41 @@ def test_main_calls_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert observed["output_root"] == Path("data/08_reporting/experiments/model_feature/test")
     assert observed["jobs"] == 12
     assert callable(observed["progress_callback"])
+    assert observed["tracker"].__class__.__name__ == "NoOpExperimentTracker"
+
+
+def test_main_passes_mlflow_tracker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_model_experiment(**kwargs: object) -> object:
+        observed.update(kwargs)
+
+        class Result:
+            output_path = tmp_path / "out"
+            experiment_id = "exp"
+
+        return Result()
+
+    monkeypatch.setattr("scripts.run_model_experiments.run_model_experiment", fake_run_model_experiment)
+
+    exit_code = main(
+        [
+            "--group",
+            "production-parity",
+            "--current-year",
+            "2026",
+            "--project-root",
+            str(tmp_path),
+            "--tracker",
+            "mlflow",
+            "--mlflow-tracking-uri",
+            "file:///tmp/cartola-mlruns",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["tracker"].__class__.__name__ == "MLflowExperimentTracker"
+    assert getattr(observed["tracker"], "tracking_uri") == "file:///tmp/cartola-mlruns"
 
 
 def test_main_rejects_empty_seasons_without_traceback(capsys: pytest.CaptureFixture[str]) -> None:

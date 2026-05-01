@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
+from types import TracebackType
 
 from rich.console import Console
 from rich.panel import Panel
@@ -13,6 +14,7 @@ from rich.progress import (
     MofNCompleteColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TaskProgressColumn,
     TextColumn,
     TimeElapsedColumn,
@@ -20,6 +22,7 @@ from rich.progress import (
 )
 
 from cartola.backtesting.experiment_runner import ExperimentProgressEvent, run_model_experiment
+from cartola.backtesting.experiment_tracking import ExperimentTracker, MLflowExperimentTracker, NoOpExperimentTracker
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -32,6 +35,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/experiments/model_feature"))
     parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--tracker", choices=("none", "mlflow"), default="none")
+    parser.add_argument("--mlflow-tracking-uri", default=None)
     return parser.parse_args(argv)
 
 
@@ -60,14 +65,21 @@ def _print_success(console: Console, *, experiment_id: str, output_path: Path) -
     )
 
 
+def _print_tracking_warnings(console: Console, tracker: ExperimentTracker) -> None:
+    if not tracker.warnings:
+        return
+    warning_lines = "\n".join(f"{warning.phase}: {warning.message}" for warning in tracker.warnings[:5])
+    console.print(Panel(warning_lines, title="Experiment tracking warnings", border_style="yellow"))
+
+
 class _ExperimentProgressDisplay:
     def __init__(self, console: Console) -> None:
         self.console = console
         self.progress: Progress | None = None
-        self.task_id: int | None = None
+        self.task_id: TaskID | None = None
         self._line_mode = not console.is_terminal
 
-    def __enter__(self):
+    def __enter__(self) -> Callable[[ExperimentProgressEvent], None]:
         if not self._line_mode:
             self.progress = Progress(
                 SpinnerColumn(),
@@ -84,7 +96,12 @@ class _ExperimentProgressDisplay:
             self.progress.start()
         return self.handle
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         if self.progress is not None:
             self.progress.stop()
 
@@ -182,6 +199,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     stdout = Console()
     stderr = Console(stderr=True)
+    tracker = (
+        MLflowExperimentTracker(tracking_uri=args.mlflow_tracking_uri)
+        if args.tracker == "mlflow"
+        else NoOpExperimentTracker()
+    )
     try:
         with _ExperimentProgressDisplay(stderr) as progress_callback:
             result = run_model_experiment(
@@ -195,10 +217,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_root=args.output_root,
                 started_at_utc=_timestamp(),
                 progress_callback=progress_callback,
+                tracker=tracker,
             )
     except Exception as error:
         _print_error(stderr, error)
+        _print_tracking_warnings(stderr, tracker)
         return 1
+    _print_tracking_warnings(stderr, tracker)
     _print_success(stdout, experiment_id=result.experiment_id, output_path=result.output_path)
     return 0
 

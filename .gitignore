@@ -201,3 +201,6 @@ conf/**/*credentials*
 .telemetry
 logs/
 .worktrees/
+
+# MLflow local tracking store
+mlruns/
