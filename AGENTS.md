@@ -34,12 +34,28 @@ Steps:
   `uv run --frozen python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100 --fixture-mode none`
 - Exploratory fixture backtest for reconstructed 2025 fixtures:
   `uv run --frozen python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100 --fixture-mode exploratory`
+- Backtests support `--jobs N` for target-round parallelism; this also writes worker/cache metadata and an interactive Plotly chart at `charts/strategy_performance_by_round.html`.
+- Matchup fixture coverage audit:
+  `uv run --frozen python scripts/audit_matchup_fixture_coverage.py --seasons 2023,2024,2025 --current-year 2026`
+- Exploratory Cartola matchup-context backtest:
+  `uv run --frozen python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100 --fixture-mode exploratory --footystats-mode ppg --matchup-context-mode cartola_matchup_v1 --current-year 2026 --jobs 12 --output-root data/08_reporting/backtests/matchup_context_single`
 - Season compatibility audit:
   `uv run --frozen python scripts/audit_backtest_compatibility.py --current-year 2026`
 - FootyStats compatibility audit:
   `uv run --frozen python scripts/audit_footystats_compatibility.py --current-year 2026`
 - FootyStats PPG is the current recommended no-fixture feature mode. Keep `ppg_xg` experimental unless a fresh ablation justifies changing the default.
 - Backtests and recommendations use the `cartola_standard_2026_v1` scoring contract: all official formations are searched, a non-tecnico captain is selected with a `1.5x` multiplier, and report totals should use the captain-aware point fields.
+- `matchup_context_mode=cartola_matchup_v1` is separate from `footystats_mode` and requires `fixture_mode=exploratory` or `strict`; keep it out of live defaults until strict fixture integration is designed.
+
+## Model Experiment Workflow
+
+- Production-parity experiment:
+  `uv run --frozen python scripts/run_model_experiments.py --group production-parity --seasons 2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --jobs 12`
+- Matchup-research experiment:
+  `uv run --frozen python scripts/run_model_experiments.py --group matchup-research --seasons 2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --jobs 12`
+- Experiment outputs are written under `data/08_reporting/experiments/model_feature/<experiment_id>/`.
+- Experiment `--jobs` is passed to each child backtest for target-round parallelism; it does not run experiment children concurrently.
+- Normal backtests do not expose `--model-id`; model selection is private to the experiment runner.
 
 ## Live Recommendation Workflow
 
