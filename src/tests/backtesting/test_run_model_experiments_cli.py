@@ -57,6 +57,7 @@ def test_main_calls_runner(monkeypatch, tmp_path) -> None:
     assert observed["project_root"] == tmp_path
     assert observed["output_root"] == Path("data/08_reporting/experiments/model_feature/test")
     assert observed["jobs"] == 12
+    assert callable(observed["progress_callback"])
 
 
 def test_main_rejects_empty_seasons_without_traceback(capsys) -> None:

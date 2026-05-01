@@ -196,6 +196,44 @@ def test_experiment_runner_executes_child_runs_sequentially(tmp_path: Path, monk
         assert (result.output_path / artifact).exists()
 
 
+def test_experiment_runner_emits_progress_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[object] = []
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        return _result(config, model_id=primary_model_id)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    run_model_experiment(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments"),
+        started_at_utc="20260430T200000000000Z",
+        progress_callback=events.append,
+    )
+
+    assert [event.event_type for event in events].count("child_started") == 8
+    assert [event.event_type for event in events].count("child_finished") == 8
+    assert events[0].event_type == "experiment_started"
+    assert events[-1].event_type == "experiment_finished"
+    assert events[0].total_children == 8
+    assert events[1].child_index == 1
+    assert events[1].child_id == "season=2025/model=random_forest/feature_pack=ppg"
+    assert events[-1].completed_children == 8
+
+
 def test_experiment_runner_aborts_on_child_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
         raise RuntimeError("child failed")

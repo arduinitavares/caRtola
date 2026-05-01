@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Literal, Mapping, Sequence
 
 import pandas as pd
@@ -39,6 +41,34 @@ class ExperimentRunResult:
     metadata: dict[str, object]
 
 
+@dataclass(frozen=True)
+class ExperimentProgressEvent:
+    event_type: Literal[
+        "experiment_started",
+        "child_started",
+        "child_finished",
+        "child_failed",
+        "experiment_finished",
+    ]
+    experiment_id: str
+    output_path: Path
+    total_children: int
+    completed_children: int
+    child_index: int | None = None
+    child_id: str | None = None
+    season: int | None = None
+    model_id: str | None = None
+    feature_pack: str | None = None
+    fixture_mode: str | None = None
+    elapsed_seconds: float | None = None
+    child_duration_seconds: float | None = None
+    phase: str | None = None
+    message: str | None = None
+
+
+ExperimentProgressCallback = Callable[[ExperimentProgressEvent], None]
+
+
 def run_model_experiment(
     *,
     group: ExperimentGroup,
@@ -50,7 +80,9 @@ def run_model_experiment(
     project_root: Path,
     output_root: Path,
     started_at_utc: str,
+    progress_callback: ExperimentProgressCallback | None = None,
 ) -> ExperimentRunResult:
+    experiment_started = perf_counter()
     identity_specs = build_child_run_specs(
         group=group,
         seasons=seasons,
@@ -61,6 +93,7 @@ def run_model_experiment(
         current_year=current_year,
         jobs=jobs,
     )
+    total_children = len(identity_specs)
     matrix_hash = config_hash({"child_runs": [spec.config_identity for spec in identity_specs]})
     run_id = experiment_id(group=group, started_at_utc=started_at_utc, matrix_hash=matrix_hash)
     output_path = project_root / output_root / run_id
@@ -78,6 +111,17 @@ def run_model_experiment(
         current_year=current_year,
         jobs=jobs,
     )
+    _emit_progress(
+        progress_callback,
+        ExperimentProgressEvent(
+            event_type="experiment_started",
+            experiment_id=run_id,
+            output_path=output_path,
+            total_children=total_children,
+            completed_children=0,
+            elapsed_seconds=0.0,
+        ),
+    )
     raw_sources = {
         str(season): raw_cartola_source_identity(project_root=project_root, season=season) for season in seasons
     }
@@ -90,11 +134,44 @@ def run_model_experiment(
     solver_status_signatures: dict[str, dict[str, str]] = {}
     comparability_partitions: dict[str, list[str]] = {}
 
-    for spec in specs:
+    for child_index, spec in enumerate(specs, start=1):
         child_id = _child_id(spec)
+        child_started = perf_counter()
+        _emit_progress(
+            progress_callback,
+            _progress_event(
+                "child_started",
+                run_id=run_id,
+                output_path=output_path,
+                total_children=total_children,
+                completed_children=len(child_runs),
+                child_index=child_index,
+                child_id=child_id,
+                spec=spec,
+                elapsed_seconds=child_started - experiment_started,
+            ),
+        )
         try:
             result = run_backtest_for_experiment(spec.backtest_config, primary_model_id=spec.model_id)
         except Exception as exc:
+            failed_at = perf_counter()
+            _emit_progress(
+                progress_callback,
+                _progress_event(
+                    "child_failed",
+                    run_id=run_id,
+                    output_path=output_path,
+                    total_children=total_children,
+                    completed_children=len(child_runs),
+                    child_index=child_index,
+                    child_id=child_id,
+                    spec=spec,
+                    elapsed_seconds=failed_at - experiment_started,
+                    child_duration_seconds=failed_at - child_started,
+                    phase="child_run",
+                    message=str(exc),
+                ),
+            )
             metadata = _metadata(
                 status="failed",
                 experiment_id_value=run_id,
@@ -126,6 +203,24 @@ def run_model_experiment(
             prediction_metric_rows.extend(_prediction_metric_rows(spec, result, child_id=child_id))
             calibration_decile_rows.extend(_calibration_decile_rows(spec, result, child_id=child_id))
         except ComparabilityError as exc:
+            failed_at = perf_counter()
+            _emit_progress(
+                progress_callback,
+                _progress_event(
+                    "child_failed",
+                    run_id=run_id,
+                    output_path=output_path,
+                    total_children=total_children,
+                    completed_children=max(0, len(child_runs) - 1),
+                    child_index=child_index,
+                    child_id=child_id,
+                    spec=spec,
+                    elapsed_seconds=failed_at - experiment_started,
+                    child_duration_seconds=failed_at - child_started,
+                    phase="comparability",
+                    message=str(exc),
+                ),
+            )
             metadata = _metadata(
                 status="failed",
                 experiment_id_value=run_id,
@@ -145,6 +240,21 @@ def run_model_experiment(
             )
             _write_failure_artifacts(output_path, metadata)
             raise
+        _emit_progress(
+            progress_callback,
+            _progress_event(
+                "child_finished",
+                run_id=run_id,
+                output_path=output_path,
+                total_children=total_children,
+                completed_children=len(child_runs),
+                child_index=child_index,
+                child_id=child_id,
+                spec=spec,
+                elapsed_seconds=perf_counter() - experiment_started,
+                child_duration_seconds=perf_counter() - child_started,
+            ),
+        )
 
     try:
         _check_candidate_comparability(candidate_pool_signatures, comparability_partitions)
@@ -199,12 +309,65 @@ def run_model_experiment(
         prediction_metrics,
         calibration_deciles,
     )
+    _emit_progress(
+        progress_callback,
+        ExperimentProgressEvent(
+            event_type="experiment_finished",
+            experiment_id=run_id,
+            output_path=output_path,
+            total_children=total_children,
+            completed_children=len(child_runs),
+            elapsed_seconds=perf_counter() - experiment_started,
+        ),
+    )
 
     return ExperimentRunResult(
         experiment_id=run_id,
         output_path=output_path,
         ranked_summary=ranked_summary,
         metadata=metadata,
+    )
+
+
+def _emit_progress(
+    callback: ExperimentProgressCallback | None,
+    event: ExperimentProgressEvent,
+) -> None:
+    if callback is not None:
+        callback(event)
+
+
+def _progress_event(
+    event_type: Literal["child_started", "child_finished", "child_failed"],
+    *,
+    run_id: str,
+    output_path: Path,
+    total_children: int,
+    completed_children: int,
+    child_index: int,
+    child_id: str,
+    spec: ChildRunSpec,
+    elapsed_seconds: float,
+    child_duration_seconds: float | None = None,
+    phase: str | None = None,
+    message: str | None = None,
+) -> ExperimentProgressEvent:
+    return ExperimentProgressEvent(
+        event_type=event_type,
+        experiment_id=run_id,
+        output_path=output_path,
+        total_children=total_children,
+        completed_children=completed_children,
+        child_index=child_index,
+        child_id=child_id,
+        season=spec.season,
+        model_id=spec.model_id,
+        feature_pack=spec.feature_pack,
+        fixture_mode=spec.fixture_mode,
+        elapsed_seconds=elapsed_seconds,
+        child_duration_seconds=child_duration_seconds,
+        phase=phase,
+        message=message,
     )
 
 
