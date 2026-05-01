@@ -8,6 +8,7 @@ from cartola.backtesting.features import FEATURE_COLUMNS
 from cartola.backtesting.model_registry import (
     MODEL_SPECS,
     create_point_predictor,
+    effective_model_parameters,
     model_n_jobs_for_metadata,
     resolve_model_id,
 )
@@ -177,6 +178,34 @@ def test_model_params_none_preserves_current_defaults() -> None:
     estimator = model.pipeline.named_steps["model"]
     assert isinstance(estimator, Ridge)
     assert estimator.alpha == 1.0
+
+
+def test_effective_model_parameters_returns_ridge_defaults() -> None:
+    parameters = effective_model_parameters("ridge")
+
+    assert parameters == {
+        "estimator": Ridge,
+        "alpha": 1.0,
+    }
+
+
+def test_effective_model_parameters_merges_ridge_alpha_override() -> None:
+    parameters = effective_model_parameters("ridge", {"alpha": 3.0})
+
+    assert parameters == {
+        "estimator": Ridge,
+        "alpha": 3.0,
+    }
+
+
+def test_effective_model_parameters_rejects_unknown_ridge_key() -> None:
+    with pytest.raises(ValueError, match="Unsupported model parameter for ridge: fit_intercept"):
+        effective_model_parameters("ridge", {"fit_intercept": False})
+
+
+def test_effective_model_parameters_rejects_non_ridge_override() -> None:
+    with pytest.raises(ValueError, match="Model parameter overrides are only supported for ridge"):
+        effective_model_parameters("random_forest", {"min_samples_leaf": 10})
 
 
 @pytest.mark.parametrize("model_id", ["hist_gradient_boosting", "ridge"])
