@@ -60,6 +60,7 @@ def _result(
     config: BacktestConfig,
     *,
     model_id: str,
+    candidate_id: int = 101,
     candidate_price: float = 10.0,
 ) -> BacktestResult:
     round_results = pd.DataFrame(
@@ -73,7 +74,7 @@ def _result(
         [
             {
                 "rodada": 5,
-                "id_atleta": 101,
+                "id_atleta": candidate_id,
                 "posicao": "ata",
                 "id_clube": 1,
                 "status": "Provavel",
@@ -290,6 +291,42 @@ def test_experiment_runner_fails_on_candidate_mismatch_before_ranking(
     )
     assert (output_path / "comparability_report.json").exists()
     assert not (output_path / "ranked_summary.csv").exists()
+
+
+def test_experiment_runner_allows_candidate_pools_to_differ_across_seasons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate_ids_by_season = {2024: 101, 2025: 202}
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        return _result(
+            config,
+            model_id=primary_model_id,
+            candidate_id=candidate_ids_by_season[config.season],
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    result = run_model_experiment(
+        group="production-parity",
+        seasons=(2024, 2025),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments"),
+        started_at_utc="20260430T200000000000Z",
+    )
+
+    assert (result.output_path / "ranked_summary.csv").exists()
 
 
 def _expected_output_path(

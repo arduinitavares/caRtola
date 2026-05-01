@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import pandas as pd
 
@@ -80,6 +80,7 @@ def run_model_experiment(
     per_season_rows: list[dict[str, object]] = []
     candidate_pool_signatures: dict[str, dict[str, str]] = {}
     solver_status_signatures: dict[str, dict[str, str]] = {}
+    comparability_partitions: dict[str, list[str]] = {}
     child_results: list[tuple[ChildRunSpec, str, BacktestResult]] = []
 
     for spec in specs:
@@ -116,9 +117,10 @@ def run_model_experiment(
                 result.round_results,
                 primary_model_id=spec.model_id,
             )
+            comparability_partitions.setdefault(_comparability_partition(spec), []).append(child_id)
             per_season_rows.extend(_primary_summary_rows(spec, result, child_id=child_id))
-        _check_candidate_comparability(candidate_pool_signatures)
-        compare_signature_sets("Solver-status signatures", solver_status_signatures)
+        _check_candidate_comparability(candidate_pool_signatures, comparability_partitions)
+        _check_solver_status_comparability(solver_status_signatures, comparability_partitions)
     except ComparabilityError as exc:
         metadata = _metadata(
             status="failed",
@@ -173,6 +175,10 @@ def _child_id(spec: ChildRunSpec) -> str:
     return f"season={spec.season}/model={spec.model_id}/feature_pack={spec.feature_pack}"
 
 
+def _comparability_partition(spec: ChildRunSpec) -> str:
+    return f"season={spec.season}/feature_pack={spec.feature_pack}"
+
+
 def _child_record(spec: ChildRunSpec, result: BacktestResult, *, child_id: str) -> dict[str, object]:
     model_n_jobs_effective = (
         result.metadata.model_n_jobs_effective
@@ -222,15 +228,36 @@ def _primary_summary_rows(spec: ChildRunSpec, result: BacktestResult, *, child_i
     return rows
 
 
-def _check_candidate_comparability(candidate_pool_signatures: Mapping[str, Mapping[str, str]]) -> None:
-    rounds = sorted({round_id for signatures in candidate_pool_signatures.values() for round_id in signatures})
-    for round_id in rounds:
-        compare_signature_sets(
-            f"Candidate pool signatures for rodada={round_id}",
+def _check_candidate_comparability(
+    candidate_pool_signatures: Mapping[str, Mapping[str, str]],
+    comparability_partitions: Mapping[str, Sequence[str]],
+) -> None:
+    for partition_id, child_ids in comparability_partitions.items():
+        rounds = sorted(
             {
-                child_id: signatures.get(round_id)
-                for child_id, signatures in candidate_pool_signatures.items()
-            },
+                round_id
+                for child_id in child_ids
+                for round_id in candidate_pool_signatures.get(child_id, {})
+            }
+        )
+        for round_id in rounds:
+            compare_signature_sets(
+                f"Candidate pool signatures for {partition_id} rodada={round_id}",
+                {
+                    child_id: candidate_pool_signatures.get(child_id, {}).get(round_id)
+                    for child_id in child_ids
+                },
+            )
+
+
+def _check_solver_status_comparability(
+    solver_status_signatures: Mapping[str, Mapping[str, str]],
+    comparability_partitions: Mapping[str, Sequence[str]],
+) -> None:
+    for partition_id, child_ids in comparability_partitions.items():
+        compare_signature_sets(
+            f"Solver-status signatures for {partition_id}",
+            {child_id: solver_status_signatures.get(child_id) for child_id in child_ids},
         )
 
 
