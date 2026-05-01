@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from cartola.backtesting.model_registry import MODEL_SPECS
 from cartola.backtesting.recommendation import RecommendationConfig, run_recommendation
 
 
@@ -26,6 +27,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--budget", type=float, default=100.0)
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/recommendations"))
+    parser.add_argument("--model-id", choices=tuple(MODEL_SPECS), default="random_forest")
     parser.add_argument("--footystats-mode", choices=("none", "ppg", "ppg_xg"), default="ppg")
     parser.add_argument("--footystats-league-slug", default="brazil-serie-a")
     parser.add_argument("--footystats-dir", type=Path, default=Path("data/footystats"))
@@ -136,6 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         budget=args.budget,
         project_root=args.project_root,
         output_root=args.output_root,
+        model_id=args.model_id,
         footystats_mode=args.footystats_mode,
         footystats_league_slug=args.footystats_league_slug,
         footystats_dir=args.footystats_dir,

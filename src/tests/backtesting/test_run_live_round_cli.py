@@ -23,6 +23,7 @@ def test_parse_args_builds_live_workflow_defaults() -> None:
     assert args.season == 2026
     assert args.budget == 100.0
     assert args.footystats_mode == "ppg"
+    assert args.model_id == "random_forest"
     assert args.capture_policy == "fresh"
     assert args.output_root == Path("data/08_reporting/recommendations")
 
@@ -68,10 +69,21 @@ def test_main_builds_workflow_config_and_prints_summary(
 
     monkeypatch.setattr(run_live_round_cli, "run_live_round", fake_run_live_round)
 
-    exit_code = main(["--season", "2026", "--project-root", str(tmp_path), "--current-year", "2026"])
+    exit_code = main(
+        [
+            "--season",
+            "2026",
+            "--project-root",
+            str(tmp_path),
+            "--current-year",
+            "2026",
+            "--model-id",
+            "ridge",
+        ]
+    )
 
     assert exit_code == 0
-    assert observed == [LiveWorkflowConfig(season=2026, project_root=tmp_path, current_year=2026)]
+    assert observed == [LiveWorkflowConfig(season=2026, project_root=tmp_path, current_year=2026, model_id="ridge")]
     output = capsys.readouterr().out
     assert "Live round complete" in output
     assert "Capture policy" in output

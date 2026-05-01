@@ -565,6 +565,32 @@ def test_run_recommendation_outputs_captain_contract_fields(
     assert result.metadata["formation_search"] == "all_official_formations"
 
 
+def test_run_recommendation_supports_ridge_primary_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4), target_round=3, live_target=True)
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+        footystats_mode="none",
+        model_id="ridge",
+    )
+
+    result = run_recommendation(config)
+
+    assert result.summary["strategy"] == "ridge"
+    assert result.metadata["model_id"] == "ridge"
+    assert "ridge_score" in result.recommended_squad.columns
+    assert "ridge_score" in result.candidate_predictions.columns
+    assert "random_forest_score" not in result.recommended_squad.columns
+    assert "random_forest_score" not in result.candidate_predictions.columns
+
+
 def test_live_mode_rejects_finalized_target_round_without_escape_hatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

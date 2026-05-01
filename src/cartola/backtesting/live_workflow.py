@@ -15,6 +15,7 @@ from cartola.backtesting.market_capture import (
     fetch_cartola_json,
     load_valid_live_capture,
 )
+from cartola.backtesting.model_registry import ModelId
 from cartola.backtesting.recommendation import (
     RecommendationConfig,
     RecommendationResult,
@@ -35,6 +36,7 @@ class LiveWorkflowConfig:
     budget: float = 100.0
     project_root: Path = Path(".")
     output_root: Path = Path("data/08_reporting/recommendations")
+    model_id: ModelId = "random_forest"
     footystats_mode: FootyStatsMode = "ppg"
     footystats_league_slug: str = "brazil-serie-a"
     footystats_dir: Path = Path("data/footystats")
@@ -104,6 +106,7 @@ def _live_workflow_link(
         "current_year": _resolved_current_year(config),
         "target_round": target_round,
         "budget": float(config.budget),
+        "model_id": config.model_id,
         "footystats_mode": config.footystats_mode,
         "footystats_league_slug": config.footystats_league_slug,
         "capture_csv_path": str(capture.csv_path),
@@ -285,6 +288,7 @@ def run_live_round(config: LiveWorkflowConfig, *, now: Clock = lambda: datetime.
         budget=config.budget,
         project_root=config.project_root,
         output_root=config.output_root,
+        model_id=config.model_id,
         footystats_mode=config.footystats_mode,
         footystats_league_slug=config.footystats_league_slug,
         footystats_dir=config.footystats_dir,

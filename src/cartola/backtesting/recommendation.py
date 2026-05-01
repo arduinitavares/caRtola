@@ -30,7 +30,8 @@ from cartola.backtesting.footystats_features import (
     build_footystats_join_diagnostics,
     load_footystats_feature_rows_for_recommendation,
 )
-from cartola.backtesting.models import BaselinePredictor, RandomForestPointPredictor
+from cartola.backtesting.model_registry import ModelId, create_point_predictor
+from cartola.backtesting.models import BaselinePredictor
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.scoring_contract import (
     actual_scores_with_captain,
@@ -52,6 +53,7 @@ class RecommendationConfig:
     random_seed: int = 123
     project_root: Path = Path(".")
     output_root: Path = Path("data/08_reporting/recommendations")
+    model_id: ModelId = "random_forest"
     footystats_mode: FootyStatsMode = "ppg"
     footystats_league_slug: str = "brazil-serie-a"
     footystats_dir: Path = Path("data/footystats")
@@ -87,7 +89,6 @@ BASE_OUTPUT_COLUMNS = [
     "status",
     MARKET_OPEN_PRICE_COLUMN,
     "baseline_score",
-    "random_forest_score",
     "price_score",
 ]
 
@@ -411,20 +412,23 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
     feature_columns = feature_columns_for_config(backtest_config)
     scored = candidates.copy()
     baseline_model = BaselinePredictor().fit(training)
-    forest_model = RandomForestPointPredictor(
+    primary_model = create_point_predictor(
+        model_id=config.model_id,
         random_seed=config.random_seed,
         feature_columns=feature_columns,
+        n_jobs=-1,
     ).fit(training)
+    primary_score_column = f"{config.model_id}_score"
     scored["baseline_score"] = baseline_model.predict(scored)
-    scored["random_forest_score"] = forest_model.predict(scored)
+    scored[primary_score_column] = primary_model.predict(scored)
     scored["price_score"] = scored[MARKET_OPEN_PRICE_COLUMN].astype(float)
 
-    optimized = optimize_squad(scored, score_column="random_forest_score", config=backtest_config)
+    optimized = optimize_squad(scored, score_column=primary_score_column, config=backtest_config)
     if optimized.status != "Optimal":
         raise ValueError(f"Recommendation optimizer failed: status={optimized.status}")
 
     selected = _ensure_nome_clube(optimized.selected)
-    selected["predicted_points"] = selected["random_forest_score"]
+    selected["predicted_points"] = selected[primary_score_column]
     warnings: list[str] = []
     actual_scores = _null_actual_score_fields()
     policy_actual_column = None
@@ -442,20 +446,21 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         warnings.extend(oracle_warnings)
     policy_diagnostics = captain_policy_diagnostics(
         selected,
-        predicted_column="random_forest_score",
+        predicted_column=primary_score_column,
         actual_column=policy_actual_column,
     )
     apply_captain_policy_flags(selected, policy_diagnostics)
 
     selected_columns = [
         *BASE_OUTPUT_COLUMNS,
+        primary_score_column,
         "predicted_points",
         "is_captain",
         "captain_policy_ev",
         "captain_policy_safe",
         "captain_policy_upside",
     ]
-    candidate_columns = [*BASE_OUTPUT_COLUMNS, *_active_footystats_columns(config)]
+    candidate_columns = [*BASE_OUTPUT_COLUMNS, primary_score_column, *_active_footystats_columns(config)]
     if config.mode == "replay":
         replay_columns = ["pontuacao", "entrou_em_campo", *config.scout_columns]
         selected_columns = [*selected_columns, *replay_columns]
@@ -469,7 +474,7 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         "season": config.season,
         "target_round": config.target_round,
         "mode": config.mode,
-        "strategy": "random_forest",
+        "strategy": config.model_id,
         "formation": optimized.formation_name,
         "budget": float(config.budget),
         "optimizer_status": optimized.status,
@@ -541,6 +546,7 @@ def _build_metadata(
         "candidate_round": config.target_round,
         "visible_max_round": int(pd.to_numeric(visible["rodada"], errors="raise").max()),
         "fixture_mode": "none",
+        "model_id": config.model_id,
         "footystats_mode": config.footystats_mode,
         "footystats_evaluation_scope": _footystats_scope(config),
         "footystats_league_slug": config.footystats_league_slug,

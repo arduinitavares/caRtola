@@ -39,6 +39,7 @@ def test_parse_args_builds_live_defaults() -> None:
     assert args.mode == "live"
     assert args.budget == 100.0
     assert args.footystats_mode == "ppg"
+    assert args.model_id == "random_forest"
     assert args.output_root == Path("data/08_reporting/recommendations")
 
 
@@ -87,6 +88,8 @@ def test_main_builds_recommendation_config(monkeypatch: pytest.MonkeyPatch, tmp_
             str(tmp_path),
             "--current-year",
             "2026",
+            "--model-id",
+            "ridge",
         ]
     )
 
@@ -98,6 +101,7 @@ def test_main_builds_recommendation_config(monkeypatch: pytest.MonkeyPatch, tmp_
             mode="replay",
             project_root=tmp_path,
             current_year=2026,
+            model_id="ridge",
         )
     ]
     output = capsys.readouterr().out
