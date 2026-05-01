@@ -117,6 +117,68 @@ def test_ridge_spec_matches_contract() -> None:
     assert estimator.alpha == 1.0
 
 
+def test_ridge_model_params_override_alpha() -> None:
+    model = create_point_predictor(
+        model_id="ridge",
+        random_seed=7,
+        feature_columns=FEATURE_COLUMNS,
+        n_jobs=99,
+        model_params={"alpha": 3.0},
+    )
+
+    estimator = model.pipeline.named_steps["model"]
+    assert isinstance(estimator, Ridge)
+    assert estimator.alpha == 3.0
+
+
+def test_ridge_model_params_reject_unknown_key() -> None:
+    with pytest.raises(ValueError, match="Unsupported model parameter for ridge: fit_intercept"):
+        create_point_predictor(
+            model_id="ridge",
+            random_seed=7,
+            feature_columns=FEATURE_COLUMNS,
+            n_jobs=1,
+            model_params={"fit_intercept": False},
+        )
+
+
+@pytest.mark.parametrize("alpha", [0.0, -1.0])
+def test_ridge_model_params_reject_non_positive_alpha(alpha: float) -> None:
+    with pytest.raises(ValueError, match="ridge alpha must be positive"):
+        create_point_predictor(
+            model_id="ridge",
+            random_seed=7,
+            feature_columns=FEATURE_COLUMNS,
+            n_jobs=1,
+            model_params={"alpha": alpha},
+        )
+
+
+def test_non_ridge_model_params_are_rejected_for_v1() -> None:
+    with pytest.raises(ValueError, match="Model parameter overrides are only supported for ridge"):
+        create_point_predictor(
+            model_id="random_forest",
+            random_seed=7,
+            feature_columns=FEATURE_COLUMNS,
+            n_jobs=1,
+            model_params={"min_samples_leaf": 10},
+        )
+
+
+def test_model_params_none_preserves_current_defaults() -> None:
+    model = create_point_predictor(
+        model_id="ridge",
+        random_seed=7,
+        feature_columns=FEATURE_COLUMNS,
+        n_jobs=99,
+        model_params=None,
+    )
+
+    estimator = model.pipeline.named_steps["model"]
+    assert isinstance(estimator, Ridge)
+    assert estimator.alpha == 1.0
+
+
 @pytest.mark.parametrize("model_id", ["hist_gradient_boosting", "ridge"])
 def test_non_parallel_models_record_null_n_jobs(model_id: str) -> None:
     assert model_n_jobs_for_metadata(model_id, requested_n_jobs=4) is None

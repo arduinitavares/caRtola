@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
@@ -85,14 +86,48 @@ def create_point_predictor(
     random_seed: int,
     feature_columns: list[str],
     n_jobs: int,
+    model_params: Mapping[str, object] | None = None,
 ) -> PointPredictor:
-    spec = MODEL_SPECS[resolve_model_id(model_id)]
+    resolved_model_id = resolve_model_id(model_id)
+    spec = MODEL_SPECS[resolved_model_id]
+    validated_params = _validate_model_param_overrides(resolved_model_id, model_params)
 
     return spec.predictor_type(
         random_seed=random_seed,
         feature_columns=feature_columns,
         n_jobs=n_jobs,
+        model_params=validated_params,
     )
+
+
+def effective_model_parameters(
+    model_id: str,
+    model_params: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    resolved_model_id = resolve_model_id(model_id)
+    defaults = dict(MODEL_SPECS[resolved_model_id].parameters)
+    overrides = _validate_model_param_overrides(resolved_model_id, model_params)
+    return {**defaults, **overrides}
+
+
+def _validate_model_param_overrides(
+    model_id: ModelId,
+    model_params: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if not model_params:
+        return {}
+    if model_id != "ridge":
+        raise ValueError("Model parameter overrides are only supported for ridge in v1")
+
+    allowed = {"alpha"}
+    unknown = sorted(set(model_params) - allowed)
+    if unknown:
+        raise ValueError(f"Unsupported model parameter for ridge: {unknown[0]}")
+
+    alpha = float(cast("object", model_params["alpha"]))
+    if alpha <= 0:
+        raise ValueError("ridge alpha must be positive")
+    return {"alpha": alpha}
 
 
 def model_n_jobs_for_metadata(model_id: str, *, requested_n_jobs: int) -> int | None:

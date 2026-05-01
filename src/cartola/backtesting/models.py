@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Self
 
 import pandas as pd
@@ -46,12 +47,14 @@ class SklearnPointPredictor:
         random_seed: int = 123,
         feature_columns: list[str] | None = None,
         n_jobs: int = -1,
+        model_params: Mapping[str, object] | None = None,
     ) -> None:
         if feature_columns is None:
             raise ValueError("feature_columns must be provided")
 
         self.feature_columns = feature_columns
         self.n_jobs = n_jobs
+        self.model_params = dict(model_params or {})
         numeric_features = [column for column in self.feature_columns if column != "posicao"]
         categorical_features = ["posicao"] if "posicao" in self.feature_columns else []
 
@@ -140,4 +143,5 @@ class RidgePointPredictor(SklearnPointPredictor):
         )
 
     def _make_model(self, *, random_seed: int, n_jobs: int) -> Ridge:
-        return Ridge(alpha=1.0)
+        alpha = float(self.model_params.get("alpha", 1.0))
+        return Ridge(alpha=alpha)
