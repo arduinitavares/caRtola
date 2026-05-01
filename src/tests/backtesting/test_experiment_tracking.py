@@ -112,6 +112,7 @@ class _FakeMlflow:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
         self._next_run_id = 0
+        self.end_run_error: Exception | None = None
 
     def set_tracking_uri(self, uri: str) -> None:
         self.calls.append(("set_tracking_uri", uri))
@@ -147,6 +148,8 @@ class _FakeMlflow:
         self.calls.append(("log_artifact", path))
 
     def end_run(self, status: str) -> None:
+        if self.end_run_error is not None:
+            raise self.end_run_error
         self.calls.append(("end_run", status))
 
 
@@ -214,3 +217,77 @@ def test_mlflow_tracker_logs_parent_child_metrics_and_small_artifacts(
     assert ("log_artifact", str(selected_players)) not in fake_mlflow.calls
     assert ("end_run", "FINISHED") in fake_mlflow.calls
     assert ("end_run", "FAILED") in fake_mlflow.calls
+
+
+def test_mlflow_tracker_does_not_log_child_artifacts_after_child_ends(
+    tmp_path: Path,
+) -> None:
+    fake_mlflow = _FakeMlflow()
+    artifact = tmp_path / "summary.csv"
+    artifact.write_text("strategy,total\n", encoding="utf-8")
+    tracker = MLflowExperimentTracker(
+        tracking_uri=None,
+        import_module=lambda _name: fake_mlflow,
+    )
+
+    tracker.start_experiment(
+        experiment_name="cartola-production-parity",
+        run_name="exp",
+        params={},
+        tags={},
+    )
+    tracker.start_child(run_name="child", params={}, tags={})
+    tracker.end_child(status="ok")
+    tracker.log_child_artifacts([artifact])
+
+    assert ("log_artifact", str(artifact)) not in fake_mlflow.calls
+    assert tracker.warnings[-1].phase == "log_child_artifacts"
+
+
+def test_mlflow_tracker_does_not_log_parent_artifacts_while_child_is_active(
+    tmp_path: Path,
+) -> None:
+    fake_mlflow = _FakeMlflow()
+    artifact = tmp_path / "experiment_summary.md"
+    artifact.write_text("# Summary\n", encoding="utf-8")
+    tracker = MLflowExperimentTracker(
+        tracking_uri=None,
+        import_module=lambda _name: fake_mlflow,
+    )
+
+    tracker.start_experiment(
+        experiment_name="cartola-production-parity",
+        run_name="exp",
+        params={},
+        tags={},
+    )
+    tracker.start_child(run_name="child", params={}, tags={})
+    tracker.log_parent_artifacts([artifact])
+
+    assert ("log_artifact", str(artifact)) not in fake_mlflow.calls
+    assert tracker.warnings[-1].phase == "log_parent_artifacts"
+
+
+def test_mlflow_tracker_preserves_child_state_when_child_close_fails() -> None:
+    fake_mlflow = _FakeMlflow()
+    tracker = MLflowExperimentTracker(
+        tracking_uri=None,
+        import_module=lambda _name: fake_mlflow,
+    )
+    tracker.start_experiment(
+        experiment_name="cartola-production-parity",
+        run_name="exp",
+        params={},
+        tags={},
+    )
+    tracker.start_child(run_name="child", params={}, tags={})
+
+    fake_mlflow.end_run_error = RuntimeError("cannot close child")
+    tracker.end_child(status="failed")
+
+    assert tracker._child_active is True
+    assert tracker.warnings[-1].phase == "end_child"
+    tracker.end_experiment(status="failed")
+
+    assert ("end_run", "FAILED") not in fake_mlflow.calls
+    assert tracker.warnings[-1].phase == "end_experiment"
