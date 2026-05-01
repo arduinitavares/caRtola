@@ -20,7 +20,12 @@ def top_k_rows_by_round(frame: pd.DataFrame, *, score_column: str, k: int) -> pd
 
 
 def calibration_slope_intercept(predicted: pd.Series, actual: pd.Series) -> dict[str, float | str | None]:
-    paired = pd.DataFrame({"predicted": predicted, "actual": actual}).dropna()
+    paired = pd.DataFrame(
+        {
+            "predicted": predicted.reset_index(drop=True),
+            "actual": actual.reset_index(drop=True),
+        }
+    ).dropna()
     if paired.empty:
         return {
             "calibration_intercept": None,

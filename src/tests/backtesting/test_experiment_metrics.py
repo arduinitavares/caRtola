@@ -45,6 +45,19 @@ def test_calibration_slope_and_intercept() -> None:
     }
 
 
+def test_calibration_pairs_series_positionally_when_indexes_differ() -> None:
+    result = calibration_slope_intercept(
+        predicted=pd.Series([1, 2, 3, 4], index=[10, 11, 12, 13]),
+        actual=pd.Series([2, 4, 6, 8], index=[20, 21, 22, 23]),
+    )
+
+    assert result == {
+        "calibration_intercept": 0.0,
+        "calibration_slope": 2.0,
+        "warning": None,
+    }
+
+
 def test_calibration_returns_null_for_constant_predictions() -> None:
     result = calibration_slope_intercept(
         predicted=pd.Series([1, 1, 1]),
