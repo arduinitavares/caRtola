@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -217,6 +218,64 @@ def test_experiment_runner_aborts_on_child_failure(tmp_path: Path, monkeypatch: 
     assert not (output_path / "ranked_summary.csv").exists()
 
 
+def test_experiment_runner_failure_metadata_preserves_completed_child_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_child_ids: list[str] = []
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        child_id = f"season={config.season}/model={primary_model_id}/{config.output_path.parts[-1]}"
+        observed_child_ids.append(child_id)
+        if len(observed_child_ids) == 2:
+            raise RuntimeError("second child failed")
+        return _result(config, model_id=primary_model_id)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    with pytest.raises(RuntimeError, match="second child failed"):
+        run_model_experiment(
+            group="production-parity",
+            seasons=(2025,),
+            start_round=5,
+            budget=100.0,
+            current_year=2026,
+            jobs=4,
+            project_root=tmp_path,
+            output_root=Path("experiments"),
+            started_at_utc="20260430T200000000000Z",
+        )
+
+    output_path = _expected_output_path(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments"),
+        started_at_utc="20260430T200000000000Z",
+    )
+    metadata = json.loads((output_path / "experiment_metadata.json").read_text(encoding="utf-8"))
+
+    assert len(observed_child_ids) == 2
+    assert metadata["status"] == "failed"
+    assert metadata["child_runs"][0]["child_id"] == observed_child_ids[0]
+    assert len(metadata["child_runs"]) == 1
+    assert metadata["failure"]["phase"] == "child_run"
+    assert metadata["failure"]["child_id"] == observed_child_ids[1]
+    assert observed_child_ids[0] in metadata["candidate_pool_signatures"]
+    assert observed_child_ids[0] in metadata["solver_status_signatures"]
+    assert not (output_path / "ranked_summary.csv").exists()
+
+
 def test_experiment_runner_rejects_output_collision(tmp_path: Path) -> None:
     output_path = _expected_output_path(
         group="production-parity",
@@ -352,5 +411,5 @@ def _expected_output_path(
         jobs=jobs,
     )
     matrix_hash = config_hash({"child_runs": [spec.config_identity for spec in specs]})
-    run_id = experiment_id(group="production-parity", started_at_utc=started_at_utc, matrix_hash=matrix_hash)
+    run_id = experiment_id(group=group, started_at_utc=started_at_utc, matrix_hash=matrix_hash)
     return project_root / output_root / run_id

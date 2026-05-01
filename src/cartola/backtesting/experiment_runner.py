@@ -81,7 +81,6 @@ def run_model_experiment(
     candidate_pool_signatures: dict[str, dict[str, str]] = {}
     solver_status_signatures: dict[str, dict[str, str]] = {}
     comparability_partitions: dict[str, list[str]] = {}
-    child_results: list[tuple[ChildRunSpec, str, BacktestResult]] = []
 
     for spec in specs:
         child_id = _child_id(spec)
@@ -107,18 +106,16 @@ def run_model_experiment(
             )
             _write_failure_artifacts(output_path, metadata)
             raise
-        child_results.append((spec, child_id, result))
+        child_runs.append(_child_record(spec, result, child_id=child_id))
+        candidate_pool_signatures[child_id] = _candidate_signatures_by_round(result.player_predictions)
+        solver_status_signatures[child_id] = solver_status_signature(
+            result.round_results,
+            primary_model_id=spec.model_id,
+        )
+        comparability_partitions.setdefault(_comparability_partition(spec), []).append(child_id)
+        per_season_rows.extend(_primary_summary_rows(spec, result, child_id=child_id))
 
     try:
-        for spec, child_id, result in child_results:
-            child_runs.append(_child_record(spec, result, child_id=child_id))
-            candidate_pool_signatures[child_id] = _candidate_signatures_by_round(result.player_predictions)
-            solver_status_signatures[child_id] = solver_status_signature(
-                result.round_results,
-                primary_model_id=spec.model_id,
-            )
-            comparability_partitions.setdefault(_comparability_partition(spec), []).append(child_id)
-            per_season_rows.extend(_primary_summary_rows(spec, result, child_id=child_id))
         _check_candidate_comparability(candidate_pool_signatures, comparability_partitions)
         _check_solver_status_comparability(solver_status_signatures, comparability_partitions)
     except ComparabilityError as exc:
