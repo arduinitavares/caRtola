@@ -117,6 +117,15 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - source/candidate/solver comparability signatures that fail closed before ranking,
   - aggregate ranked summary by model/feature config,
   - prediction metrics, calibration deciles, per-season summary, metadata, comparability report, Markdown report, and HTML report artifacts.
+- Experiment observability:
+  - durable SQLite experiment index under `data/08_reporting/experiments/experiment_index.sqlite`,
+  - optional tracker adapter boundary for future MLflow/local tracking,
+  - best-effort tracking warnings that do not change experiment success semantics,
+  - artifact-pointer policy so large child CSVs remain in the report tree instead of being duplicated into trackers.
+- Production model selection for live recommendations:
+  - `scripts/recommend_squad.py` and `scripts/run_live_round.py` now accept `--model-id`,
+  - live/replay recommendations can use any model in the controlled registry,
+  - current best no-fixture candidate can be deployed directly instead of being experiment-only.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -134,7 +143,33 @@ The multi-season audit shows the current pipeline is compatible with recent seas
 - `2022`: marked irregular because the raw round layout is unusual.
 - `2018`, `2019`, `2020`: structurally complete, but currently fail at load time and need schema compatibility work before they can expand the training/evaluation history.
 
-The next prediction-quality bet is now a measured **model/feature experiment** on top of the current fixed-budget optimizer. The runner exists; the next step is to run both approved comparison groups and inspect whether a new model or feature pack improves optimized squad points without breaking prediction guardrails.
+The first production-parity model/feature experiment is complete for `2023`,
+`2024`, and `2025` with `fixture_mode=none`, `start_round=5`, and
+`budget=100`.
+
+Best aggregate result:
+
+- `ridge + ppg_xg`;
+- total actual points: `6515.24`;
+- current baseline `random_forest + ppg`: `6029.86`;
+- aggregate lift: `+485.38`;
+- average lift: `+4.76` points per round;
+- improved seasons: `3 / 3`;
+- promotion status: `passes_v1_guardrails`.
+
+Second result:
+
+- `ridge + ppg`;
+- total actual points: `6382.02`;
+- aggregate lift: `+352.16`;
+- improved seasons: `3 / 3`;
+- promotion status: `passes_v1_guardrails`.
+
+Interpretation: for no-fixture production, `ridge + ppg_xg` is now the best
+candidate profile. The result does **not** prove that matchup context is useful,
+because this group intentionally used `fixture_mode=none`. The next
+prediction-quality bet is the matchup-research group plus a constrained
+hyperparameter/model-spec experiment around the winning sklearn families.
 
 The FootyStats compatibility audit is now implemented and the current `data/footystats/` files are Brazil Serie A seasons, not sample EPL data. The audit result is:
 
@@ -171,7 +206,7 @@ Per-season RF average points deltas:
 
 Interpretation: keep FootyStats pre-match PPG. It generalizes across the currently comparable candidate seasons and is now the strongest no-fixture feature addition.
 
-The xG-over-PPG ablation is also implemented and comparable for `2023`, `2024`, and `2025`, but it should **not** be promoted to the default feature pack:
+The older RF-only xG-over-PPG ablation is also implemented and comparable for `2023`, `2024`, and `2025`, but it should **not** by itself promote xG to the default feature pack:
 
 - aggregate RF average points delta: `-0.6777`;
 - aggregate player R² delta: `+0.00445`;
@@ -183,7 +218,11 @@ Per-season RF average points deltas for `ppg -> ppg_xg`:
 - `2024`: `+2.0521`;
 - `2025`: `-3.3353`.
 
-Interpretation: pre-match xG slightly improves player-level fit metrics but hurts squad selection in aggregate and only improves RF average points in one of three seasons. Keep `footystats_mode=ppg_xg` available as an experimental/research mode, but keep `footystats_mode=ppg` as the current recommended no-fixture FootyStats mode.
+Interpretation: pre-match xG slightly improved player-level fit metrics but hurt
+RF squad selection in aggregate. The later production-parity experiment changed
+the model context: `ridge + ppg_xg` beat `ridge + ppg` overall. Therefore xG is
+not a universal default for every model, but it is part of the current best
+no-fixture production candidate.
 
 Important distinction:
 
@@ -377,7 +416,8 @@ Live squad recommendation for the current production season:
 uv run --frozen python scripts/run_live_round.py \
   --season 2026 \
   --budget 100 \
-  --footystats-mode ppg \
+  --model-id ridge \
+  --footystats-mode ppg_xg \
   --current-year 2026
 ```
 
@@ -389,7 +429,8 @@ uv run --frozen python scripts/recommend_squad.py \
   --target-round 14 \
   --mode live \
   --budget 100 \
-  --footystats-mode ppg \
+  --model-id ridge \
+  --footystats-mode ppg_xg \
   --current-year 2026
 ```
 
@@ -412,30 +453,33 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Run the production-parity model/feature experiment.
-   - Seasons: `2023`, `2024`, `2025`.
-   - Group: `production-parity`.
-   - Purpose: decide whether another sklearn model or `ppg_xg` beats the current no-fixture default.
-   - Baseline: `random_forest + ppg + fixture_mode=none`.
-   - Do not change live defaults from this group unless aggregate squad points improve, at least two seasons improve, worst-season regression is acceptable, and prediction guardrails pass.
+1. Treat `ridge + ppg_xg + fixture_mode=none` as the current best no-fixture live candidate.
+   - Keep `random_forest + ppg` available as the historical baseline.
+   - Continue to record the chosen model id and feature mode in every recommendation output.
+   - Do not claim matchup-context production value from this result.
 2. Run the matchup-research model/feature experiment.
    - Seasons: `2023`, `2024`, `2025`.
    - Group: `matchup-research`.
    - Purpose: decide whether `cartola_matchup_v1` is worth promoting into the next strict-fixture integration design.
    - Baseline: `random_forest + ppg + fixture_mode=exploratory + matchup_context_mode=none`.
    - Treat this as research evidence only, not strict live proof.
-3. Interpret experiment outputs before building new modeling features.
+3. Add a constrained sklearn tuning experiment before adding external model libraries.
+   - Start with fixed, predeclared variants, not an open grid search.
+   - Ridge candidates: `alpha` values such as `0.1`, `1.0`, `10.0`, and `100.0`.
+   - RandomForest/ExtraTrees candidates: shallow/default/more-trees variants with explicit `n_estimators`, `max_depth`, and `min_samples_leaf`.
+   - Keep the same comparability gates and promotion rules as the model/feature experiment runner.
+   - Preserve `2025` as a decision season as much as possible; do not keep iterating until one variant happens to win.
+4. Interpret experiment outputs before building broader modeling features.
    - Start with `ranked_summary.csv`.
    - Check `per_season_summary.csv` for season robustness.
    - Check `prediction_metrics.csv` and `calibration_deciles.csv` to understand whether squad lift came from better ranking or just noisy optimization.
    - Check `comparability_report.json`; do not trust any ranking if comparability failed.
-4. Make one model/feature decision:
-   - keep current baseline: `random_forest + ppg`;
-   - promote a better no-fixture model/feature combo;
+5. Make one model/feature decision after matchup and constrained tuning:
+   - keep `ridge + ppg_xg` as the no-fixture live profile;
+   - switch to a tuned sklearn variant only if it clears the same guardrails;
    - write a strict fixture integration spec if matchup context wins;
    - reject matchup context for now and focus on calibration/model diagnostics.
-5. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
-6. Keep PPG as the recommended no-fixture FootyStats feature pack until the experiment runner proves a better replacement; do not enable xG by default from old RF-only ablation results.
+6. Use `scripts/run_live_round.py` for each 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
 7. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
    - Future step: integrate strict fixtures into live recommendations as an explicit opt-in mode after several successful live captures.
@@ -458,9 +502,11 @@ uv run --frozen scripts/pyrepo-check --all
 11. Add DNP probability modeling if needed:
     - predict `p_play`,
     - use `expected_points = predicted_points * p_play`.
-12. Defer external model libraries until sklearn experiments justify the added dependency surface.
+12. Defer external model libraries until the constrained sklearn tuning pass is measured.
+    - XGBoost is technically compatible through `XGBRegressor` and its scikit-learn API.
     - Possible later candidates: XGBoost, CatBoost, or LightGBM.
-    - Do not add them before the fixed sklearn matrix has produced a clear decision.
+    - Add one external model family at a time, with fixed specs and dependency/runtime tracking.
+    - Do not start broad grid search over external libraries before the Ridge/RF tuning baseline is established.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:
