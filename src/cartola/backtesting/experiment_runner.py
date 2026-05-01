@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import math
 import platform
-import subprocess
+import shutil
+import subprocess  # nosec B404
 import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -707,10 +708,18 @@ def _utc_now_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
 
 
+def _git_executable() -> str | None:
+    return shutil.which("git")
+
+
 def _git_value(project_root: Path, *args: str) -> str | None:
+    git = _git_executable()
+    if git is None:
+        return None
     try:
-        completed = subprocess.run(
-            ["git", *args],
+        # Read-only Git metadata command with a resolved executable path.
+        completed = subprocess.run(  # nosec B603
+            [git, *args],
             cwd=project_root,
             check=True,
             capture_output=True,
@@ -723,9 +732,13 @@ def _git_value(project_root: Path, *args: str) -> str | None:
 
 
 def _git_dirty(project_root: Path) -> bool:
+    git = _git_executable()
+    if git is None:
+        return False
     try:
-        completed = subprocess.run(
-            ["git", "status", "--short"],
+        # Read-only Git status command with a resolved executable path.
+        completed = subprocess.run(  # nosec B603
+            [git, "status", "--short"],
             cwd=project_root,
             check=True,
             capture_output=True,

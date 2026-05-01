@@ -137,8 +137,9 @@ class ExperimentIndex:
             if column not in conflict_columns
         )
         values = [_sqlite_value(row[column]) for column in columns]
+        # Table/column identifiers are internal constants; values are parameterized.
         sql = (
-            f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
+            f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "  # nosec B608
             f"ON CONFLICT({conflict_sql}) DO UPDATE SET {update_sql}"
         )
         with self._connect() as connection:
