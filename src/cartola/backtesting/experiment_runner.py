@@ -41,7 +41,12 @@ from cartola.backtesting.experiment_signatures import (
     raw_cartola_source_identity,
     solver_status_signature,
 )
-from cartola.backtesting.experiment_tracking import ExperimentTracker, NoOpExperimentTracker
+from cartola.backtesting.experiment_tracking import (
+    ExperimentTracker,
+    NoOpExperimentTracker,
+    TrackerStatus,
+    TrackerWarning,
+)
 from cartola.backtesting.model_registry import model_n_jobs_for_metadata
 from cartola.backtesting.runner import CSV_FLOAT_FORMAT, BacktestResult, run_backtest_for_experiment
 from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION
@@ -298,8 +303,7 @@ def run_model_experiment(
                     project_root=project_root,
                     tracker=tracker,
                 )
-                tracker.end_experiment(status="failed")
-                tracker_finalized = True
+                tracker_finalized = _safe_finalize_tracker(tracker, status="failed")
                 metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
                 _write_failure_artifacts(output_path, metadata)
                 raise
@@ -404,8 +408,7 @@ def run_model_experiment(
                     project_root=project_root,
                     tracker=tracker,
                 )
-                tracker.end_experiment(status="failed")
-                tracker_finalized = True
+                tracker_finalized = _safe_finalize_tracker(tracker, status="failed")
                 metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
                 _write_failure_artifacts(output_path, metadata)
                 raise
@@ -467,8 +470,7 @@ def run_model_experiment(
                     project_root=project_root,
                     tracker=tracker,
                 )
-                tracker.end_experiment(status="failed")
-                tracker_finalized = True
+                tracker_finalized = _safe_finalize_tracker(tracker, status="failed")
                 metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
                 _write_failure_artifacts(output_path, metadata)
                 raise
@@ -530,8 +532,7 @@ def run_model_experiment(
                 project_root=project_root,
                 tracker=tracker,
             )
-            tracker.end_experiment(status="failed")
-            tracker_finalized = True
+            tracker_finalized = _safe_finalize_tracker(tracker, status="failed")
             metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
             _write_failure_artifacts(output_path, metadata)
             raise
@@ -604,8 +605,7 @@ def run_model_experiment(
                 output_path / "squad_performance_comparison.html",
             ]
         )
-        tracker.end_experiment(status="ok")
-        tracker_finalized = True
+        tracker_finalized = _safe_finalize_tracker(tracker, status="ok")
         metadata = _metadata_with_current_warnings(metadata, tracker=tracker, index_warnings=index_warnings)
         _write_json(output_path / "experiment_metadata.json", metadata)
         _emit_progress(
@@ -628,7 +628,7 @@ def run_model_experiment(
         )
     finally:
         if not tracker_finalized:
-            tracker.end_experiment(status="ok" if experiment_status == "ok" else "failed")
+            _safe_finalize_tracker(tracker, status="ok" if experiment_status == "ok" else "failed")
 
 
 def _emit_progress(
@@ -754,6 +754,20 @@ def _safe_index_write(
         getattr(index, method_name)(row)
     except Exception as exc:
         warnings.append(f"{method_name}: {type(exc).__name__}: {exc}")
+
+
+def _safe_finalize_tracker(tracker: ExperimentTracker, *, status: TrackerStatus) -> bool:
+    try:
+        tracker.end_experiment(status=status)
+    except Exception as exc:
+        tracker.warnings.append(
+            TrackerWarning(
+                phase="end_experiment",
+                message=f"{type(exc).__name__}: {exc}",
+            )
+        )
+        return False
+    return True
 
 
 def _upsert_failed_experiment_row(

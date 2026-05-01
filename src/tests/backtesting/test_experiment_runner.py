@@ -158,6 +158,12 @@ class _FinalizeWarningTracker(InMemoryExperimentTracker):
         self.warnings.append(TrackerWarning(phase="end_experiment", message=f"late close warning: {status}"))
 
 
+class _RaisingFinalizeTracker(InMemoryExperimentTracker):
+    def end_experiment(self, *, status: TrackerStatus) -> None:
+        super().end_experiment(status=status)
+        raise RuntimeError(f"tracker close failed: {status}")
+
+
 def test_experiment_runner_executes_child_runs_sequentially(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     observed_model_ids: list[str] = []
 
@@ -767,6 +773,63 @@ def test_experiment_runner_finalizes_tracker_and_index_on_child_failure(
     )
     assert metadata["tracking_warnings"] == [
         {"message": "late close warning: failed", "phase": "end_experiment"}
+    ]
+
+
+def test_tracker_close_failure_does_not_mask_child_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = _RaisingFinalizeTracker()
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        if primary_model_id == "extra_trees":
+            raise ValueError("original child failure")
+        return _result(config, model_id=primary_model_id)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    with pytest.raises(ValueError, match="original child failure"):
+        run_model_experiment(
+            group="production-parity",
+            seasons=(2025,),
+            start_round=5,
+            budget=100.0,
+            current_year=2026,
+            jobs=4,
+            project_root=tmp_path,
+            output_root=Path("experiments/model_feature"),
+            started_at_utc="20260430T200000000000Z",
+            tracker=tracker,
+        )
+
+    metadata = json.loads(
+        (
+            _expected_output_path(
+                group="production-parity",
+                seasons=(2025,),
+                start_round=5,
+                budget=100.0,
+                current_year=2026,
+                jobs=4,
+                project_root=tmp_path,
+                output_root=Path("experiments/model_feature"),
+                started_at_utc="20260430T200000000000Z",
+            )
+            / "experiment_metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert metadata["failure"]["message"] == "original child failure"
+    assert metadata["tracking_warnings"] == [
+        {"message": "RuntimeError: tracker close failed: failed", "phase": "end_experiment"}
     ]
 
 
