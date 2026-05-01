@@ -101,6 +101,22 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - forces RF `n_jobs=1` when `--jobs > 1` to avoid nested parallelism,
   - records cache, worker, backend, thread-env, and wall-clock metadata in `run_metadata.json`,
   - keeps report semantics and scoring unchanged.
+- Backtest output UX:
+  - Rich terminal summary for `python -m cartola.backtesting.cli`,
+  - warnings, strategy summary, run details, output path, fixture/FootyStats/matchup modes, jobs, effective workers, backend, model `n_jobs`, prediction-frame count, and wall-clock seconds,
+  - standalone interactive Plotly chart at `charts/strategy_performance_by_round.html`,
+  - chart traces for cumulative actual points, per-round actual points, and RandomForest formation markers.
+- Controlled model/feature experiment runner:
+  - `scripts/run_model_experiments.py`,
+  - fixed v1 sklearn model registry: `random_forest`, `extra_trees`, `hist_gradient_boosting`, and `ridge`,
+  - fixed feature packs: `ppg`, `ppg_xg`, `ppg_matchup`, and `ppg_xg_matchup`,
+  - production-parity group for no-fixture comparisons,
+  - matchup-research group for exploratory fixture/matchup-context comparisons,
+  - private experiment-only primary model strategy support without exposing `--model-id` in the normal backtest CLI,
+  - sequential child backtests; `--jobs` only controls per-child target-round parallelism,
+  - source/candidate/solver comparability signatures that fail closed before ranking,
+  - aggregate ranked summary by model/feature config,
+  - prediction metrics, calibration deciles, per-season summary, metadata, comparability report, Markdown report, and HTML report artifacts.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -118,7 +134,7 @@ The multi-season audit shows the current pipeline is compatible with recent seas
 - `2022`: marked irregular because the raw round layout is unusual.
 - `2018`, `2019`, `2020`: structurally complete, but currently fail at load time and need schema compatibility work before they can expand the training/evaluation history.
 
-The next prediction-quality bet is now a measured **Cartola matchup-context ablation** on top of FootyStats PPG. The feature path exists and runs on `2023`, `2024`, and `2025`, but it should not be promoted until a paired control/treatment report proves that it improves squad points, not only player-level fit.
+The next prediction-quality bet is now a measured **model/feature experiment** on top of the current fixed-budget optimizer. The runner exists; the next step is to run both approved comparison groups and inspect whether a new model or feature pack improves optimized squad points without breaking prediction guardrails.
 
 The FootyStats compatibility audit is now implemented and the current `data/footystats/` files are Brazil Serie A seasons, not sample EPL data. The audit result is:
 
@@ -192,9 +208,10 @@ The matchup fixture coverage audit is now implemented. Current result for
 - `2025`: complete historical season with full exploratory fixture coverage.
 
 Interpretation: the data gate is clear for a proper multi-season matchup-context
-ablation. The new `cartola_matchup_v1` path has been smoke-tested with
+experiment. The new `cartola_matchup_v1` path has been smoke-tested with
 `footystats_mode=ppg` and `fixture_mode=exploratory` for all three seasons, but
-we still need the paired ablation report before making a product recommendation.
+we still need the controlled model/feature experiment report before making a
+product recommendation.
 
 The backtest runner now uses the standard Cartola 2026 scoring contract:
 
@@ -242,6 +259,40 @@ uv run --frozen python -m cartola.backtesting.cli \
   --jobs 12 \
   --output-root data/08_reporting/backtests/matchup_context_single
 ```
+
+Production-parity model/feature experiment:
+
+```bash
+uv run --frozen python scripts/run_model_experiments.py \
+  --group production-parity \
+  --seasons 2023,2024,2025 \
+  --start-round 5 \
+  --budget 100 \
+  --current-year 2026 \
+  --jobs 12
+```
+
+Matchup-research model/feature experiment:
+
+```bash
+uv run --frozen python scripts/run_model_experiments.py \
+  --group matchup-research \
+  --seasons 2023,2024,2025 \
+  --start-round 5 \
+  --budget 100 \
+  --current-year 2026 \
+  --jobs 12
+```
+
+The experiment runner writes outputs under:
+
+```text
+data/08_reporting/experiments/model_feature/<experiment_id>/
+```
+
+Start with `ranked_summary.csv`, `per_season_summary.csv`,
+`prediction_metrics.csv`, `calibration_deciles.csv`,
+`comparability_report.json`, and `experiment_metadata.json`.
 
 Single-season no-fixture FootyStats PPG backtest:
 
@@ -361,47 +412,55 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Finish backtest output UX.
-   - Add Rich terminal output to `python -m cartola.backtesting.cli`.
-   - Show warnings, strategy summary, run metadata, output path, fixture/FootyStats/matchup modes, jobs, effective workers, backend, model `n_jobs`, prediction frame count, and wall-clock seconds.
-   - Generate one consolidated interactive Plotly chart at `charts/strategy_performance_by_round.html`.
-   - Chart layout: cumulative actual points by strategy, per-round actual points by strategy, and random_forest formation markers by round.
-   - The chart should support hover/zoom from a standalone HTML file.
-   - Keep this display/report-only: no scoring, optimizer, feature, or CSV/JSON schema changes.
-2. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
-3. Keep PPG as the recommended no-fixture FootyStats feature pack; do not enable xG by default.
-4. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
+1. Run the production-parity model/feature experiment.
+   - Seasons: `2023`, `2024`, `2025`.
+   - Group: `production-parity`.
+   - Purpose: decide whether another sklearn model or `ppg_xg` beats the current no-fixture default.
+   - Baseline: `random_forest + ppg + fixture_mode=none`.
+   - Do not change live defaults from this group unless aggregate squad points improve, at least two seasons improve, worst-season regression is acceptable, and prediction guardrails pass.
+2. Run the matchup-research model/feature experiment.
+   - Seasons: `2023`, `2024`, `2025`.
+   - Group: `matchup-research`.
+   - Purpose: decide whether `cartola_matchup_v1` is worth promoting into the next strict-fixture integration design.
+   - Baseline: `random_forest + ppg + fixture_mode=exploratory + matchup_context_mode=none`.
+   - Treat this as research evidence only, not strict live proof.
+3. Interpret experiment outputs before building new modeling features.
+   - Start with `ranked_summary.csv`.
+   - Check `per_season_summary.csv` for season robustness.
+   - Check `prediction_metrics.csv` and `calibration_deciles.csv` to understand whether squad lift came from better ranking or just noisy optimization.
+   - Check `comparability_report.json`; do not trust any ranking if comparability failed.
+4. Make one model/feature decision:
+   - keep current baseline: `random_forest + ppg`;
+   - promote a better no-fixture model/feature combo;
+   - write a strict fixture integration spec if matchup context wins;
+   - reject matchup context for now and focus on calibration/model diagnostics.
+5. Use `scripts/run_live_round.py` for the next 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
+6. Keep PPG as the recommended no-fixture FootyStats feature pack until the experiment runner proves a better replacement; do not enable xG by default from old RF-only ablation results.
+7. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
    - Future step: integrate strict fixtures into live recommendations as an explicit opt-in mode after several successful live captures.
-5. Build a paired matchup-context ablation report:
-   - control: `footystats_mode=ppg`, `fixture_mode=exploratory`, `matchup_context_mode=none`;
-   - treatment: `footystats_mode=ppg`, `fixture_mode=exploratory`, `matchup_context_mode=cartola_matchup_v1`;
-   - seasons: `2023`, `2024`, `2025`;
-   - require identical candidate pools and baseline/price results across arms.
-6. Decide whether to promote `cartola_matchup_v1` only after the paired report shows positive squad-point lift across the complete historical gate.
-7. Audit patrimonio data before changing budget semantics.
+8. Audit patrimonio data before changing budget semantics.
    - Verify historical raw data contains reliable pre-round price and post-round price or official variation fields.
    - Verify tecnico rows have the same market fields.
    - Verify DNP/no-play behavior preserves or changes price as expected.
    - Verify whether enough information exists to replay official patrimonio without reverse-engineering Cartola's hidden valuation formula.
-8. Add simulated patrimonio only after the audit passes.
+9. Add simulated patrimonio only after the audit passes.
    - Add `budget_mode=fixed|simulated_patrimonio`.
    - Keep `fixed` as the current controlled-comparison mode.
    - In `simulated_patrimonio`, start from `--budget`, optimize round N with current patrimonio, then update patrimonio from selected players' and tecnico's official post-round market values.
    - Persist `budget_available`, `budget_used`, `unspent_cash`, `patrimonio_after_round`, and `patrimonio_delta`.
    - Do not apply the captain multiplier to patrimonio unless an official source proves that Cartola does.
-9. Defer wider matchup features until v1 is measured:
+10. Defer wider matchup features until v1 is measured:
    - home/away split priors,
    - shorter roll3 variants,
    - odds/goal-environment fields,
    - or DNP probability modeling if selection reliability becomes the bigger live-game bottleneck.
-10. Add DNP probability modeling if needed:
+11. Add DNP probability modeling if needed:
     - predict `p_play`,
     - use `expected_points = predicted_points * p_play`.
-11. Add model comparison only after features improve:
-    - HistGradientBoosting,
-    - GradientBoosting,
-    - maybe XGBoost/CatBoost later.
+12. Defer external model libraries until sklearn experiments justify the added dependency surface.
+    - Possible later candidates: XGBoost, CatBoost, or LightGBM.
+    - Do not add them before the fixed sklearn matrix has produced a clear decision.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:
