@@ -23,16 +23,24 @@ def test_index_initializes_schema_wal_timeout_and_version(tmp_path: Path) -> Non
 
     with sqlite3.connect(db_path) as connection:
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
-        busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
         tables = {
             row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
 
     assert journal_mode == "wal"
-    assert busy_timeout == 5000
     assert user_version == SCHEMA_VERSION
     assert {"experiments", "child_runs"}.issubset(tables)
+
+
+def test_index_connection_factory_sets_busy_timeout(tmp_path: Path) -> None:
+    index = ExperimentIndex(tmp_path / "experiment_index.sqlite")
+
+    # This intentionally verifies the private connection factory because timeout behavior lives there.
+    with index._connect() as connection:
+        busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert busy_timeout == 5000
 
 
 def test_experiment_upsert_is_keyed_by_experiment_id(tmp_path: Path) -> None:
@@ -75,26 +83,42 @@ def test_child_upsert_is_keyed_by_experiment_id_and_child_run_id(
         total_actual_points=100.0,
         source_hash_summary={"raw": "identity"},
     )
+    same_child_run_id_different_experiment = _child_run_row(
+        experiment_id="exp-2",
+        status="ok",
+        total_actual_points=200.0,
+        source_hash_summary={"raw": "other-identity"},
+    )
     index.upsert_child_run(first)
     index.upsert_child_run(second)
+    index.upsert_child_run(same_child_run_id_different_experiment)
 
     with sqlite3.connect(index.path) as connection:
         rows = connection.execute(
             """
-            SELECT child_run_id, status, total_actual_points, source_hash_summary
+            SELECT experiment_id, child_run_id, status, total_actual_points, source_hash_summary
             FROM child_runs
-            WHERE experiment_id = ?
+            WHERE child_run_id = ?
+            ORDER BY experiment_id
             """,
-            ("exp-1",),
+            ("season=2025/model=random_forest/feature_pack=ppg",),
         ).fetchall()
 
     assert rows == [
         (
+            "exp-1",
             "season=2025/model=random_forest/feature_pack=ppg",
             "ok",
             100.0,
             '{"raw":"identity"}',
-        )
+        ),
+        (
+            "exp-2",
+            "season=2025/model=random_forest/feature_pack=ppg",
+            "ok",
+            200.0,
+            '{"raw":"other-identity"}',
+        ),
     ]
 
 
