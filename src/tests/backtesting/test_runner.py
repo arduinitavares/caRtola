@@ -343,6 +343,28 @@ def test_experiment_run_uses_primary_model_strategy(tmp_path, monkeypatch) -> No
     assert "random_forest_score" not in result.player_predictions.columns
 
 
+def test_baseline_and_price_are_equal_across_model_ids(tmp_path, monkeypatch) -> None:
+    data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    monkeypatch.setattr("cartola.backtesting.runner.load_season_data", lambda season, project_root: data)
+
+    config = BacktestConfig(project_root=tmp_path, season=2025, start_round=5, jobs=1)
+    rf = runner_module.run_backtest_for_experiment(config, primary_model_id="random_forest")
+    et = runner_module.run_backtest_for_experiment(
+        BacktestConfig(
+            project_root=tmp_path,
+            season=2025,
+            start_round=5,
+            jobs=1,
+            output_root=Path("data/08_reporting/backtests_extra"),
+        ),
+        primary_model_id="extra_trees",
+    )
+
+    rf_common = rf.round_results[rf.round_results["strategy"].isin(["baseline", "price"])].reset_index(drop=True)
+    et_common = et.round_results[et.round_results["strategy"].isin(["baseline", "price"])].reset_index(drop=True)
+    assert_frame_equal(rf_common, et_common)
+
+
 def test_experiment_run_rejects_unknown_primary_model(tmp_path, monkeypatch) -> None:
     data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     monkeypatch.setattr(runner_module, "load_season_data", lambda season, project_root: data)

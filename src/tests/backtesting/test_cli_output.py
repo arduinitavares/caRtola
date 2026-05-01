@@ -338,6 +338,23 @@ def test_write_performance_chart_skips_empty_round_results(tmp_path: Path) -> No
     assert (tmp_path / "charts").is_dir()
 
 
+def test_chart_accepts_non_random_forest_strategy(tmp_path: Path) -> None:
+    rows = pd.DataFrame(
+        {
+            "rodada": [5],
+            "strategy": ["extra_trees"],
+            "solver_status": ["Optimal"],
+            "actual_points": [60.0],
+            "formation": ["4-3-3"],
+        }
+    )
+
+    output = write_performance_chart(rows, tmp_path)
+
+    assert output.path is not None
+    assert output.warnings == []
+
+
 def test_performance_figure_has_three_panels_without_zero_status_trace() -> None:
     round_results = pd.DataFrame(
         [
