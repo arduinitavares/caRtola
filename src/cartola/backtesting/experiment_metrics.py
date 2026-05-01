@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 
@@ -78,21 +80,21 @@ def promotion_status(
     if any(_is_missing(value) for value in guardrails):
         return {"eligible": False, "reason": "insufficient_metric_data"}
 
-    assert aggregate_delta is not None
-    assert improved_seasons is not None
-    assert worst_season_avg_delta is not None
-    assert selected_calibration_slope is not None
-    assert top50_spearman_delta is not None
+    aggregate_delta_value = cast("float", aggregate_delta)
+    improved_seasons_value = cast("int", improved_seasons)
+    worst_season_avg_delta_value = cast("float", worst_season_avg_delta)
+    selected_calibration_slope_value = cast("float", selected_calibration_slope)
+    top50_spearman_delta_value = cast("float", top50_spearman_delta)
 
-    if aggregate_delta <= 0:
+    if aggregate_delta_value <= 0:
         return {"eligible": False, "reason": "aggregate_delta_not_positive"}
-    if improved_seasons < 2:
+    if improved_seasons_value < 2:
         return {"eligible": False, "reason": "fewer_than_two_seasons_improved"}
-    if worst_season_avg_delta < -1.5:
+    if worst_season_avg_delta_value < -1.5:
         return {"eligible": False, "reason": "worst_season_regression_exceeds_threshold"}
-    if selected_calibration_slope < 0.75 or selected_calibration_slope > 1.25:
+    if selected_calibration_slope_value < 0.75 or selected_calibration_slope_value > 1.25:
         return {"eligible": False, "reason": "selected_calibration_slope_out_of_range"}
-    if top50_spearman_delta < -0.03:
+    if top50_spearman_delta_value < -0.03:
         return {"eligible": False, "reason": "top50_spearman_regression_exceeds_threshold"}
     return {"eligible": True, "reason": "passes_v1_guardrails"}
 
