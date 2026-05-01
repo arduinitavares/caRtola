@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import math
+import platform
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from time import perf_counter
-from typing import Literal, Mapping, Sequence
+from typing import Literal, Mapping, Sequence, SupportsFloat, SupportsInt, cast
 
 import pandas as pd
 
@@ -16,6 +21,13 @@ from cartola.backtesting.experiment_config import (
     build_child_run_specs,
     config_hash,
     experiment_id,
+)
+from cartola.backtesting.experiment_index import (
+    ExperimentIndex,
+    artifact_pointer_payload,
+    sha256_json,
+    sha256_optional_file,
+    source_hash_summary,
 )
 from cartola.backtesting.experiment_metrics import (
     calibration_slope_intercept,
@@ -29,8 +41,10 @@ from cartola.backtesting.experiment_signatures import (
     raw_cartola_source_identity,
     solver_status_signature,
 )
+from cartola.backtesting.experiment_tracking import ExperimentTracker, NoOpExperimentTracker
 from cartola.backtesting.model_registry import model_n_jobs_for_metadata
 from cartola.backtesting.runner import CSV_FLOAT_FORMAT, BacktestResult, run_backtest_for_experiment
+from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION
 
 
 @dataclass(frozen=True)
@@ -81,6 +95,7 @@ def run_model_experiment(
     output_root: Path,
     started_at_utc: str,
     progress_callback: ExperimentProgressCallback | None = None,
+    tracker: ExperimentTracker | None = None,
 ) -> ExperimentRunResult:
     experiment_started = perf_counter()
     identity_specs = build_child_run_specs(
@@ -100,6 +115,13 @@ def run_model_experiment(
     if output_path.exists():
         raise FileExistsError(output_path)
     output_path.mkdir(parents=True)
+    tracker = tracker or NoOpExperimentTracker()
+    index = _experiment_index(project_root)
+    index_warnings: list[str] = []
+    try:
+        index.initialize()
+    except Exception as exc:
+        index_warnings.append(f"initialize: {type(exc).__name__}: {exc}")
 
     specs = build_child_run_specs(
         group=group,
@@ -125,6 +147,30 @@ def run_model_experiment(
     raw_sources = {
         str(season): raw_cartola_source_identity(project_root=project_root, season=season) for season in seasons
     }
+    _safe_index_write(
+        index,
+        "upsert_experiment",
+        _experiment_index_row(
+            experiment_id_value=run_id,
+            group=group,
+            started_at_utc=started_at_utc,
+            finished_at_utc=None,
+            status="running",
+            output_path=output_path,
+            matrix_hash=matrix_hash,
+            seasons=seasons,
+            start_round=start_round,
+            budget=budget,
+            current_year=current_year,
+            jobs=jobs,
+            child_run_count=total_children,
+            completed_child_run_count=0,
+            failed_child_run_count=0,
+            project_root=project_root,
+            tracker=tracker,
+        ),
+        index_warnings,
+    )
 
     child_runs: list[dict[str, object]] = []
     per_season_rows: list[dict[str, object]] = []
@@ -133,32 +179,44 @@ def run_model_experiment(
     candidate_pool_signatures: dict[str, dict[str, str]] = {}
     solver_status_signatures: dict[str, dict[str, str]] = {}
     comparability_partitions: dict[str, list[str]] = {}
+    experiment_status: Literal["ok", "failed"] = "failed"
 
-    for child_index, spec in enumerate(specs, start=1):
-        child_id = _child_id(spec)
-        child_started = perf_counter()
-        _emit_progress(
-            progress_callback,
-            _progress_event(
-                "child_started",
-                run_id=run_id,
-                output_path=output_path,
-                total_children=total_children,
-                completed_children=len(child_runs),
-                child_index=child_index,
-                child_id=child_id,
-                spec=spec,
-                elapsed_seconds=child_started - experiment_started,
-            ),
+    try:
+        tracker.start_experiment(
+            experiment_name=f"cartola-{group}",
+            run_name=run_id,
+            params={
+                "group": group,
+                "start_round": start_round,
+                "budget": budget,
+                "current_year": current_year,
+                "jobs": jobs,
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
+            },
+            tags={
+                "experiment_id": run_id,
+                "matrix_hash": matrix_hash,
+                "git.commit": _git_value(project_root, "rev-parse", "HEAD"),
+                "git.branch": _git_value(project_root, "branch", "--show-current"),
+                "git.dirty": _git_dirty(project_root),
+                "python.version": sys.version,
+                "uv.lock.hash": sha256_optional_file(project_root / "uv.lock"),
+                "cartola.version": _package_version("cartola"),
+                "pandas.version": _package_version("pandas"),
+                "numpy.version": _package_version("numpy"),
+                "scikit-learn.version": _package_version("scikit-learn"),
+                "plotly.version": _package_version("plotly"),
+                "mlflow.version": _package_version("mlflow"),
+                "platform": platform.platform(),
+            },
         )
-        try:
-            result = run_backtest_for_experiment(spec.backtest_config, primary_model_id=spec.model_id)
-        except Exception as exc:
-            failed_at = perf_counter()
+        for child_index, spec in enumerate(specs, start=1):
+            child_id = _child_id(spec)
+            child_started = perf_counter()
             _emit_progress(
                 progress_callback,
                 _progress_event(
-                    "child_failed",
+                    "child_started",
                     run_id=run_id,
                     output_path=output_path,
                     total_children=total_children,
@@ -166,61 +224,258 @@ def run_model_experiment(
                     child_index=child_index,
                     child_id=child_id,
                     spec=spec,
-                    elapsed_seconds=failed_at - experiment_started,
-                    child_duration_seconds=failed_at - child_started,
-                    phase="child_run",
-                    message=str(exc),
+                    elapsed_seconds=child_started - experiment_started,
                 ),
             )
-            metadata = _metadata(
-                status="failed",
-                experiment_id_value=run_id,
-                started_at_utc=started_at_utc,
-                group=group,
-                seasons=seasons,
-                start_round=start_round,
-                budget=budget,
-                current_year=current_year,
-                jobs=jobs,
-                matrix_hash=matrix_hash,
-                child_runs=child_runs,
-                raw_sources=raw_sources,
-                candidate_pool_signatures=candidate_pool_signatures,
-                solver_status_signatures=solver_status_signatures,
-                failure={"phase": "child_run", "message": str(exc), "child_id": child_id},
+            tracker.start_child(
+                run_name=f"season={spec.season} model={spec.model_id} feature_pack={spec.feature_pack}",
+                params=_child_params(spec),
+                tags={
+                    "experiment_id": run_id,
+                    "child_run_id": child_id,
+                    "output_path": _relative_path(spec.output_path, project_root=project_root),
+                    "comparability_partition": _comparability_partition(spec),
+                },
             )
-            _write_failure_artifacts(output_path, metadata)
-            raise
-        child_runs.append(_child_record(spec, result, child_id=child_id))
-        try:
-            candidate_pool_signatures[child_id] = _candidate_signatures_by_round(result.player_predictions)
-            solver_status_signatures[child_id] = solver_status_signature(
-                result.round_results,
-                primary_model_id=spec.model_id,
-            )
-            comparability_partitions.setdefault(_comparability_partition(spec), []).append(child_id)
-            per_season_rows.extend(_primary_summary_rows(spec, result, child_id=child_id))
-            prediction_metric_rows.extend(_prediction_metric_rows(spec, result, child_id=child_id))
-            calibration_decile_rows.extend(_calibration_decile_rows(spec, result, child_id=child_id))
-        except ComparabilityError as exc:
-            failed_at = perf_counter()
+            try:
+                result = run_backtest_for_experiment(spec.backtest_config, primary_model_id=spec.model_id)
+            except Exception as exc:
+                failed_at = perf_counter()
+                _emit_progress(
+                    progress_callback,
+                    _progress_event(
+                        "child_failed",
+                        run_id=run_id,
+                        output_path=output_path,
+                        total_children=total_children,
+                        completed_children=len(child_runs),
+                        child_index=child_index,
+                        child_id=child_id,
+                        spec=spec,
+                        elapsed_seconds=failed_at - experiment_started,
+                        child_duration_seconds=failed_at - child_started,
+                        phase="child_run",
+                        message=str(exc),
+                    ),
+                )
+                tracker.end_child(status="failed")
+                metadata = _metadata(
+                    status="failed",
+                    experiment_id_value=run_id,
+                    started_at_utc=started_at_utc,
+                    group=group,
+                    seasons=seasons,
+                    start_round=start_round,
+                    budget=budget,
+                    current_year=current_year,
+                    jobs=jobs,
+                    matrix_hash=matrix_hash,
+                    child_runs=child_runs,
+                    raw_sources=raw_sources,
+                    candidate_pool_signatures=candidate_pool_signatures,
+                    solver_status_signatures=solver_status_signatures,
+                    failure={"phase": "child_run", "message": str(exc), "child_id": child_id},
+                )
+                _write_failure_artifacts(output_path, metadata)
+                _upsert_failed_experiment_row(
+                    index=index,
+                    index_warnings=index_warnings,
+                    experiment_id_value=run_id,
+                    group=group,
+                    started_at_utc=started_at_utc,
+                    output_path=output_path,
+                    matrix_hash=matrix_hash,
+                    seasons=seasons,
+                    start_round=start_round,
+                    budget=budget,
+                    current_year=current_year,
+                    jobs=jobs,
+                    child_run_count=total_children,
+                    completed_child_run_count=len(child_runs),
+                    failed_child_run_count=1,
+                    project_root=project_root,
+                    tracker=tracker,
+                )
+                raise
+            child_runs.append(_child_record(spec, result, child_id=child_id))
+            try:
+                child_candidate_signatures = _candidate_signatures_by_round(result.player_predictions)
+                child_solver_signature = solver_status_signature(
+                    result.round_results,
+                    primary_model_id=spec.model_id,
+                )
+                candidate_pool_signatures[child_id] = child_candidate_signatures
+                solver_status_signatures[child_id] = child_solver_signature
+                comparability_partitions.setdefault(_comparability_partition(spec), []).append(child_id)
+                per_season_rows.extend(_primary_summary_rows(spec, result, child_id=child_id))
+                prediction_metric_rows.extend(_prediction_metric_rows(spec, result, child_id=child_id))
+                calibration_decile_rows.extend(_calibration_decile_rows(spec, result, child_id=child_id))
+                child_row = _child_index_row(
+                    spec=spec,
+                    result=result,
+                    child_id=child_id,
+                    experiment_id_value=run_id,
+                    project_root=project_root,
+                    raw_source_identity=raw_sources[str(spec.season)],
+                    candidate_pool_signature_hash=sha256_json(child_candidate_signatures),
+                    solver_status_signature_hash=sha256_json(child_solver_signature),
+                    comparable=True,
+                    tracker=tracker,
+                )
+                _safe_index_write(index, "upsert_child_run", child_row, index_warnings)
+                pointer_path = _write_child_artifact_pointers(
+                    project_root=project_root,
+                    child_id=child_id,
+                    output_path=spec.output_path,
+                )
+                tracker.log_child_metrics(_child_metrics(child_row))
+                tracker.log_child_artifacts(
+                    [
+                        spec.output_path / "summary.csv",
+                        spec.output_path / "diagnostics.csv",
+                        spec.output_path / "run_metadata.json",
+                        pointer_path,
+                        spec.output_path / "player_predictions.csv",
+                        spec.output_path / "selected_players.csv",
+                    ]
+                )
+                tracker.end_child(status="ok")
+            except ComparabilityError as exc:
+                failed_at = perf_counter()
+                _emit_progress(
+                    progress_callback,
+                    _progress_event(
+                        "child_failed",
+                        run_id=run_id,
+                        output_path=output_path,
+                        total_children=total_children,
+                        completed_children=max(0, len(child_runs) - 1),
+                        child_index=child_index,
+                        child_id=child_id,
+                        spec=spec,
+                        elapsed_seconds=failed_at - experiment_started,
+                        child_duration_seconds=failed_at - child_started,
+                        phase="comparability",
+                        message=str(exc),
+                    ),
+                )
+                tracker.end_child(status="failed")
+                metadata = _metadata(
+                    status="failed",
+                    experiment_id_value=run_id,
+                    started_at_utc=started_at_utc,
+                    group=group,
+                    seasons=seasons,
+                    start_round=start_round,
+                    budget=budget,
+                    current_year=current_year,
+                    jobs=jobs,
+                    matrix_hash=matrix_hash,
+                    child_runs=child_runs,
+                    raw_sources=raw_sources,
+                    candidate_pool_signatures=candidate_pool_signatures,
+                    solver_status_signatures=solver_status_signatures,
+                    failure={"phase": "comparability", "message": str(exc), "child_id": child_id},
+                )
+                _write_failure_artifacts(output_path, metadata)
+                _upsert_failed_experiment_row(
+                    index=index,
+                    index_warnings=index_warnings,
+                    experiment_id_value=run_id,
+                    group=group,
+                    started_at_utc=started_at_utc,
+                    output_path=output_path,
+                    matrix_hash=matrix_hash,
+                    seasons=seasons,
+                    start_round=start_round,
+                    budget=budget,
+                    current_year=current_year,
+                    jobs=jobs,
+                    child_run_count=total_children,
+                    completed_child_run_count=max(0, len(child_runs) - 1),
+                    failed_child_run_count=1,
+                    project_root=project_root,
+                    tracker=tracker,
+                )
+                raise
+            except Exception as exc:
+                failed_at = perf_counter()
+                _emit_progress(
+                    progress_callback,
+                    _progress_event(
+                        "child_failed",
+                        run_id=run_id,
+                        output_path=output_path,
+                        total_children=total_children,
+                        completed_children=max(0, len(child_runs) - 1),
+                        child_index=child_index,
+                        child_id=child_id,
+                        spec=spec,
+                        elapsed_seconds=failed_at - experiment_started,
+                        child_duration_seconds=failed_at - child_started,
+                        phase="child_post_processing",
+                        message=str(exc),
+                    ),
+                )
+                tracker.end_child(status="failed")
+                metadata = _metadata(
+                    status="failed",
+                    experiment_id_value=run_id,
+                    started_at_utc=started_at_utc,
+                    group=group,
+                    seasons=seasons,
+                    start_round=start_round,
+                    budget=budget,
+                    current_year=current_year,
+                    jobs=jobs,
+                    matrix_hash=matrix_hash,
+                    child_runs=child_runs,
+                    raw_sources=raw_sources,
+                    candidate_pool_signatures=candidate_pool_signatures,
+                    solver_status_signatures=solver_status_signatures,
+                    failure={"phase": "child_post_processing", "message": str(exc), "child_id": child_id},
+                )
+                _write_failure_artifacts(output_path, metadata)
+                _upsert_failed_experiment_row(
+                    index=index,
+                    index_warnings=index_warnings,
+                    experiment_id_value=run_id,
+                    group=group,
+                    started_at_utc=started_at_utc,
+                    output_path=output_path,
+                    matrix_hash=matrix_hash,
+                    seasons=seasons,
+                    start_round=start_round,
+                    budget=budget,
+                    current_year=current_year,
+                    jobs=jobs,
+                    child_run_count=total_children,
+                    completed_child_run_count=max(0, len(child_runs) - 1),
+                    failed_child_run_count=1,
+                    project_root=project_root,
+                    tracker=tracker,
+                )
+                raise
             _emit_progress(
                 progress_callback,
                 _progress_event(
-                    "child_failed",
+                    "child_finished",
                     run_id=run_id,
                     output_path=output_path,
                     total_children=total_children,
-                    completed_children=max(0, len(child_runs) - 1),
+                    completed_children=len(child_runs),
                     child_index=child_index,
                     child_id=child_id,
                     spec=spec,
-                    elapsed_seconds=failed_at - experiment_started,
-                    child_duration_seconds=failed_at - child_started,
-                    phase="comparability",
-                    message=str(exc),
+                    elapsed_seconds=perf_counter() - experiment_started,
+                    child_duration_seconds=perf_counter() - child_started,
                 ),
             )
+
+        try:
+            _check_candidate_comparability(candidate_pool_signatures, comparability_partitions)
+            _check_solver_status_comparability(solver_status_signatures, comparability_partitions)
+        except ComparabilityError as exc:
             metadata = _metadata(
                 status="failed",
                 experiment_id_value=run_id,
@@ -236,32 +491,36 @@ def run_model_experiment(
                 raw_sources=raw_sources,
                 candidate_pool_signatures=candidate_pool_signatures,
                 solver_status_signatures=solver_status_signatures,
-                failure={"phase": "comparability", "message": str(exc), "child_id": child_id},
+                failure={"phase": "comparability", "message": str(exc)},
             )
             _write_failure_artifacts(output_path, metadata)
-            raise
-        _emit_progress(
-            progress_callback,
-            _progress_event(
-                "child_finished",
-                run_id=run_id,
+            _upsert_failed_experiment_row(
+                index=index,
+                index_warnings=index_warnings,
+                experiment_id_value=run_id,
+                group=group,
+                started_at_utc=started_at_utc,
                 output_path=output_path,
-                total_children=total_children,
-                completed_children=len(child_runs),
-                child_index=child_index,
-                child_id=child_id,
-                spec=spec,
-                elapsed_seconds=perf_counter() - experiment_started,
-                child_duration_seconds=perf_counter() - child_started,
-            ),
-        )
+                matrix_hash=matrix_hash,
+                seasons=seasons,
+                start_round=start_round,
+                budget=budget,
+                current_year=current_year,
+                jobs=jobs,
+                child_run_count=total_children,
+                completed_child_run_count=len(child_runs),
+                failed_child_run_count=0,
+                project_root=project_root,
+                tracker=tracker,
+            )
+            raise
 
-    try:
-        _check_candidate_comparability(candidate_pool_signatures, comparability_partitions)
-        _check_solver_status_comparability(solver_status_signatures, comparability_partitions)
-    except ComparabilityError as exc:
+        per_season_summary = pd.DataFrame(per_season_rows)
+        prediction_metrics = pd.DataFrame(prediction_metric_rows)
+        calibration_deciles = pd.DataFrame(calibration_decile_rows)
+        ranked_summary = _rank_summary(per_season_summary, prediction_metrics)
         metadata = _metadata(
-            status="failed",
+            status="ok",
             experiment_id_value=run_id,
             started_at_utc=started_at_utc,
             group=group,
@@ -275,58 +534,73 @@ def run_model_experiment(
             raw_sources=raw_sources,
             candidate_pool_signatures=candidate_pool_signatures,
             solver_status_signatures=solver_status_signatures,
-            failure={"phase": "comparability", "message": str(exc)},
+            failure=None,
         )
-        _write_failure_artifacts(output_path, metadata)
-        raise
-
-    per_season_summary = pd.DataFrame(per_season_rows)
-    prediction_metrics = pd.DataFrame(prediction_metric_rows)
-    calibration_deciles = pd.DataFrame(calibration_decile_rows)
-    ranked_summary = _rank_summary(per_season_summary, prediction_metrics)
-    metadata = _metadata(
-        status="ok",
-        experiment_id_value=run_id,
-        started_at_utc=started_at_utc,
-        group=group,
-        seasons=seasons,
-        start_round=start_round,
-        budget=budget,
-        current_year=current_year,
-        jobs=jobs,
-        matrix_hash=matrix_hash,
-        child_runs=child_runs,
-        raw_sources=raw_sources,
-        candidate_pool_signatures=candidate_pool_signatures,
-        solver_status_signatures=solver_status_signatures,
-        failure=None,
-    )
-    _write_success_artifacts(
-        output_path,
-        metadata,
-        ranked_summary,
-        per_season_summary,
-        prediction_metrics,
-        calibration_deciles,
-    )
-    _emit_progress(
-        progress_callback,
-        ExperimentProgressEvent(
-            event_type="experiment_finished",
+        _write_success_artifacts(
+            output_path=output_path,
+            metadata=metadata,
+            ranked_summary=ranked_summary,
+            per_season_summary=per_season_summary,
+            prediction_metrics=prediction_metrics,
+            calibration_deciles=calibration_deciles,
+        )
+        _safe_index_write(
+            index,
+            "upsert_experiment",
+            _experiment_index_row(
+                experiment_id_value=run_id,
+                group=group,
+                started_at_utc=started_at_utc,
+                finished_at_utc=_utc_now_id(),
+                status="ok",
+                output_path=output_path,
+                matrix_hash=matrix_hash,
+                seasons=seasons,
+                start_round=start_round,
+                budget=budget,
+                current_year=current_year,
+                jobs=jobs,
+                child_run_count=total_children,
+                completed_child_run_count=len(child_runs),
+                failed_child_run_count=0,
+                project_root=project_root,
+                tracker=tracker,
+            ),
+            index_warnings,
+        )
+        tracker.log_parent_artifacts(
+            [
+                output_path / "ranked_summary.csv",
+                output_path / "per_season_summary.csv",
+                output_path / "prediction_metrics.csv",
+                output_path / "calibration_deciles.csv",
+                output_path / "comparability_report.json",
+                output_path / "experiment_metadata.json",
+                output_path / "comparison_report.md",
+                output_path / "calibration_plots.html",
+                output_path / "squad_performance_comparison.html",
+            ]
+        )
+        _emit_progress(
+            progress_callback,
+            ExperimentProgressEvent(
+                event_type="experiment_finished",
+                experiment_id=run_id,
+                output_path=output_path,
+                total_children=total_children,
+                completed_children=len(child_runs),
+                elapsed_seconds=perf_counter() - experiment_started,
+            ),
+        )
+        experiment_status = "ok"
+        return ExperimentRunResult(
             experiment_id=run_id,
             output_path=output_path,
-            total_children=total_children,
-            completed_children=len(child_runs),
-            elapsed_seconds=perf_counter() - experiment_started,
-        ),
-    )
-
-    return ExperimentRunResult(
-        experiment_id=run_id,
-        output_path=output_path,
-        ranked_summary=ranked_summary,
-        metadata=metadata,
-    )
+            ranked_summary=ranked_summary,
+            metadata=metadata,
+        )
+    finally:
+        tracker.end_experiment(status="ok" if experiment_status == "ok" else "failed")
 
 
 def _emit_progress(
@@ -380,11 +654,6 @@ def _comparability_partition(spec: ChildRunSpec) -> str:
 
 
 def _child_record(spec: ChildRunSpec, result: BacktestResult, *, child_id: str) -> dict[str, object]:
-    model_n_jobs_effective = (
-        result.metadata.model_n_jobs_effective
-        if model_n_jobs_for_metadata(spec.model_id, requested_n_jobs=spec.jobs) is not None
-        else None
-    )
     return {
         "child_id": child_id,
         "season": spec.season,
@@ -392,7 +661,7 @@ def _child_record(spec: ChildRunSpec, result: BacktestResult, *, child_id: str) 
         "feature_pack": spec.feature_pack,
         "fixture_mode": spec.fixture_mode,
         "output_path": str(spec.output_path),
-        "model_n_jobs_effective": model_n_jobs_effective,
+        "model_n_jobs_effective": _model_n_jobs_for_child(spec, result),
         "strategy_roles": {
             "baseline": "baseline",
             spec.model_id: "primary_model",
@@ -400,6 +669,303 @@ def _child_record(spec: ChildRunSpec, result: BacktestResult, *, child_id: str) 
         },
         "metadata": asdict(result.metadata),
     }
+
+
+def _experiment_index(project_root: Path) -> ExperimentIndex:
+    return ExperimentIndex(project_root / "data" / "08_reporting" / "experiments" / "experiment_index.sqlite")
+
+
+def _utc_now_id() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def _git_value(project_root: Path, *args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout.strip() or None
+
+
+def _git_dirty(project_root: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(completed.stdout.strip())
+
+
+def _package_version(package_name: str) -> str | None:
+    try:
+        return importlib_metadata.version(package_name)
+    except importlib_metadata.PackageNotFoundError:
+        return None
+
+
+def _safe_index_write(
+    index: ExperimentIndex,
+    method_name: Literal["upsert_experiment", "upsert_child_run"],
+    row: Mapping[str, object],
+    warnings: list[str],
+) -> None:
+    try:
+        getattr(index, method_name)(row)
+    except Exception as exc:
+        warnings.append(f"{method_name}: {type(exc).__name__}: {exc}")
+
+
+def _upsert_failed_experiment_row(
+    *,
+    index: ExperimentIndex,
+    index_warnings: list[str],
+    experiment_id_value: str,
+    group: ExperimentGroup,
+    started_at_utc: str,
+    output_path: Path,
+    matrix_hash: str,
+    seasons: tuple[int, ...],
+    start_round: int,
+    budget: float,
+    current_year: int,
+    jobs: int,
+    child_run_count: int,
+    completed_child_run_count: int,
+    failed_child_run_count: int,
+    project_root: Path,
+    tracker: ExperimentTracker,
+) -> None:
+    _safe_index_write(
+        index,
+        "upsert_experiment",
+        _experiment_index_row(
+            experiment_id_value=experiment_id_value,
+            group=group,
+            started_at_utc=started_at_utc,
+            finished_at_utc=_utc_now_id(),
+            status="failed",
+            output_path=output_path,
+            matrix_hash=matrix_hash,
+            seasons=seasons,
+            start_round=start_round,
+            budget=budget,
+            current_year=current_year,
+            jobs=jobs,
+            child_run_count=child_run_count,
+            completed_child_run_count=completed_child_run_count,
+            failed_child_run_count=failed_child_run_count,
+            project_root=project_root,
+            tracker=tracker,
+        ),
+        index_warnings,
+    )
+
+
+def _experiment_index_row(
+    *,
+    experiment_id_value: str,
+    group: ExperimentGroup,
+    started_at_utc: str,
+    finished_at_utc: str | None,
+    status: str,
+    output_path: Path,
+    matrix_hash: str,
+    seasons: tuple[int, ...],
+    start_round: int,
+    budget: float,
+    current_year: int,
+    jobs: int,
+    child_run_count: int,
+    completed_child_run_count: int,
+    failed_child_run_count: int,
+    project_root: Path,
+    tracker: ExperimentTracker,
+) -> dict[str, object]:
+    return {
+        "experiment_id": experiment_id_value,
+        "group": group,
+        "started_at_utc": started_at_utc,
+        "finished_at_utc": finished_at_utc,
+        "status": status,
+        "output_path": _relative_path(output_path, project_root=project_root),
+        "matrix_hash": matrix_hash,
+        "seasons": list(seasons),
+        "start_round": start_round,
+        "budget": budget,
+        "current_year": current_year,
+        "jobs": jobs,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        "git_commit": _git_value(project_root, "rev-parse", "HEAD"),
+        "git_branch": _git_value(project_root, "branch", "--show-current"),
+        "git_dirty": _git_dirty(project_root),
+        "python_version": sys.version,
+        "uv_lock_hash": sha256_optional_file(project_root / "uv.lock"),
+        "mlflow_enabled": tracker.__class__.__name__ == "MLflowExperimentTracker",
+        "mlflow_status": _mlflow_status_from_tracker(tracker),
+        "mlflow_parent_run_id": tracker.parent_run_id,
+        "warning_count": len(tracker.warnings),
+        "child_run_count": child_run_count,
+        "completed_child_run_count": completed_child_run_count,
+        "failed_child_run_count": failed_child_run_count,
+    }
+
+
+def _child_index_row(
+    *,
+    spec: ChildRunSpec,
+    result: BacktestResult,
+    child_id: str,
+    experiment_id_value: str,
+    project_root: Path,
+    raw_source_identity: Mapping[str, object],
+    candidate_pool_signature_hash: str | None,
+    solver_status_signature_hash: str | None,
+    comparable: bool,
+    tracker: ExperimentTracker,
+) -> dict[str, object]:
+    primary_summary = result.summary[result.summary["strategy"] == spec.model_id]
+    summary_row = primary_summary.iloc[0].to_dict() if not primary_summary.empty else {}
+    prediction_rows = _prediction_metric_rows(spec, result, child_id=child_id)
+    prediction_by_scope = {str(row["metric_scope"]): row for row in prediction_rows}
+    candidate_metrics = prediction_by_scope.get("candidate_pool", {})
+    selected_metrics = prediction_by_scope.get("selected_players", {})
+    top50_metrics = prediction_by_scope.get("top50_candidates", {})
+    return {
+        "experiment_id": experiment_id_value,
+        "child_run_id": child_id,
+        "season": spec.season,
+        "model_id": spec.model_id,
+        "feature_pack": spec.feature_pack,
+        "fixture_mode": spec.fixture_mode,
+        "footystats_mode": spec.backtest_config.footystats_mode,
+        "matchup_context_mode": spec.backtest_config.matchup_context_mode,
+        "output_path": _relative_path(spec.output_path, project_root=project_root),
+        "status": "ok",
+        "wall_clock_seconds": result.metadata.wall_clock_seconds,
+        "backtest_jobs": spec.jobs,
+        "backtest_workers_effective": result.metadata.backtest_workers_effective,
+        "model_n_jobs_effective": _model_n_jobs_for_child(spec, result),
+        "total_actual_points": _float_or_none(summary_row.get("total_actual_points")),
+        "avg_actual_points": _float_or_none(summary_row.get("average_actual_points")),
+        "total_predicted_points": _float_or_none(summary_row.get("total_predicted_points")),
+        "prediction_mae": _float_or_none(candidate_metrics.get("mae")),
+        "prediction_rmse": _float_or_none(candidate_metrics.get("rmse")),
+        "prediction_r2": _float_or_none(candidate_metrics.get("r2")),
+        "prediction_pearson": _float_or_none(candidate_metrics.get("pearson")),
+        "prediction_spearman": _float_or_none(candidate_metrics.get("spearman")),
+        "selected_calibration_slope": _float_or_none(selected_metrics.get("calibration_slope")),
+        "top50_spearman": _float_or_none(top50_metrics.get("spearman")),
+        "optimal_round_count": int(result.round_results["solver_status"].eq("Optimal").sum()),
+        "skipped_round_count": int(result.round_results["solver_status"].ne("Optimal").sum()),
+        "candidate_pool_signature_hash": candidate_pool_signature_hash,
+        "solver_status_signature_hash": solver_status_signature_hash,
+        "comparability_partition": _comparability_partition(spec),
+        "comparable_within_partition": comparable,
+        "ineligibility_reason": None,
+        "source_hash_summary": source_hash_summary(raw_source_identity),
+        "mlflow_child_run_id": tracker.child_run_id,
+    }
+
+
+def _model_n_jobs_for_child(spec: ChildRunSpec, result: BacktestResult) -> int | None:
+    return (
+        result.metadata.model_n_jobs_effective
+        if model_n_jobs_for_metadata(spec.model_id, requested_n_jobs=spec.jobs) is not None
+        else None
+    )
+
+
+def _child_metrics(row: Mapping[str, object]) -> dict[str, float | int | None]:
+    return {
+        "squad/actual_points_total": _float_or_none(row.get("total_actual_points")),
+        "squad/actual_points_mean": _float_or_none(row.get("avg_actual_points")),
+        "squad/predicted_points_total": _float_or_none(row.get("total_predicted_points")),
+        "prediction/candidate_pool/mae": _float_or_none(row.get("prediction_mae")),
+        "prediction/candidate_pool/rmse": _float_or_none(row.get("prediction_rmse")),
+        "prediction/candidate_pool/r2": _float_or_none(row.get("prediction_r2")),
+        "prediction/candidate_pool/pearson": _float_or_none(row.get("prediction_pearson")),
+        "prediction/candidate_pool/spearman": _float_or_none(row.get("prediction_spearman")),
+        "prediction/selected_players/calibration_slope": _float_or_none(row.get("selected_calibration_slope")),
+        "prediction/top50/spearman": _float_or_none(row.get("top50_spearman")),
+        "runtime/wall_clock_seconds": _float_or_none(row.get("wall_clock_seconds")),
+        "rounds/optimal_count": _int_or_none(row.get("optimal_round_count")),
+        "rounds/skipped_count": _int_or_none(row.get("skipped_round_count")),
+    }
+
+
+def _child_params(spec: ChildRunSpec) -> dict[str, object]:
+    return {
+        "group": spec.group,
+        "season": spec.season,
+        "model_id": spec.model_id,
+        "feature_pack": spec.feature_pack,
+        "fixture_mode": spec.fixture_mode,
+        "footystats_mode": spec.backtest_config.footystats_mode,
+        "matchup_context_mode": spec.backtest_config.matchup_context_mode,
+        "start_round": spec.backtest_config.start_round,
+        "budget": spec.backtest_config.budget,
+        "current_year": spec.backtest_config.current_year,
+        "jobs": spec.jobs,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        **{f"model/{key}": value for key, value in spec.model_parameters.items()},
+    }
+
+
+def _write_child_artifact_pointers(*, project_root: Path, child_id: str, output_path: Path) -> Path:
+    output_path.mkdir(parents=True, exist_ok=True)
+    pointer_payload = artifact_pointer_payload(
+        project_root=project_root,
+        child_run_id=child_id,
+        output_path=output_path,
+        artifact_paths=[
+            output_path / "player_predictions.csv",
+            output_path / "selected_players.csv",
+        ],
+    )
+    pointer_path = output_path / "artifact_pointers.json"
+    pointer_path.write_text(json.dumps(pointer_payload, indent=2, sort_keys=True), encoding="utf-8")
+    return pointer_path
+
+
+def _relative_path(path: Path, *, project_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(project_root.resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def _mlflow_status_from_tracker(tracker: ExperimentTracker) -> str:
+    if tracker.__class__.__name__ != "MLflowExperimentTracker":
+        return "disabled"
+    if not tracker.warnings:
+        return "ok"
+    return "partial"
+
+
+def _float_or_none(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    return float(cast(SupportsFloat, value))
+
+
+def _int_or_none(value: object) -> int | None:
+    if value is None or pd.isna(value):
+        return None
+    return int(cast(SupportsInt, value))
 
 
 def _candidate_signatures_by_round(player_predictions: pd.DataFrame) -> dict[str, str]:

@@ -1,14 +1,17 @@
 import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pytest
 
 from cartola.backtesting.config import BacktestConfig
-from cartola.backtesting.experiment_config import build_child_run_specs, config_hash, experiment_id
-from cartola.backtesting.experiment_runner import run_model_experiment
+from cartola.backtesting.experiment_config import ExperimentGroup, build_child_run_specs, config_hash, experiment_id
+from cartola.backtesting.experiment_runner import ExperimentProgressEvent, run_model_experiment
 from cartola.backtesting.experiment_signatures import ComparabilityError
+from cartola.backtesting.experiment_tracking import InMemoryExperimentTracker
 from cartola.backtesting.runner import BacktestMetadata, BacktestResult
 from cartola.backtesting.scoring_contract import contract_fields
 
@@ -34,7 +37,7 @@ def _metadata(config: BacktestConfig, *, model_n_jobs_effective: int = 7) -> Bac
         },
         scoring_contract_version=str(contract["scoring_contract_version"]),
         captain_scoring_enabled=bool(contract["captain_scoring_enabled"]),
-        captain_multiplier=float(contract["captain_multiplier"]),
+        captain_multiplier=cast(float, contract["captain_multiplier"]),
         formation_search=str(contract["formation_search"]),
         fixture_mode=config.fixture_mode,
         strict_alignment_policy=config.strict_alignment_policy,
@@ -197,7 +200,7 @@ def test_experiment_runner_executes_child_runs_sequentially(tmp_path: Path, monk
 
 
 def test_experiment_runner_emits_progress_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    events: list[object] = []
+    events: list[ExperimentProgressEvent] = []
 
     def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
         return _result(config, model_id=primary_model_id)
@@ -611,9 +614,190 @@ def test_experiment_runner_allows_candidate_pools_to_differ_across_seasons(
     assert (result.output_path / "ranked_summary.csv").exists()
 
 
+def test_experiment_runner_writes_index_rows_for_successful_fake_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        return _result(config, model_id=primary_model_id, candidate_count=60)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    result = run_model_experiment(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments/model_feature"),
+        started_at_utc="20260430T200000000000Z",
+    )
+
+    index_path = tmp_path / "data/08_reporting/experiments/experiment_index.sqlite"
+    with sqlite3.connect(index_path) as connection:
+        experiment_rows = connection.execute(
+            "SELECT experiment_id, status, completed_child_run_count, failed_child_run_count FROM experiments"
+        ).fetchall()
+        child_count = connection.execute("SELECT COUNT(*) FROM child_runs").fetchone()[0]
+        first_child = connection.execute(
+            "SELECT child_run_id, status, comparable_within_partition FROM child_runs ORDER BY child_run_id LIMIT 1"
+        ).fetchone()
+
+    assert experiment_rows == [(result.experiment_id, "ok", 8, 0)]
+    assert child_count == 8
+    assert first_child[1:] == ("ok", 1)
+
+
+def test_experiment_runner_sends_tracker_events_and_finalizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tracker = InMemoryExperimentTracker()
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        return _result(config, model_id=primary_model_id, candidate_count=60)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    result = run_model_experiment(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments/model_feature"),
+        started_at_utc="20260430T200000000000Z",
+        tracker=tracker,
+    )
+
+    assert tracker.events[0]["event"] == "start_experiment"
+    assert tracker.events[0]["experiment_name"] == "cartola-production-parity"
+    assert tracker.events[0]["run_name"] == result.experiment_id
+    assert [event["event"] for event in tracker.events].count("start_child") == 8
+    assert [event["event"] for event in tracker.events].count("end_child") == 8
+    assert tracker.events[-1] == {"event": "end_experiment", "status": "ok"}
+
+
+def test_experiment_runner_finalizes_tracker_and_index_on_child_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tracker = InMemoryExperimentTracker()
+
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        if primary_model_id == "extra_trees":
+            raise RuntimeError("boom")
+        return _result(config, model_id=primary_model_id)
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_model_experiment(
+            group="production-parity",
+            seasons=(2025,),
+            start_round=5,
+            budget=100.0,
+            current_year=2026,
+            jobs=4,
+            project_root=tmp_path,
+            output_root=Path("experiments/model_feature"),
+            started_at_utc="20260430T200000000000Z",
+            tracker=tracker,
+        )
+
+    index_path = tmp_path / "data/08_reporting/experiments/experiment_index.sqlite"
+    with sqlite3.connect(index_path) as connection:
+        status, completed, failed = connection.execute(
+            "SELECT status, completed_child_run_count, failed_child_run_count FROM experiments"
+        ).fetchone()
+        completed_children = connection.execute("SELECT COUNT(*) FROM child_runs WHERE status = 'ok'").fetchone()[0]
+
+    assert (status, completed, failed) == ("failed", 2, 1)
+    assert completed_children == 2
+    assert tracker.events[-2:] == [{"event": "end_child", "status": "failed"}, {"event": "end_experiment", "status": "failed"}]
+
+
+def test_experiment_runner_writes_artifact_pointers_for_large_child_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_backtest_for_experiment(config: BacktestConfig, *, primary_model_id: str) -> BacktestResult:
+        result = _result(config, model_id=primary_model_id, candidate_count=60)
+        config.output_path.mkdir(parents=True, exist_ok=True)
+        result.player_predictions.to_csv(config.output_path / "player_predictions.csv", index=False)
+        result.selected_players.to_csv(config.output_path / "selected_players.csv", index=False)
+        return result
+
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.run_backtest_for_experiment",
+        fake_run_backtest_for_experiment,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.experiment_runner.raw_cartola_source_identity",
+        lambda *, project_root, season: {"season": season, "sha256": "raw"},
+    )
+
+    run_model_experiment(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        current_year=2026,
+        jobs=4,
+        project_root=tmp_path,
+        output_root=Path("experiments/model_feature"),
+        started_at_utc="20260430T200000000000Z",
+    )
+
+    pointer_path = (
+        _expected_output_path(
+            group="production-parity",
+            seasons=(2025,),
+            start_round=5,
+            budget=100.0,
+            current_year=2026,
+            jobs=4,
+            project_root=tmp_path,
+            output_root=Path("experiments/model_feature"),
+            started_at_utc="20260430T200000000000Z",
+        )
+        / "runs"
+        / "season=2025"
+        / "model=random_forest"
+        / "feature_pack=ppg"
+        / "artifact_pointers.json"
+    )
+    payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+
+    assert sorted(payload["artifacts"]) == ["player_predictions.csv", "selected_players.csv"]
+    assert payload["artifacts"]["player_predictions.csv"]["size_bytes"] > 0
+    assert payload["artifacts"]["selected_players.csv"]["size_bytes"] > 0
+
+
 def _expected_output_path(
     *,
-    group: str,
+    group: ExperimentGroup,
     seasons: tuple[int, ...],
     start_round: int,
     budget: float,
