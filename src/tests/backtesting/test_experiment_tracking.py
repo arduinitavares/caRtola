@@ -286,8 +286,18 @@ def test_mlflow_tracker_preserves_child_state_when_child_close_fails() -> None:
     tracker.end_child(status="failed")
 
     assert tracker._child_active is True
+    assert tracker._parent_active is True
     assert tracker.warnings[-1].phase == "end_child"
     tracker.end_experiment(status="failed")
 
     assert ("end_run", "FAILED") not in fake_mlflow.calls
+    assert tracker._child_active is True
+    assert tracker._parent_active is True
     assert tracker.warnings[-1].phase == "end_experiment"
+
+    fake_mlflow.end_run_error = None
+    tracker.end_experiment(status="failed")
+
+    assert fake_mlflow.calls.count(("end_run", "FAILED")) == 2
+    assert tracker._child_active is False
+    assert tracker._parent_active is False

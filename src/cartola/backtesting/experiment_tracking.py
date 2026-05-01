@@ -306,8 +306,8 @@ class MLflowExperimentTracker(NoOpExperimentTracker):
             mlflow.end_run(status=_mlflow_status(status))
         except Exception as exc:  # pragma: no cover - behavior exercised through warnings
             self._warn("end_experiment", exc)
-        finally:
-            self._parent_active = False
+            return
+        self._parent_active = False
 
     def _log_artifacts(self, artifact_paths: Sequence[Path], *, skip_heavy: bool, phase: str) -> None:
         mlflow = self._load_mlflow()
