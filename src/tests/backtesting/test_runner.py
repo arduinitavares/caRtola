@@ -343,6 +343,34 @@ def test_experiment_run_uses_primary_model_strategy(tmp_path: Path, monkeypatch:
     assert "random_forest_score" not in result.player_predictions.columns
 
 
+def test_experiment_runner_passes_model_params_to_predictor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
+    monkeypatch.setattr(runner_module, "load_season_data", lambda season, project_root: data)
+    observed_model_params: list[object] = []
+
+    class RecordingRidgePredictor:
+        def fit(self, frame: pd.DataFrame) -> "RecordingRidgePredictor":
+            return self
+
+        def predict(self, frame: pd.DataFrame) -> pd.Series:
+            return pd.Series(frame["prior_points_mean"].astype(float), index=frame.index)
+
+    def recording_create_point_predictor(**kwargs: object) -> RecordingRidgePredictor:
+        observed_model_params.append(kwargs["model_params"])
+        return RecordingRidgePredictor()
+
+    monkeypatch.setattr(runner_module, "create_point_predictor", recording_create_point_predictor)
+
+    config = BacktestConfig(project_root=tmp_path, season=2025, start_round=5, jobs=1)
+
+    runner_module.run_backtest_for_experiment(config, primary_model_id="ridge", model_params={"alpha": 3.0})
+
+    assert len(observed_model_params) == 2
+    assert all(model_params == {"alpha": 3.0} for model_params in observed_model_params)
+
+
 def test_baseline_and_price_are_equal_across_model_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
     monkeypatch.setattr("cartola.backtesting.runner.load_season_data", lambda season, project_root: data)

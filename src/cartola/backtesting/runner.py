@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from threading import Lock
@@ -242,6 +243,7 @@ def run_backtest(
         primary_model_id="random_forest",
         season_df=season_df,
         fixtures=fixtures,
+        model_params=None,
     )
 
 
@@ -251,12 +253,14 @@ def run_backtest_for_experiment(
     primary_model_id: str,
     season_df: pd.DataFrame | None = None,
     fixtures: pd.DataFrame | None = None,
+    model_params: Mapping[str, object] | None = None,
 ) -> BacktestResult:
     return _run_backtest(
         config,
         primary_model_id=primary_model_id,
         season_df=season_df,
         fixtures=fixtures,
+        model_params=model_params,
     )
 
 
@@ -266,6 +270,7 @@ def _run_backtest(
     primary_model_id: str,
     season_df: pd.DataFrame | None = None,
     fixtures: pd.DataFrame | None = None,
+    model_params: Mapping[str, object] | None = None,
 ) -> BacktestResult:
     started_at = perf_counter()
     resolved_primary_model_id = resolve_model_id(primary_model_id)
@@ -377,6 +382,7 @@ def _run_backtest(
             model_feature_columns=model_feature_columns,
             model_n_jobs_effective=model_n_jobs_effective,
             primary_model_id=resolved_primary_model_id,
+            model_params=model_params,
         ),
     ]
     for evaluation in sorted(round_results_for_targets, key=lambda item: item.round_number):
@@ -532,6 +538,7 @@ def _run_round_workers(
     model_feature_columns: list[str],
     model_n_jobs_effective: int,
     primary_model_id: ModelId,
+    model_params: Mapping[str, object] | None = None,
 ) -> list[RoundEvaluationResult]:
     if config.jobs == 1:
         return [
@@ -543,6 +550,7 @@ def _run_round_workers(
                 model_feature_columns=model_feature_columns,
                 model_n_jobs_effective=model_n_jobs_effective,
                 primary_model_id=primary_model_id,
+                model_params=model_params,
             )
             for round_number in worker_rounds
         ]
@@ -563,6 +571,7 @@ def _run_round_workers(
                 model_feature_columns=model_feature_columns,
                 model_n_jobs_effective=model_n_jobs_effective,
                 primary_model_id=primary_model_id,
+                model_params=model_params,
             ): round_number
             for round_number in worker_rounds
         }
@@ -584,6 +593,7 @@ def _evaluate_target_round(
     empty_training_columns: list[str],
     model_n_jobs_effective: int,
     primary_model_id: ModelId,
+    model_params: Mapping[str, object] | None = None,
 ) -> RoundEvaluationResult:
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
@@ -618,6 +628,7 @@ def _evaluate_target_round(
         random_seed=config.random_seed,
         feature_columns=model_feature_columns,
         n_jobs=model_n_jobs_effective,
+        model_params=model_params,
     ).fit(training)
     primary_score_column = f"{primary_model_id}_score"
     scored_candidates["baseline_score"] = baseline_model.predict(scored_candidates)
