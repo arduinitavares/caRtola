@@ -84,7 +84,69 @@ data/08_reporting/experiments/experiment_index.sqlite
 
 Use SQLite for v1 because it is in the Python standard library, needs no new dependency, supports incremental writes, and is easy to query locally. Do not use Parquet for v1.
 
+The index lives at the `experiments/` level, not under `model_feature/`, so it can support future experiment types beyond model/feature matrices.
+
+The runner attempts to write the index for every experiment run. The index is a report/index sidecar, not the scientific source of truth. If index initialization or writes fail, the experiment continues, records a warning in experiment metadata, and keeps the normal CSV/JSON/Markdown/HTML reports authoritative.
+
+### SQLite Contract
+
+Initialize the database with:
+
+```sql
+PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=5000;
+PRAGMA user_version = 1;
+```
+
+The v1 schema version is `1`. Future incompatible schema changes must bump `PRAGMA user_version` and include an explicit migration or fail with a clear schema-version error.
+
+Concurrent experiment commands may write to the same index. SQLite WAL mode allows concurrent readers and one writer; `busy_timeout=5000` gives a competing writer up to five seconds before surfacing a warning. The implementation should keep write transactions short.
+
+Schema constraints:
+
+- `experiments.experiment_id` is the primary key.
+- `child_runs(experiment_id, child_run_id)` is the primary key.
+- Child rows use upsert semantics.
+- Experiment rows use upsert semantics.
+- Each child row is committed only after the child report artifacts are successfully written.
+- Experiment finalization is committed after top-level reports are written.
+
+Allowed experiment statuses:
+
+- `running`;
+- `ok`;
+- `failed`.
+
+Allowed child statuses:
+
+- `ok`;
+- `failed`;
+- `skipped`.
+
+Allowed MLflow statuses:
+
+- `disabled`;
+- `ok`;
+- `partial`;
+- `failed`.
+
+Index state machine:
+
+1. At experiment start, insert or update the experiment row with `status="running"`.
+2. After each child completes, insert or update its child row with `status="ok"` or `status="failed"`.
+3. At experiment completion, update the experiment row with `status="ok"`, `finished_at_utc`, and final counts.
+4. If the experiment raises, attempt to update the experiment row with `status="failed"`, `finished_at_utc`, and counts available so far.
+5. If the process is killed, a `running` experiment row with partial child rows is valid crash-diagnosis state.
+
 The index has two logical tables.
+
+SQLite column type rules:
+
+- identifiers, modes, statuses, hashes, paths, versions, and timestamps are `TEXT`;
+- counts and seasons are `INTEGER`;
+- point totals, metric values, and runtimes are `REAL`;
+- booleans are stored as `INTEGER` values `0` or `1`;
+- list or dict payloads, such as `seasons` and compact source summaries, are stored as canonical JSON `TEXT`.
 
 ### Experiment Rows
 
@@ -110,6 +172,7 @@ One row per matrix execution:
 - `uv_lock_hash`;
 - `mlflow_enabled`;
 - `mlflow_status`;
+- `mlflow_parent_run_id`;
 - `warning_count`;
 - `child_run_count`;
 - `completed_child_run_count`;
@@ -143,8 +206,6 @@ One row per `(season, model_id, feature_pack)` child:
 - `prediction_spearman`;
 - `selected_calibration_slope`;
 - `top50_spearman`;
-- `oracle_gap`;
-- `capture_rate`;
 - `optimal_round_count`;
 - `skipped_round_count`;
 - `candidate_pool_signature_hash`;
@@ -152,9 +213,32 @@ One row per `(season, model_id, feature_pack)` child:
 - `comparability_partition`;
 - `comparable_within_partition`;
 - `ineligibility_reason`;
-- `source_hash_summary`.
+- `source_hash_summary`;
+- `mlflow_child_run_id`.
 
 Null metric values stay null. Do not coerce missing metrics to zero.
+
+`oracle_gap` and `capture_rate` are not v1 index columns because the current experiment runner does not compute recommendation-oracle metrics. They belong in a later metrics expansion if the experiment runner gains an oracle comparison.
+
+### Hash Definitions
+
+`uv_lock_hash` is:
+
+```text
+sha256(project_root / "uv.lock")
+```
+
+when that file exists, otherwise `null`.
+
+`source_hash_summary` is:
+
+```text
+sha256(json.dumps(raw_cartola_source_identity(project_root, season), sort_keys=True, separators=(",", ":")))
+```
+
+This is a compact single hash representing the raw Cartola source provenance for that child's season. The full raw source identity remains in experiment metadata rather than being expanded into MLflow tags.
+
+Duplicate matrix executions are allowed. Repeated runs with the same `matrix_hash` produce distinct `experiment_id` rows. The shared `matrix_hash` is intentionally queryable so users can find previous executions of the same matrix.
 
 ## Child Run Identity
 
@@ -194,7 +278,7 @@ Implementations:
 - `InMemoryExperimentTracker`: tests only, records event order and payloads.
 - `MLflowExperimentTracker`: optional observer.
 
-All tracker implementations must be no-throw from the caller's perspective. The MLflow tracker catches its own failures and records them as warnings.
+Production tracker implementations must be no-throw from the caller's perspective. The MLflow tracker catches its own failures and records them as warnings. Test-only trackers may raise only in tests that explicitly assert failure behavior.
 
 ## MLflow Integration
 
@@ -208,7 +292,13 @@ Use a local file-based tracking store by default:
 mlruns/
 ```
 
-The path must be gitignored. `MLFLOW_TRACKING_URI` may override it.
+The path must be gitignored.
+
+Precedence is:
+
+1. CLI `--mlflow-tracking-uri`;
+2. environment `MLFLOW_TRACKING_URI`;
+3. local `mlruns/`.
 
 Do not place MLflow's tracking store inside a specific experiment output directory. The report tree and the tracking store have different lifecycles.
 
@@ -216,8 +306,8 @@ Do not place MLflow's tracking store inside a specific experiment output directo
 
 Use one stable MLflow experiment per experiment group:
 
-- `cartola/production-parity`;
-- `cartola/matchup-research`.
+- `cartola-production-parity`;
+- `cartola-matchup-research`.
 
 Use one parent MLflow run per matrix execution.
 
@@ -265,10 +355,12 @@ Log search/reproducibility metadata as tags:
 - `candidate_pool_signature_hash`;
 - `solver_status_signature_hash`;
 - `source_hash_summary`;
-- `mlflow_logging_status`.
+- `mlflow_logging_status`;
+- `cartola.version`.
 
 Dependency versions should be logged when available:
 
+- cartola;
 - pandas;
 - numpy;
 - scikit-learn;
@@ -276,6 +368,8 @@ Dependency versions should be logged when available:
 - plotly;
 - mlflow;
 - Python.
+
+Use `importlib.metadata.version()` for package versions and record `null` when a package version cannot be discovered.
 
 Solver version should be logged if it can be discovered reliably.
 
@@ -295,8 +389,6 @@ Examples:
 - `prediction/candidate_pool/spearman`;
 - `prediction/selected_players/calibration_slope`;
 - `prediction/top50/spearman`;
-- `optimizer/oracle_gap`;
-- `optimizer/capture_rate`;
 - `runtime/wall_clock_seconds`;
 - `rounds/optimal_count`;
 - `rounds/skipped_count`;
@@ -314,6 +406,29 @@ Default child artifacts:
 - `diagnostics.csv`;
 - `run_metadata.json`;
 - an artifact pointer JSON containing paths, sizes, and hashes for large files.
+
+The child artifact pointer JSON schema is:
+
+```json
+{
+  "child_run_id": "season=2023/model=random_forest/feature_pack=ppg",
+  "output_path": "data/08_reporting/experiments/model_feature/<experiment_id>/runs/season=2023/model=random_forest/feature_pack=ppg",
+  "artifacts": {
+    "player_predictions.csv": {
+      "path": "data/08_reporting/experiments/model_feature/<experiment_id>/runs/season=2023/model=random_forest/feature_pack=ppg/player_predictions.csv",
+      "size_bytes": 7412345,
+      "sha256": "abc123..."
+    },
+    "selected_players.csv": {
+      "path": "data/08_reporting/experiments/model_feature/<experiment_id>/runs/season=2023/model=random_forest/feature_pack=ppg/selected_players.csv",
+      "size_bytes": 1324567,
+      "sha256": "def456..."
+    }
+  }
+}
+```
+
+Paths are project-root-relative when the artifact is under the project root; otherwise they are absolute. Missing optional large artifacts are omitted from `artifacts`.
 
 Default parent artifacts:
 
@@ -351,6 +466,10 @@ If MLflow logging fails:
 If the experiment itself fails, the experiment should still try to write whatever metadata and index rows can be written safely.
 
 Do not let an MLflow filesystem, import, or tracking-store problem discard hours of valid backtest output.
+
+The MLflow tracker must handle `ImportError` gracefully. If `mlflow` cannot be imported because it is not installed or does not support the active Python version, the tracker records one warning and behaves as a no-op. MLflow must be lazily imported inside the MLflow tracker, not at module import time.
+
+MLflow is not a required runtime dependency for v1. Normal CI and non-MLflow experiment runs must work without importing the `mlflow` package.
 
 ## Comparability Guardrails
 
@@ -390,7 +509,7 @@ Normal backtest CLI and live recommendation scripts do not initialize MLflow in 
 ## Data Flow
 
 1. Experiment runner builds the child matrix.
-2. Experiment index starts or updates an experiment row.
+2. Experiment index starts or updates an experiment row with `status="running"`.
 3. Tracker starts the parent run if enabled.
 4. For each child:
    - run the child backtest unchanged;
@@ -402,6 +521,8 @@ Normal backtest CLI and live recommendation scripts do not initialize MLflow in 
    - existing comparability and ranking reports are written unchanged;
    - parent index row is finalized;
    - tracker logs parent artifacts and closes the parent run.
+
+`tracker.end_experiment(status)` must be called from a `finally` block so an enabled MLflow parent run is always terminated as `FINISHED` or `FAILED`.
 
 ## Testing
 
@@ -422,6 +543,10 @@ Required tests:
 - git dirty state is recorded;
 - `uv.lock` hash is recorded when the file exists;
 - missing MLflow dependency or unreachable tracking URI does not fail an otherwise successful experiment in best-effort mode.
+- SQLite initializes with WAL mode, busy timeout, and schema version `1`;
+- experiment and child index rows use primary-key upserts;
+- interrupted experiments leave `running` rows or explicitly finalize as `failed`;
+- artifact pointer JSON includes project-relative paths, sizes, and hashes for large child artifacts.
 
 ## Acceptance Criteria
 
@@ -440,6 +565,7 @@ Separate specs should cover:
 
 - resume/skip completed child runs;
 - model-specific profiling for the slow HistGradientBoosting path;
+- experiment oracle-gap and capture-rate metrics;
 - child-run parallelism;
 - model hyperparameter search;
 - promotion of a new production model/feature pack;
