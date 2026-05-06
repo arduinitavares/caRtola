@@ -3,6 +3,15 @@ import pytest
 
 from cartola.backtesting.metrics import _random_valid_squad_points, build_diagnostics, build_summary
 
+BUDGET_SUMMARY_COLUMNS = [
+    "initial_budget",
+    "final_budget",
+    "total_budget_delta",
+    "min_budget",
+    "max_budget_drawdown",
+    "budget_constrained_rounds",
+]
+
 
 def test_build_summary_computes_strategy_totals_and_benchmark_delta() -> None:
     round_results = pd.DataFrame(
@@ -57,6 +66,7 @@ def test_build_summary_returns_expected_columns_for_empty_input() -> None:
         "total_actual_points",
         "average_actual_points",
         "total_predicted_points",
+        *BUDGET_SUMMARY_COLUMNS,
         "actual_points_delta_vs_model",
     ]
 
@@ -144,6 +154,7 @@ def test_build_summary_uses_missing_delta_when_benchmark_is_only_non_optimal() -
 
     summary = build_summary(round_results, benchmark_strategy="price")
 
+    assert summary["strategy"].tolist() == ["model"]
     assert summary["actual_points_delta_vs_price"].isna().all()
 
 
@@ -176,6 +187,7 @@ def test_build_summary_returns_expected_columns_when_all_rows_are_non_optimal() 
         "total_actual_points",
         "average_actual_points",
         "total_predicted_points",
+        *BUDGET_SUMMARY_COLUMNS,
         "actual_points_delta_vs_price",
     ]
 
@@ -211,6 +223,182 @@ def test_build_summary_sorts_by_total_actual_points_and_resets_index() -> None:
 
     assert summary["strategy"].tolist() == ["model", "price", "value"]
     assert summary.index.tolist() == [0, 1, 2]
+
+
+def test_build_summary_adds_moving_budget_metrics_from_all_strategy_rows() -> None:
+    round_results = pd.DataFrame(
+        [
+            {
+                "strategy": "ridge",
+                "rodada": 5,
+                "actual_points": 50.0,
+                "predicted_points": 55.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 96.0,
+                "budget_delta": -4.0,
+                "budget_remaining": 0.0,
+                "budget_drawdown": 4.0,
+            },
+            {
+                "strategy": "ridge",
+                "rodada": 6,
+                "actual_points": 60.0,
+                "predicted_points": 58.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 96.0,
+                "budget_after_round": 101.0,
+                "budget_delta": 5.0,
+                "budget_remaining": 2.0,
+                "budget_drawdown": 0.0,
+            },
+            {
+                "strategy": "ridge",
+                "rodada": 7,
+                "actual_points": 0.0,
+                "predicted_points": 0.0,
+                "solver_status": "Infeasible",
+                "budget_before_round": 101.0,
+                "budget_after_round": 101.0,
+                "budget_delta": 0.0,
+                "budget_remaining": 0.0,
+                "budget_drawdown": 0.0,
+            },
+            {
+                "strategy": "price",
+                "rodada": 5,
+                "actual_points": 40.0,
+                "predicted_points": 40.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 99.0,
+                "budget_delta": -1.0,
+                "budget_remaining": 1.0,
+                "budget_drawdown": 1.0,
+            },
+        ]
+    )
+
+    summary = build_summary(round_results, benchmark_strategy="price")
+    ridge = summary[summary["strategy"].eq("ridge")].iloc[0]
+
+    assert ridge["rounds"] == 2
+    assert ridge["total_actual_points"] == 110.0
+    assert ridge["total_predicted_points"] == 113.0
+    assert ridge["actual_points_delta_vs_price"] == 70.0
+    assert ridge["initial_budget"] == 100.0
+    assert ridge["final_budget"] == 101.0
+    assert ridge["total_budget_delta"] == 1.0
+    assert ridge["min_budget"] == 96.0
+    assert ridge["max_budget_drawdown"] == 4.0
+    assert ridge["budget_constrained_rounds"] == 2
+
+
+def test_build_summary_excludes_zero_optimal_strategies() -> None:
+    round_results = pd.DataFrame(
+        [
+            {
+                "strategy": "model",
+                "rodada": 1,
+                "actual_points": 10.0,
+                "predicted_points": 12.0,
+                "solver_status": "Optimal",
+            },
+            {
+                "strategy": "price",
+                "rodada": 1,
+                "actual_points": 8.0,
+                "predicted_points": 9.0,
+                "solver_status": "Infeasible",
+            },
+        ]
+    )
+
+    summary = build_summary(round_results, benchmark_strategy="price")
+
+    assert summary["strategy"].tolist() == ["model"]
+    assert summary["actual_points_delta_vs_price"].isna().all()
+
+
+def test_build_summary_uses_missing_delta_when_benchmark_has_zero_optimal_rows_with_budget_path() -> None:
+    round_results = pd.DataFrame(
+        [
+            {
+                "strategy": "ridge",
+                "rodada": 5,
+                "actual_points": 50.0,
+                "predicted_points": 55.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 101.0,
+                "budget_delta": 1.0,
+                "budget_remaining": 2.0,
+                "budget_drawdown": 0.0,
+            },
+            {
+                "strategy": "price",
+                "rodada": 5,
+                "actual_points": 0.0,
+                "predicted_points": 0.0,
+                "solver_status": "Infeasible",
+                "budget_before_round": 100.0,
+                "budget_after_round": 100.0,
+                "budget_delta": 0.0,
+                "budget_remaining": 100.0,
+                "budget_drawdown": 0.0,
+            },
+        ]
+    )
+
+    summary = build_summary(round_results, benchmark_strategy="price")
+
+    assert summary["strategy"].tolist() == ["ridge"]
+    assert summary["actual_points_delta_vs_price"].isna().all()
+
+
+def test_build_summary_computes_budget_drawdown_without_round_drawdown_column() -> None:
+    round_results = pd.DataFrame(
+        [
+            {
+                "strategy": "ridge",
+                "rodada": 5,
+                "actual_points": 50.0,
+                "predicted_points": 55.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 105.0,
+                "budget_delta": 5.0,
+                "budget_remaining": 2.0,
+            },
+            {
+                "strategy": "ridge",
+                "rodada": 6,
+                "actual_points": 60.0,
+                "predicted_points": 58.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 105.0,
+                "budget_after_round": 96.0,
+                "budget_delta": -9.0,
+                "budget_remaining": 1.0,
+            },
+            {
+                "strategy": "price",
+                "rodada": 5,
+                "actual_points": 40.0,
+                "predicted_points": 40.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 100.0,
+                "budget_delta": 0.0,
+                "budget_remaining": 10.0,
+            },
+        ]
+    )
+
+    summary = build_summary(round_results, benchmark_strategy="price")
+    ridge = summary[summary["strategy"].eq("ridge")].iloc[0]
+
+    assert ridge["max_budget_drawdown"] == 9.0
 
 
 def test_build_diagnostics_reports_prediction_round_selection_and_random_metrics() -> None:
@@ -320,6 +508,57 @@ def test_build_diagnostics_random_expected_points_include_captain_bonus() -> Non
         _metric_value(diagnostics, "random_selection", "random_forest", "all", "random_baseline_captain_policy")
         == "strategy_predicted_best_non_tecnico"
     )
+
+
+def test_build_diagnostics_random_draws_use_budget_before_round_per_round() -> None:
+    round_results = pd.DataFrame(
+        [
+            {
+                "strategy": "random_forest",
+                "rodada": 5,
+                "actual_points": 10.0,
+                "predicted_points": 10.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+            },
+            {
+                "strategy": "random_forest",
+                "rodada": 6,
+                "actual_points": 10.0,
+                "predicted_points": 10.0,
+                "solver_status": "Optimal",
+                "budget_before_round": 80.0,
+            },
+        ]
+    )
+    selected_players = pd.DataFrame(
+        [
+            _selected("random_forest", 5, "gol", 5.0, True, 50.0),
+            _selected("random_forest", 5, "lat", 5.0, True, 45.0),
+            _selected("random_forest", 6, "gol", 5.0, True, 50.0),
+            _selected("random_forest", 6, "lat", 5.0, True, 45.0),
+        ]
+    )
+    player_predictions = pd.DataFrame(
+        [
+            _prediction(5, "gol", 5.0, 50.0, baseline=5.0, random_forest=5.0, price=5.0),
+            _prediction(5, "lat", 5.0, 45.0, baseline=5.0, random_forest=5.0, price=5.0),
+            _prediction(6, "gol", 5.0, 50.0, baseline=5.0, random_forest=5.0, price=5.0),
+            _prediction(6, "lat", 5.0, 45.0, baseline=5.0, random_forest=5.0, price=5.0),
+        ]
+    )
+
+    diagnostics = build_diagnostics(
+        round_results,
+        selected_players,
+        player_predictions,
+        budget=100.0,
+        random_draws=1,
+        random_seed=7,
+    )
+
+    assert _metric(diagnostics, "random_selection", "random_forest", "all", "requested_random_draws") == 2
+    assert _metric(diagnostics, "random_selection", "random_forest", "all", "successful_random_draws") == 1
 
 
 def test_random_valid_squad_points_rejects_missing_pontuacao_column() -> None:

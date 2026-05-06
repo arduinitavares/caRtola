@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -12,6 +14,88 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.run_model_experiments import main, parse_args  # noqa: E402
+
+
+def test_importing_cli_does_not_import_experiment_runner() -> None:
+    code = "\n".join(
+        [
+            "import importlib",
+            "import sys",
+            "importlib.import_module('scripts.run_model_experiments')",
+            "print('cartola.backtesting.experiment_runner' in sys.modules)",
+        ]
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False"
+
+
+def test_bootstrap_dotenv_loads_project_root_env_without_overriding_shell_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.run_model_experiments import _bootstrap_dotenv
+
+    (tmp_path / ".env").write_text("OMP_NUM_THREADS=1\nMKL_NUM_THREADS=1\n", encoding="utf-8")
+    monkeypatch.setenv("OMP_NUM_THREADS", "28")
+    monkeypatch.delenv("MKL_NUM_THREADS", raising=False)
+
+    assert _bootstrap_dotenv(tmp_path) is True
+    assert os.environ["OMP_NUM_THREADS"] == "28"
+    assert os.environ["MKL_NUM_THREADS"] == "1"
+
+
+def test_bootstrap_dotenv_returns_false_when_project_root_env_is_missing(tmp_path: Path) -> None:
+    from scripts.run_model_experiments import _bootstrap_dotenv
+
+    assert _bootstrap_dotenv(tmp_path) is False
+
+
+def test_main_bootstraps_dotenv_before_runtime_imports(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import scripts.run_model_experiments as cli
+
+    events: list[str] = []
+    observed: dict[str, object] = {}
+
+    class FakeTracker:
+        def __init__(self, tracking_uri: str | None = None) -> None:
+            self.tracking_uri = tracking_uri
+            self.warnings: list[object] = []
+
+    def fake_bootstrap_dotenv(project_root: Path) -> bool:
+        events.append(f"dotenv:{project_root}")
+        return True
+
+    def fake_load_runtime_dependencies() -> None:
+        events.append("runtime_imports")
+
+    def fake_run_model_experiment(**kwargs: object) -> object:
+        observed.update(kwargs)
+
+        class Result:
+            output_path = tmp_path / "out"
+            experiment_id = "exp"
+
+        return Result()
+
+    monkeypatch.setattr(cli, "_bootstrap_dotenv", fake_bootstrap_dotenv)
+    monkeypatch.setattr(cli, "_load_runtime_dependencies", fake_load_runtime_dependencies)
+    monkeypatch.setattr(cli, "NoOpExperimentTracker", FakeTracker)
+    monkeypatch.setattr(cli, "MLflowExperimentTracker", FakeTracker)
+    monkeypatch.setattr(cli, "run_model_experiment", fake_run_model_experiment)
+
+    exit_code = cli.main(["--group", "production-parity", "--current-year", "2026", "--project-root", str(tmp_path)])
+
+    assert exit_code == 0
+    assert events == [f"dotenv:{tmp_path}", "runtime_imports"]
+    assert observed["project_root"] == tmp_path
 
 
 def test_parse_args_defaults() -> None:

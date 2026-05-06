@@ -576,18 +576,9 @@ def normalize_team_name(value: str) -> str:
 
 def compare_teams_to_cartola(season: int, footystats_team_names: list[str], project_root: Path) -> TeamComparison:
     season_dir = project_root / "data" / "01_raw" / str(season)
-    cartola_clubs_by_normalized_name: dict[str, int] = {}
-    required_columns = {"atletas.clube_id", "atletas.clube.id.full.name"}
-
-    for path in sorted(season_dir.glob("rodada-*.csv")):
-        df = pd.read_csv(path, usecols=lambda column: column in required_columns)
-        if not required_columns.issubset(df.columns):
-            continue
-        for club_id, club_name in zip(df["atletas.clube_id"], df["atletas.clube.id.full.name"], strict=False):
-            if pd.isna(club_id) or pd.isna(club_name):
-                continue
-            normalized_name = normalize_team_name(str(club_name))
-            cartola_clubs_by_normalized_name.setdefault(normalized_name, int(club_id))
+    cartola_clubs_by_normalized_name = _cartola_clubs_from_round_csvs(season_dir)
+    if not cartola_clubs_by_normalized_name:
+        cartola_clubs_by_normalized_name = _cartola_clubs_from_legacy_market_files(season_dir)
 
     mapped_teams: dict[str, int] = {}
     unmapped_footystats_teams: list[str] = []
@@ -620,6 +611,59 @@ def compare_teams_to_cartola(season: int, footystats_team_names: list[str], proj
         missing_cartola_teams=missing_cartola_teams,
         duplicate_mapped_cartola_teams=duplicate_mapped_cartola_teams,
     )
+
+
+def _cartola_clubs_from_round_csvs(season_dir: Path) -> dict[str, int]:
+    cartola_clubs_by_normalized_name: dict[str, int] = {}
+    required_columns = {"atletas.clube_id", "atletas.clube.id.full.name"}
+
+    for path in sorted(season_dir.glob("rodada-*.csv")):
+        match = re.match(r"^rodada-(\d+)\.csv$", path.name)
+        if match is not None and int(match.group(1)) <= 0:
+            continue
+        df = pd.read_csv(path, usecols=lambda column: column in required_columns)
+        if not required_columns.issubset(df.columns):
+            continue
+        for club_id, club_name in zip(df["atletas.clube_id"], df["atletas.clube.id.full.name"], strict=False):
+            if pd.isna(club_id) or pd.isna(club_name):
+                continue
+            normalized_name = normalize_team_name(str(club_name))
+            cartola_clubs_by_normalized_name.setdefault(normalized_name, int(club_id))
+
+    return cartola_clubs_by_normalized_name
+
+
+def _cartola_clubs_from_legacy_market_files(season_dir: Path) -> dict[str, int]:
+    cartola_clubs_by_normalized_name: dict[str, int] = {}
+    for path in sorted(season_dir.glob("Mercado_*.txt"), key=_legacy_market_sort_key):
+        if _legacy_market_round_number(path) <= 0:
+            continue
+        payload = json.loads(path.read_text(encoding="latin-1"))
+        clubs = payload.get("clubes", {})
+        if not isinstance(clubs, dict):
+            continue
+        for raw_club_id, raw_club in clubs.items():
+            if not isinstance(raw_club, dict):
+                continue
+            club_id = raw_club.get("id", raw_club_id)
+            club_name = raw_club.get("nome") or raw_club.get("nome_fantasia") or raw_club.get("abreviacao")
+            if club_id is None or club_name is None:
+                continue
+            normalized_name = normalize_team_name(str(club_name))
+            cartola_clubs_by_normalized_name.setdefault(normalized_name, int(club_id))
+
+    return cartola_clubs_by_normalized_name
+
+
+def _legacy_market_round_number(path: Path) -> int:
+    return _legacy_market_sort_key(path) - 1
+
+
+def _legacy_market_sort_key(path: Path) -> int:
+    match = re.match(r"^Mercado_(\d+)\.txt$", path.name)
+    if not match:
+        raise ValueError(f"Invalid legacy market filename: {path}")
+    return int(match.group(1))
 
 
 def _resolve_path(project_root: Path, path: Path) -> Path:

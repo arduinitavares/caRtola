@@ -96,6 +96,8 @@ def _build_run_details_table(
     metadata = result.metadata
     rows = [
         ("Output", _format_path(config.output_path, project_root=config.project_root)),
+        ("Budget policy", _format_text(getattr(metadata, "budget_policy", None))),
+        ("Initial budget", _format_points(getattr(metadata, "initial_budget", None))),
         ("Fixture mode", _format_text(getattr(metadata, "fixture_mode", None))),
         ("FootyStats mode", _format_text(getattr(metadata, "footystats_mode", None))),
         ("Matchup context mode", _format_text(getattr(metadata, "matchup_context_mode", None))),

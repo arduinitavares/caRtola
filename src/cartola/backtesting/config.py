@@ -81,6 +81,7 @@ class BacktestConfig:
     footystats_dir: Path = Path("data/footystats")
     current_year: int | None = None
     jobs: int = 1
+    profile_runtime: bool = False
     scout_columns: tuple[str, ...] = DEFAULT_SCOUT_COLUMNS
     _output_path_override: Path | None = None
 

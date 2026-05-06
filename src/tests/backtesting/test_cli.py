@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from cartola.backtesting.budgeting import BUDGET_POLICY_MOVING
 from cartola.backtesting.cli import main, parse_args
 from cartola.backtesting.cli_output import ChartOutput
 from cartola.backtesting.config import BacktestConfig
@@ -23,6 +24,8 @@ def _metadata_for_config(config: BacktestConfig, *, warnings: list[str] | None =
         backtest_workers_effective=1,
         model_n_jobs_effective=-1,
         parallel_backend="sequential",
+        budget_policy=BUDGET_POLICY_MOVING,
+        initial_budget=config.budget,
         thread_env={
             "OMP_NUM_THREADS": None,
             "MKL_NUM_THREADS": None,

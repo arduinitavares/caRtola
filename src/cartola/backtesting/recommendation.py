@@ -14,10 +14,12 @@ from cartola.backtesting.config import (
     DEFAULT_SCOUT_COLUMNS,
     MARKET_OPEN_PRICE_COLUMN,
     BacktestConfig,
+    FixtureMode,
     FootyStatsEvaluationScope,
     FootyStatsMode,
+    MatchupContextMode,
 )
-from cartola.backtesting.data import _entry_flag_mask, load_season_data
+from cartola.backtesting.data import _entry_flag_mask, build_round_alignment_report, load_season_data
 from cartola.backtesting.features import (
     FOOTYSTATS_PPG_FEATURE_COLUMNS,
     FOOTYSTATS_XG_FEATURE_COLUMNS,
@@ -39,6 +41,7 @@ from cartola.backtesting.scoring_contract import (
     captain_policy_diagnostics,
     contract_fields,
 )
+from cartola.backtesting.strict_fixtures import load_strict_fixtures
 
 RecommendationMode = Literal["live", "replay"]
 
@@ -54,6 +57,8 @@ class RecommendationConfig:
     project_root: Path = Path(".")
     output_root: Path = Path("data/08_reporting/recommendations")
     model_id: ModelId = "random_forest"
+    fixture_mode: FixtureMode = "none"
+    matchup_context_mode: MatchupContextMode = "none"
     footystats_mode: FootyStatsMode = "ppg"
     footystats_league_slug: str = "brazil-serie-a"
     footystats_dir: Path = Path("data/footystats")
@@ -77,6 +82,15 @@ class RecommendationResult:
     candidate_predictions: pd.DataFrame
     summary: dict[str, object]
     metadata: dict[str, object]
+
+
+@dataclass(frozen=True)
+class RecommendationFixtureData:
+    fixtures: pd.DataFrame | None
+    source_directory: str | None
+    manifest_paths: list[str]
+    manifest_sha256: dict[str, str]
+    generator_versions: list[str]
 
 
 BASE_OUTPUT_COLUMNS = [
@@ -114,7 +128,8 @@ def _backtest_config(config: RecommendationConfig) -> BacktestConfig:
         random_seed=config.random_seed,
         project_root=config.project_root,
         output_root=Path("data/08_reporting/backtests"),
-        fixture_mode="none",
+        fixture_mode=config.fixture_mode,
+        matchup_context_mode=config.matchup_context_mode,
         footystats_mode=config.footystats_mode,
         footystats_evaluation_scope=_footystats_scope(config),
         footystats_league_slug=config.footystats_league_slug,
@@ -142,6 +157,14 @@ def _validate_mode_scope(config: RecommendationConfig) -> None:
         current_year = _resolved_current_year(config)
         if config.season != current_year:
             raise ValueError(f"live mode requires season {config.season} to equal current_year {current_year}")
+    if config.matchup_context_mode == "none":
+        return
+    if config.matchup_context_mode != "cartola_matchup_v1":
+        raise ValueError(f"Unsupported matchup_context_mode: {config.matchup_context_mode!r}")
+    if config.fixture_mode != "strict":
+        raise ValueError("matchup_context_mode='cartola_matchup_v1' requires fixture_mode='strict'")
+    if config.mode == "live" and config.fixture_mode != "strict":
+        raise ValueError("live matchup recommendations require fixture_mode='strict'")
 
 
 def _validate_output_root(config: RecommendationConfig) -> None:
@@ -197,6 +220,79 @@ def _load_recommendation_footystats(
         footystats_mode=config.footystats_mode,
         require_complete_status=config.season != _resolved_current_year(config),
         required_keys=_real_club_keys(visible_season_df),
+    )
+
+
+def _visible_fixture_rounds(visible: pd.DataFrame) -> list[int]:
+    return sorted(pd.to_numeric(visible["rodada"], errors="raise").astype(int).dropna().unique().tolist())
+
+
+def _fixture_clubs(round_fixtures: pd.DataFrame) -> set[int]:
+    if round_fixtures.empty:
+        return set()
+    home = pd.to_numeric(round_fixtures["id_clube_home"], errors="raise").dropna().astype(int)
+    away = pd.to_numeric(round_fixtures["id_clube_away"], errors="raise").dropna().astype(int)
+    return set(home.tolist()) | set(away.tolist())
+
+
+def _validate_strict_fixture_alignment(fixtures: pd.DataFrame, visible: pd.DataFrame, target_round: int) -> None:
+    rodada = pd.to_numeric(visible["rodada"], errors="raise").astype(int)
+    historical = visible.loc[rodada.lt(target_round)]
+    if not historical.empty:
+        fixture_rows = fixtures.copy()
+        fixture_rodada = pd.to_numeric(fixture_rows["rodada"], errors="raise").astype(int)
+        historical_fixtures = fixture_rows.loc[fixture_rodada.lt(target_round)]
+        report = build_round_alignment_report(historical_fixtures, historical)
+        invalid = report[~report["is_valid"].astype(bool)]
+        if not invalid.empty:
+            details = invalid[["rodada", "missing_from_fixtures", "extra_in_fixtures"]].to_dict("records")
+            raise ValueError(f"Strict fixture alignment failed: {details}")
+
+    fixture_rows = fixtures.copy()
+    fixture_rows["rodada"] = pd.to_numeric(fixture_rows["rodada"], errors="raise").astype(int)
+    target_fixtures = fixture_rows.loc[fixture_rows["rodada"].eq(target_round)]
+    target_fixture_clubs = _fixture_clubs(target_fixtures)
+    if not target_fixture_clubs:
+        raise ValueError(f"Strict fixture alignment failed: no fixtures found for target round {target_round}")
+
+    target_clubs = set(
+        pd.to_numeric(visible.loc[rodada.eq(target_round), "id_clube"], errors="raise").dropna().astype(int).tolist()
+    )
+    missing_target_clubs = sorted(target_clubs - target_fixture_clubs)
+    if missing_target_clubs:
+        raise ValueError(
+            "Strict fixture alignment failed: "
+            f"target round {target_round} candidate clubs missing from fixtures: {missing_target_clubs}"
+        )
+
+
+def _load_recommendation_fixtures(
+    config: RecommendationConfig,
+    visible: pd.DataFrame,
+) -> RecommendationFixtureData:
+    if config.fixture_mode == "none":
+        return RecommendationFixtureData(
+            fixtures=None,
+            source_directory=None,
+            manifest_paths=[],
+            manifest_sha256={},
+            generator_versions=[],
+        )
+    if config.fixture_mode != "strict":
+        raise ValueError(f"Unsupported recommendation fixture_mode: {config.fixture_mode!r}")
+
+    loaded = load_strict_fixtures(
+        season=config.season,
+        project_root=config.project_root,
+        required_rounds=_visible_fixture_rounds(visible),
+    )
+    _validate_strict_fixture_alignment(loaded.fixtures, visible, config.target_round)
+    return RecommendationFixtureData(
+        fixtures=loaded.fixtures,
+        source_directory=f"data/01_raw/fixtures_strict/{config.season}",
+        manifest_paths=loaded.manifest_paths,
+        manifest_sha256=loaded.manifest_sha256,
+        generator_versions=loaded.generator_versions,
     )
 
 
@@ -395,14 +491,23 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         raise ValueError(f"FootyStats recommendation duplicate join keys: {diagnostics.duplicate_join_keys_by_round}")
 
     backtest_config = _backtest_config(config)
+    fixtures = _load_recommendation_fixtures(config, visible)
+    fixture_rows = fixtures.fixtures
     training = build_training_frame(
         visible,
         config.target_round,
         playable_statuses=config.playable_statuses,
-        fixtures=None,
+        fixtures=fixture_rows,
         footystats_rows=footystats_rows,
+        matchup_context_mode=config.matchup_context_mode,
     )
-    candidates = build_prediction_frame(visible, config.target_round, fixtures=None, footystats_rows=footystats_rows)
+    candidates = build_prediction_frame(
+        visible,
+        config.target_round,
+        fixtures=fixture_rows,
+        footystats_rows=footystats_rows,
+        matchup_context_mode=config.matchup_context_mode,
+    )
     candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy()
     if training.empty:
         raise ValueError(f"No training rows remain before target round {config.target_round}.")
@@ -497,6 +602,7 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         config=config,
         visible=visible,
         feature_columns=feature_columns,
+        fixtures=fixtures,
         footystats=footystats,
         finalized_detected=finalized_detected,
         finalized_evidence=finalized_evidence,
@@ -524,6 +630,7 @@ def _build_metadata(
     config: RecommendationConfig,
     visible: pd.DataFrame,
     feature_columns: list[str],
+    fixtures: RecommendationFixtureData,
     footystats: FootyStatsPPGLoadResult | None,
     finalized_detected: bool,
     finalized_evidence: dict[str, int],
@@ -545,7 +652,12 @@ def _build_metadata(
         "training_rounds": training_rounds,
         "candidate_round": config.target_round,
         "visible_max_round": int(pd.to_numeric(visible["rodada"], errors="raise").max()),
-        "fixture_mode": "none",
+        "fixture_mode": config.fixture_mode,
+        "matchup_context_mode": config.matchup_context_mode,
+        "fixture_source_directory": fixtures.source_directory,
+        "fixture_manifest_paths": fixtures.manifest_paths,
+        "fixture_manifest_sha256": fixtures.manifest_sha256,
+        "fixture_generator_versions": fixtures.generator_versions,
         "model_id": config.model_id,
         "footystats_mode": config.footystats_mode,
         "footystats_evaluation_scope": _footystats_scope(config),

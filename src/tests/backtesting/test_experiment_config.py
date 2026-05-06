@@ -50,6 +50,108 @@ def test_matchup_research_matrix() -> None:
     }
 
 
+def test_xgboost_research_matrix_uses_fixed_candidates_only() -> None:
+    specs = build_child_run_specs(
+        group="xgboost-research",
+        seasons=(2023, 2024, 2025),
+        start_round=5,
+        budget=100.0,
+        project_root=Path("/repo"),
+        output_root=Path("data/08_reporting/experiments/model_feature/test"),
+        current_year=2026,
+        jobs=12,
+    )
+
+    assert len(specs) == 18
+    assert {spec.fixture_mode for spec in specs} == {"exploratory"}
+    assert {spec.feature_pack for spec in specs} == {"ppg_xg", "ppg_xg_matchup"}
+    assert {spec.model_id for spec in specs} == {
+        "xgboost_conservative",
+        "xgboost_balanced",
+        "xgboost_capacity",
+    }
+
+
+def test_xgboost_sensitivity_v2_matrix_uses_controls_and_local_candidates() -> None:
+    specs = build_child_run_specs(
+        group="xgboost-sensitivity-v2",
+        seasons=(2023, 2024, 2025),
+        start_round=5,
+        budget=100.0,
+        project_root=Path("/repo"),
+        output_root=Path("data/08_reporting/experiments/model_feature/test"),
+        current_year=2026,
+        jobs=12,
+    )
+
+    assert len(specs) == 33
+    assert {spec.fixture_mode for spec in specs} == {"exploratory"}
+    assert {spec.feature_pack for spec in specs} == {"ppg_xg_matchup"}
+    assert {spec.model_id for spec in specs} == {
+        "ridge",
+        "xgboost_conservative",
+        "xgboost_depth1_stumps",
+        "xgboost_depth2_slow",
+        "xgboost_depth2_fast",
+        "xgboost_depth2_more_trees",
+        "xgboost_depth2_heavy_child",
+        "xgboost_depth2_subsample",
+        "xgboost_depth2_l2_heavy",
+        "xgboost_depth2_l1_gamma",
+        "xgboost_depth3_slow",
+    }
+
+
+def test_build_child_run_specs_can_include_only_selected_models() -> None:
+    specs = build_child_run_specs(
+        group="production-parity",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        project_root=Path("/repo"),
+        output_root=Path("data/08_reporting/experiments/model_feature/test"),
+        current_year=2026,
+        jobs=12,
+        models=("ridge",),
+    )
+
+    assert len(specs) == 2
+    assert {spec.model_id for spec in specs} == {"ridge"}
+
+
+def test_build_child_run_specs_can_exclude_models() -> None:
+    specs = build_child_run_specs(
+        group="matchup-research",
+        seasons=(2025,),
+        start_round=5,
+        budget=100.0,
+        project_root=Path("/repo"),
+        output_root=Path("data/08_reporting/experiments/model_feature/test"),
+        current_year=2026,
+        jobs=12,
+        exclude_models=("hist_gradient_boosting",),
+    )
+
+    assert len(specs) == 12
+    assert "hist_gradient_boosting" not in {spec.model_id for spec in specs}
+
+
+def test_build_child_run_specs_rejects_empty_model_filter() -> None:
+    with pytest.raises(ValueError, match="At least one model must remain"):
+        build_child_run_specs(
+            group="production-parity",
+            seasons=(2025,),
+            start_round=5,
+            budget=100.0,
+            project_root=Path("/repo"),
+            output_root=Path("data/08_reporting/experiments/model_feature/test"),
+            current_year=2026,
+            jobs=12,
+            models=("ridge",),
+            exclude_models=("ridge",),
+        )
+
+
 def test_feature_pack_to_modes() -> None:
     assert feature_pack_to_modes("ppg") == FeaturePack(
         feature_pack="ppg",

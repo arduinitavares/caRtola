@@ -176,6 +176,9 @@ conf/**/*credentials*
 **/data/**/*
 **/logs/**/*
 
+# ignore CSV outputs by default; explicit fixture/example exceptions below stay tracked
+*.csv
+
 # keep empty data folders
 !**/data/*
 !**/data/**/.gitkeep
@@ -201,6 +204,7 @@ conf/**/*credentials*
 .telemetry
 logs/
 .worktrees/
+.superpowers/
 
 # MLflow local tracking store
 mlruns/

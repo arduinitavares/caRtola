@@ -36,12 +36,25 @@ class SquadOptimizationResult:
     infeasibility_reason: str | None = None
 
 
-def optimize_squad(candidates: pd.DataFrame, score_column: str, config: BacktestConfig) -> SquadOptimizationResult:
+def optimize_squad(
+    candidates: pd.DataFrame,
+    score_column: str,
+    config: BacktestConfig,
+    *,
+    budget: float | None = None,
+) -> SquadOptimizationResult:
     if candidates.empty:
         return _empty_result("Empty", "", candidates, formation_scores=[])
 
+    budget_limit = float(config.budget if budget is None else budget)
     results = [
-        _optimize_formation(candidates, score_column=score_column, config=config, formation_name=formation_name)
+        _optimize_formation(
+            candidates,
+            score_column=score_column,
+            config=config,
+            formation_name=formation_name,
+            budget=budget_limit,
+        )
         for formation_name in DEFAULT_FORMATIONS
     ]
     formation_scores = [_formation_score(result) for result in results]
@@ -67,6 +80,7 @@ def _optimize_formation(
     score_column: str,
     config: BacktestConfig,
     formation_name: str,
+    budget: float,
 ) -> SquadOptimizationResult:
     required_columns = {"id_atleta", "apelido", "posicao", MARKET_OPEN_PRICE_COLUMN, score_column}
     missing_columns = sorted(required_columns - set(candidates.columns))
@@ -100,7 +114,7 @@ def _optimize_formation(
     problem += pulp.lpSum(
         float(player_rows.loc[index, MARKET_OPEN_PRICE_COLUMN]) * variable
         for index, variable in variables.items()
-    ) <= float(config.budget)
+    ) <= budget
     problem += pulp.lpSum(variables.values()) == sum(formation.values())
 
     for position, required_count in formation.items():

@@ -14,8 +14,33 @@ from cartola.backtesting.model_registry import (
 )
 
 
+def _xgboost_available() -> bool:
+    try:
+        from xgboost import XGBRegressor  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def test_model_registry_contains_exact_v1_models() -> None:
-    assert tuple(MODEL_SPECS) == ("random_forest", "extra_trees", "hist_gradient_boosting", "ridge")
+    assert tuple(MODEL_SPECS) == (
+        "random_forest",
+        "extra_trees",
+        "hist_gradient_boosting",
+        "ridge",
+        "xgboost_conservative",
+        "xgboost_balanced",
+        "xgboost_capacity",
+        "xgboost_depth1_stumps",
+        "xgboost_depth2_slow",
+        "xgboost_depth2_fast",
+        "xgboost_depth2_more_trees",
+        "xgboost_depth2_heavy_child",
+        "xgboost_depth2_subsample",
+        "xgboost_depth2_l2_heavy",
+        "xgboost_depth2_l1_gamma",
+        "xgboost_depth3_slow",
+    )
 
 
 def test_resolve_model_id_returns_valid_model_id() -> None:
@@ -23,8 +48,8 @@ def test_resolve_model_id_returns_valid_model_id() -> None:
 
 
 def test_resolve_model_id_rejects_unknown_model_id() -> None:
-    with pytest.raises(ValueError, match="Unsupported model_id: 'xgboost'"):
-        resolve_model_id("xgboost")
+    with pytest.raises(ValueError, match="Unsupported model_id: 'catboost'"):
+        resolve_model_id("catboost")
 
 
 def test_random_forest_spec_matches_contract() -> None:
@@ -116,6 +141,202 @@ def test_ridge_spec_matches_contract() -> None:
     estimator = model.pipeline.named_steps["model"]
     assert isinstance(estimator, Ridge)
     assert estimator.alpha == 1.0
+
+
+@pytest.mark.parametrize(
+    ("model_id", "expected"),
+    [
+        (
+            "xgboost_conservative",
+            {
+                "n_estimators": 300,
+                "max_depth": 2,
+                "learning_rate": 0.03,
+                "min_child_weight": 10.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 20.0,
+                "reg_alpha": 0.0,
+            },
+        ),
+        (
+            "xgboost_balanced",
+            {
+                "n_estimators": 250,
+                "max_depth": 3,
+                "learning_rate": 0.05,
+                "min_child_weight": 5.0,
+                "subsample": 0.85,
+                "colsample_bytree": 0.85,
+                "reg_lambda": 10.0,
+                "reg_alpha": 0.0,
+            },
+        ),
+        (
+            "xgboost_capacity",
+            {
+                "n_estimators": 200,
+                "max_depth": 4,
+                "learning_rate": 0.05,
+                "min_child_weight": 3.0,
+                "subsample": 0.9,
+                "colsample_bytree": 0.9,
+                "reg_lambda": 5.0,
+                "reg_alpha": 0.0,
+            },
+        ),
+        (
+            "xgboost_depth1_stumps",
+            {
+                "n_estimators": 400,
+                "max_depth": 1,
+                "learning_rate": 0.05,
+                "min_child_weight": 10.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 20.0,
+                "reg_alpha": 0.1,
+                "gamma": 0.1,
+            },
+        ),
+        (
+            "xgboost_depth2_slow",
+            {
+                "n_estimators": 400,
+                "max_depth": 2,
+                "learning_rate": 0.02,
+                "min_child_weight": 10.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 20.0,
+                "reg_alpha": 0.1,
+                "gamma": 0.1,
+            },
+        ),
+        (
+            "xgboost_depth2_fast",
+            {
+                "n_estimators": 200,
+                "max_depth": 2,
+                "learning_rate": 0.05,
+                "min_child_weight": 10.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 20.0,
+                "reg_alpha": 0.1,
+                "gamma": 0.1,
+            },
+        ),
+        (
+            "xgboost_depth2_more_trees",
+            {
+                "n_estimators": 450,
+                "max_depth": 2,
+                "learning_rate": 0.03,
+                "min_child_weight": 10.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 20.0,
+                "reg_alpha": 0.1,
+                "gamma": 0.1,
+            },
+        ),
+        (
+            "xgboost_depth2_heavy_child",
+            {
+                "n_estimators": 300,
+                "max_depth": 2,
+                "learning_rate": 0.03,
+                "min_child_weight": 18.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 20.0,
+                "reg_alpha": 0.1,
+                "gamma": 0.1,
+            },
+        ),
+        (
+            "xgboost_depth2_subsample",
+            {
+                "n_estimators": 300,
+                "max_depth": 2,
+                "learning_rate": 0.03,
+                "min_child_weight": 10.0,
+                "subsample": 0.7,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 20.0,
+                "reg_alpha": 0.1,
+                "gamma": 0.1,
+            },
+        ),
+        (
+            "xgboost_depth2_l2_heavy",
+            {
+                "n_estimators": 300,
+                "max_depth": 2,
+                "learning_rate": 0.03,
+                "min_child_weight": 10.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 50.0,
+                "reg_alpha": 0.1,
+                "gamma": 0.1,
+            },
+        ),
+        (
+            "xgboost_depth2_l1_gamma",
+            {
+                "n_estimators": 300,
+                "max_depth": 2,
+                "learning_rate": 0.03,
+                "min_child_weight": 10.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 20.0,
+                "reg_alpha": 1.0,
+                "gamma": 1.0,
+            },
+        ),
+        (
+            "xgboost_depth3_slow",
+            {
+                "n_estimators": 300,
+                "max_depth": 3,
+                "learning_rate": 0.02,
+                "min_child_weight": 15.0,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "reg_lambda": 30.0,
+                "reg_alpha": 0.5,
+                "gamma": 0.5,
+            },
+        ),
+    ],
+)
+def test_xgboost_fixed_candidate_specs_match_contract(model_id: str, expected: dict[str, object]) -> None:
+    assert MODEL_SPECS[model_id].parameters == {
+        "estimator": "xgboost.XGBRegressor",
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+        **expected,
+    }
+    if not _xgboost_available():
+        pytest.skip("XGBoost native runtime is not available in this environment")
+
+    model = create_point_predictor(
+        model_id=model_id,
+        random_seed=7,
+        feature_columns=FEATURE_COLUMNS,
+        n_jobs=2,
+    )
+
+    estimator = model.pipeline.named_steps["model"]
+    assert estimator.objective == "reg:squarederror"
+    assert estimator.tree_method == "hist"
+    assert estimator.random_state == 7
+    assert estimator.n_jobs == 2
+    for key, value in expected.items():
+        assert getattr(estimator, key) == value
 
 
 def test_ridge_model_params_override_alpha() -> None:
@@ -213,7 +434,25 @@ def test_non_parallel_models_record_null_n_jobs(model_id: str) -> None:
     assert model_n_jobs_for_metadata(model_id, requested_n_jobs=4) is None
 
 
-@pytest.mark.parametrize("model_id", ["random_forest", "extra_trees"])
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "random_forest",
+        "extra_trees",
+        "xgboost_conservative",
+        "xgboost_balanced",
+        "xgboost_capacity",
+        "xgboost_depth1_stumps",
+        "xgboost_depth2_slow",
+        "xgboost_depth2_fast",
+        "xgboost_depth2_more_trees",
+        "xgboost_depth2_heavy_child",
+        "xgboost_depth2_subsample",
+        "xgboost_depth2_l2_heavy",
+        "xgboost_depth2_l1_gamma",
+        "xgboost_depth3_slow",
+    ],
+)
 def test_parallel_models_record_effective_n_jobs(model_id: str) -> None:
     assert model_n_jobs_for_metadata(model_id, requested_n_jobs=4) == 4
 
@@ -221,7 +460,7 @@ def test_parallel_models_record_effective_n_jobs(model_id: str) -> None:
 def test_unknown_model_id_is_rejected() -> None:
     with pytest.raises(ValueError, match="Unsupported model_id"):
         create_point_predictor(
-            model_id="xgboost",
+            model_id="catboost",
             random_seed=7,
             feature_columns=FEATURE_COLUMNS,
             n_jobs=1,
@@ -278,6 +517,8 @@ def test_created_models_fit_and_predict() -> None:
     frame = frame[[*FEATURE_COLUMNS, "target"]]
 
     for model_id in MODEL_SPECS:
+        if model_id.startswith("xgboost_") and not _xgboost_available():
+            continue
         model = create_point_predictor(
             model_id=model_id,
             random_seed=7,
@@ -287,3 +528,67 @@ def test_created_models_fit_and_predict() -> None:
         predictions = model.predict(frame)
         assert len(predictions) == len(frame)
         assert predictions.notna().all()
+
+
+def test_sklearn_predictors_record_fit_and_predict_profiles() -> None:
+    frame = pd.DataFrame(
+        {
+            "preco_pre_rodada": [10.0, 11.0, 8.0, 8.5, 9.0, 7.0],
+            "id_clube": [10, 10, 20, 20, 30, 30],
+            "rodada": [2, 3, 2, 3, 2, 3],
+            "posicao": ["ata", "ata", "mei", "mei", "zag", "zag"],
+            "prior_appearances": [1, 2, 1, 2, 1, 2],
+            "prior_appearance_rate": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            "prior_points_mean": [2.0, 5.0, 4.0, 5.0, 3.0, 4.0],
+            "prior_points_roll3": [2.0, 5.0, 4.0, 5.0, 3.0, 4.0],
+            "prior_points_roll5": [2.0, 5.0, 4.0, 5.0, 3.0, 4.0],
+            "prior_points_weighted3": [2.0, 5.5, 4.0, 5.5, 3.0, 4.0],
+            "prior_points_std": [0.0, 4.24, 0.0, 1.41, 0.0, 1.0],
+            "prior_price_mean": [10.0, 10.5, 8.0, 8.5, 9.0, 8.0],
+            "prior_variation_mean": [0.0, 0.5, 0.0, 0.5, 0.0, 0.1],
+            "club_points_roll3": [30.0, 32.0, 24.0, 25.0, 20.0, 21.0],
+            "prior_media": [2.0, 5.0, 4.0, 5.0, 3.0, 4.0],
+            "prior_num_jogos": [1, 2, 1, 2, 1, 2],
+            "target": [8.0, 10.0, 6.0, 7.0, 3.0, 5.0],
+        }
+    )
+    for scout in (
+        "G",
+        "A",
+        "DS",
+        "SG",
+        "CA",
+        "FC",
+        "FS",
+        "FF",
+        "FD",
+        "FT",
+        "I",
+        "GS",
+        "DE",
+        "DP",
+        "V",
+        "CV",
+        "PP",
+        "PS",
+        "PC",
+        "GC",
+    ):
+        frame[f"prior_{scout}_mean"] = 0.0
+    frame = frame[[*FEATURE_COLUMNS, "target"]]
+
+    model = create_point_predictor(
+        model_id="hist_gradient_boosting",
+        random_seed=7,
+        feature_columns=FEATURE_COLUMNS,
+        n_jobs=1,
+    ).fit(frame)
+    model.predict(frame)
+
+    assert model.last_fit_profile_["training_rows"] == 6
+    assert model.last_fit_profile_["feature_count"] == len(FEATURE_COLUMNS)
+    assert model.last_fit_profile_["transformed_feature_rows"] == 6
+    assert model.last_fit_profile_["transformed_feature_columns"] >= len(FEATURE_COLUMNS)
+    assert model.last_fit_profile_["model_fit_seconds"] >= 0.0
+    assert model.last_predict_profile_["prediction_rows"] == 6
+    assert model.last_predict_profile_["model_predict_seconds"] >= 0.0

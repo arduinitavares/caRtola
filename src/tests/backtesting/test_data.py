@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +30,42 @@ def _base_raw_round(**overrides: object) -> pd.DataFrame:
     }
     data.update(overrides)
     return pd.DataFrame(data)
+
+
+def _write_legacy_market_file(path: Path, *, file_round: int, athlete_id: int, points: float) -> None:
+    payload = {
+        "clubes": {
+            "262": {
+                "id": 262,
+                "nome": "Flamengo",
+                "abreviacao": "FLA",
+                "nome_fantasia": "Flamengo",
+            }
+        },
+        "posicoes": {},
+        "status": {},
+        "atletas": [
+            {
+                "scout": {"DS": 2, "FC": 1},
+                "atleta_id": athlete_id,
+                "rodada_id": file_round,
+                "clube_id": 262,
+                "posicao_id": 5,
+                "status_id": 7,
+                "pontos_num": points,
+                "preco_num": 12.3,
+                "variacao_num": 0.2,
+                "media_num": points,
+                "jogos_num": 1,
+                "slug": "player",
+                "apelido": "Player",
+                "apelido_abreviado": "Player",
+                "nome": "Player Name",
+                "foto": "https://example.test/player.png",
+            }
+        ],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="latin-1")
 
 
 def test_normalize_round_frame_drops_index_maps_columns_and_fills_scouts() -> None:
@@ -138,6 +175,23 @@ def test_load_round_file_reads_and_normalizes_csv(tmp_path: Path) -> None:
     assert "" not in loaded.columns
 
 
+def test_load_round_file_reads_legacy_market_json(tmp_path: Path) -> None:
+    market_file = tmp_path / "Mercado_2.txt"
+    _write_legacy_market_file(market_file, file_round=1, athlete_id=20, points=4.5)
+
+    loaded = load_round_file(market_file)
+
+    assert loaded.loc[0, "rodada"] == 1
+    assert loaded.loc[0, "id_atleta"] == 20
+    assert loaded.loc[0, "id_clube"] == 262
+    assert loaded.loc[0, "nome_clube"] == "Flamengo"
+    assert loaded.loc[0, "status"] == "Provavel"
+    assert loaded.loc[0, "posicao"] == "ata"
+    assert loaded.loc[0, "DS"] == 2
+    assert loaded.loc[0, "FC"] == 1
+    assert loaded.loc[0, "preco_pre_rodada"] == 12.1
+
+
 def test_load_season_data_orders_rounds_numerically(tmp_path: Path) -> None:
     season_dir = tmp_path / "data" / "01_raw" / "2025"
     season_dir.mkdir(parents=True)
@@ -159,6 +213,43 @@ def test_load_season_data_orders_rounds_numerically(tmp_path: Path) -> None:
     loaded = load_season_data(2025, project_root=tmp_path)
 
     assert loaded["rodada"].tolist() == [2, 10]
+
+
+def test_load_season_data_ignores_round_zero_market_snapshot(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2022"
+    season_dir.mkdir(parents=True)
+    base = {
+        "atletas.rodada_id": [1],
+        "atletas.status_id": [7],
+        "atletas.posicao_id": [5],
+        "atletas.apelido": ["Player"],
+        "atletas.clube_id": [100],
+        "atletas.preco_num": [12.3],
+        "atletas.pontos_num": [0.0],
+        "atletas.media_num": [0.0],
+        "atletas.jogos_num": [0],
+        "atletas.variacao_num": [0.0],
+    }
+    pd.DataFrame({**base, "atletas.atleta_id": [10]}).to_csv(season_dir / "rodada-0.csv", index=False)
+    pd.DataFrame({**base, "atletas.atleta_id": [20]}).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    loaded = load_season_data(2022, project_root=tmp_path)
+
+    assert loaded["id_atleta"].tolist() == [20]
+    assert loaded["rodada"].tolist() == [1]
+
+
+def test_load_season_data_reads_legacy_market_files_and_skips_opening_snapshot(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2021"
+    season_dir.mkdir(parents=True)
+    _write_legacy_market_file(season_dir / "Mercado_1.txt", file_round=1, athlete_id=10, points=0.0)
+    _write_legacy_market_file(season_dir / "Mercado_2.txt", file_round=1, athlete_id=20, points=4.5)
+    _write_legacy_market_file(season_dir / "Mercado_3.txt", file_round=2, athlete_id=30, points=5.5)
+
+    loaded = load_season_data(2021, project_root=tmp_path)
+
+    assert loaded["id_atleta"].tolist() == [20, 30]
+    assert loaded["rodada"].tolist() == [1, 2]
 
 
 def test_load_season_data_reports_missing_directory(tmp_path: Path) -> None:

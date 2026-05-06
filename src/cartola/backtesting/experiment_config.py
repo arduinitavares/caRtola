@@ -10,7 +10,7 @@ from cartola.backtesting.config import BacktestConfig, FixtureMode, FootyStatsMo
 from cartola.backtesting.model_registry import MODEL_SPECS, ModelId
 from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION
 
-ExperimentGroup = Literal["production-parity", "matchup-research"]
+ExperimentGroup = Literal["production-parity", "matchup-research", "xgboost-research", "xgboost-sensitivity-v2"]
 FeaturePackId = Literal["ppg", "ppg_xg", "ppg_matchup", "ppg_xg_matchup"]
 
 
@@ -44,11 +44,34 @@ class ChildRunSpec:
 _GROUP_FIXTURE_MODES: Mapping[ExperimentGroup, FixtureMode] = {
     "production-parity": "none",
     "matchup-research": "exploratory",
+    "xgboost-research": "exploratory",
+    "xgboost-sensitivity-v2": "exploratory",
 }
 
 _GROUP_FEATURE_PACKS: Mapping[ExperimentGroup, tuple[FeaturePackId, ...]] = {
     "production-parity": ("ppg", "ppg_xg"),
     "matchup-research": ("ppg", "ppg_xg", "ppg_matchup", "ppg_xg_matchup"),
+    "xgboost-research": ("ppg_xg", "ppg_xg_matchup"),
+    "xgboost-sensitivity-v2": ("ppg_xg_matchup",),
+}
+
+_GROUP_MODEL_IDS: Mapping[ExperimentGroup, tuple[ModelId, ...]] = {
+    "production-parity": ("random_forest", "extra_trees", "hist_gradient_boosting", "ridge"),
+    "matchup-research": ("random_forest", "extra_trees", "hist_gradient_boosting", "ridge"),
+    "xgboost-research": ("xgboost_conservative", "xgboost_balanced", "xgboost_capacity"),
+    "xgboost-sensitivity-v2": (
+        "ridge",
+        "xgboost_conservative",
+        "xgboost_depth1_stumps",
+        "xgboost_depth2_slow",
+        "xgboost_depth2_fast",
+        "xgboost_depth2_more_trees",
+        "xgboost_depth2_heavy_child",
+        "xgboost_depth2_subsample",
+        "xgboost_depth2_l2_heavy",
+        "xgboost_depth2_l1_gamma",
+        "xgboost_depth3_slow",
+    ),
 }
 
 _FEATURE_PACKS: Mapping[FeaturePackId, FeaturePack] = {
@@ -109,16 +132,24 @@ def build_child_run_specs(
     output_root: Path,
     current_year: int,
     jobs: int,
+    models: tuple[str, ...] | None = None,
+    exclude_models: tuple[str, ...] = (),
+    profile_runtime: bool = False,
 ) -> list[ChildRunSpec]:
     if any(season >= current_year for season in seasons):
         raise ValueError("Experiment seasons must be before current_year")
 
     experiment_group = _validate_experiment_group(group)
     fixture_mode = _GROUP_FIXTURE_MODES[experiment_group]
+    selected_model_ids = _selected_model_ids(
+        default_model_ids=_GROUP_MODEL_IDS[experiment_group],
+        models=models,
+        exclude_models=exclude_models,
+    )
     specs: list[ChildRunSpec] = []
 
     for season in seasons:
-        for model_id in MODEL_SPECS:
+        for model_id in selected_model_ids:
             model_parameters = MODEL_SPECS[model_id].parameters
             for feature_pack_id in _GROUP_FEATURE_PACKS[experiment_group]:
                 feature_pack = feature_pack_to_modes(feature_pack_id)
@@ -141,6 +172,7 @@ def build_child_run_specs(
                     footystats_mode=feature_pack.footystats_mode,
                     current_year=current_year,
                     jobs=jobs,
+                    profile_runtime=profile_runtime,
                     _output_path_override=child_output_path,
                 )
                 config_identity = {
@@ -155,6 +187,7 @@ def build_child_run_specs(
                     "budget": budget,
                     "current_year": current_year,
                     "jobs": jobs,
+                    "profile_runtime": profile_runtime,
                     "scoring_contract_version": SCORING_CONTRACT_VERSION,
                     "model_parameters": model_parameters,
                 }
@@ -180,6 +213,27 @@ def build_child_run_specs(
                 )
 
     return specs
+
+
+def _selected_model_ids(
+    *,
+    default_model_ids: tuple[ModelId, ...],
+    models: tuple[str, ...] | None,
+    exclude_models: tuple[str, ...],
+) -> tuple[ModelId, ...]:
+    model_filter: tuple[str, ...] | tuple[ModelId, ...] = models if models is not None else default_model_ids
+    included = tuple(_validate_model_id(model_id) for model_id in model_filter)
+    excluded = {_validate_model_id(model_id) for model_id in exclude_models}
+    selected = tuple(model_id for model_id in included if model_id not in excluded)
+    if not selected:
+        raise ValueError("At least one model must remain after applying model filters")
+    return selected
+
+
+def _validate_model_id(model_id: str) -> ModelId:
+    if model_id not in MODEL_SPECS:
+        raise ValueError(f"Unsupported model_id: {model_id!r}")
+    return cast(ModelId, model_id)
 
 
 def config_hash(payload: Mapping[str, object]) -> str:

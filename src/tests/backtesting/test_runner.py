@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -72,6 +73,36 @@ def _tiny_round(round_number: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _moving_budget_player(
+    rodada: int,
+    athlete_id: int,
+    posicao: str,
+    preco_pre_rodada: float,
+    pontuacao: float,
+    variacao: float,
+) -> dict[str, object]:
+    row = {
+        "rodada": rodada,
+        "id_atleta": athlete_id,
+        "apelido": f"Player {athlete_id}",
+        "slug": f"player-{athlete_id}",
+        "id_clube": 100 + athlete_id,
+        "nome_clube": f"Club {athlete_id}",
+        "posicao": posicao,
+        "status": "Provavel",
+        "preco": preco_pre_rodada + variacao,
+        "preco_pre_rodada": preco_pre_rodada,
+        "pontuacao": pontuacao,
+        "media": pontuacao,
+        "num_jogos": rodada,
+        "variacao": variacao,
+        "entrou_em_campo": True,
+    }
+    for scout in DEFAULT_SCOUT_COLUMNS:
+        row[scout] = 0
+    return row
+
+
 def _tiny_fixtures(rounds: range) -> pd.DataFrame:
     rows = []
     for round_number in rounds:
@@ -103,6 +134,7 @@ def _semantic_metadata(metadata: object) -> dict[str, object]:
         "backtest_workers_effective",
         "model_n_jobs_effective",
         "parallel_backend",
+        "warnings",
     ]:
         values.pop(key, None)
     return values
@@ -172,6 +204,206 @@ def test_round_frame_store_training_frame_matches_public_builder(tmp_path: Path)
         check_dtype=False,
     )
     assert store.prediction_frames_built == 5
+
+
+def test_moving_budget_uses_prior_round_variation_for_next_round(tmp_path: Path) -> None:
+    season_df = pd.DataFrame(
+        [
+            # Training round before start_round.
+            _moving_budget_player(1, 1, "gol", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 2, "zag", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 3, "zag", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 4, "zag", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 5, "mei", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 6, "mei", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 7, "mei", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 8, "mei", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 9, "ata", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 10, "ata", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 11, "ata", 10.0, 5.0, 0.0),
+            _moving_budget_player(1, 12, "tec", 0.0, 1.0, 0.0),
+            # Round 2 selected squad spends 99 and loses 22.
+            _moving_budget_player(2, 1, "gol", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 2, "zag", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 3, "zag", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 4, "zag", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 5, "mei", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 6, "mei", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 7, "mei", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 8, "mei", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 9, "ata", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 10, "ata", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 11, "ata", 9.0, 5.0, -2.0),
+            _moving_budget_player(2, 12, "tec", 0.0, 1.0, 0.0),
+            # Round 3 has an expensive formation and a cheaper 77-cost formation.
+            _moving_budget_player(3, 1, "gol", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 2, "zag", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 3, "zag", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 4, "zag", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 5, "mei", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 6, "mei", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 7, "mei", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 8, "mei", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 9, "ata", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 10, "ata", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 11, "ata", 9.0, 5.0, 0.0),
+            _moving_budget_player(3, 12, "tec", 9.0, 1.0, 0.0),
+            _moving_budget_player(3, 101, "gol", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 102, "zag", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 103, "zag", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 104, "zag", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 105, "mei", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 106, "mei", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 107, "mei", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 108, "mei", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 109, "ata", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 110, "ata", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 111, "ata", 7.0, 1.0, 0.0),
+            _moving_budget_player(3, 112, "tec", 0.0, 1.0, 0.0),
+        ]
+    )
+
+    result = run_backtest(
+        BacktestConfig(project_root=tmp_path, start_round=2, budget=100.0, jobs=12),
+        season_df=season_df,
+    )
+
+    baseline_rounds = result.round_results[result.round_results["strategy"].eq("baseline")]
+    round_2 = baseline_rounds[baseline_rounds["rodada"].eq(2)].iloc[0]
+    round_3 = baseline_rounds[baseline_rounds["rodada"].eq(3)].iloc[0]
+
+    assert round_2["budget_before_round"] == pytest.approx(100.0)
+    assert round_2["solver_status"] == "Optimal"
+    assert round_2["budget_used"] == pytest.approx(99.0)
+    assert round_2["budget_delta"] == pytest.approx(-22.0)
+    assert round_2["budget_after_round"] == pytest.approx(78.0)
+    assert round_3["budget_before_round"] == pytest.approx(78.0)
+    assert round_3["solver_status"] == "Optimal"
+    assert round_3["budget_used"] == pytest.approx(77.0)
+    round_3_selected = result.selected_players[
+        result.selected_players["strategy"].eq("baseline") & result.selected_players["rodada"].eq(3)
+    ]
+    assert set(round_3_selected["id_atleta"].astype(int)) == set(range(101, 113))
+    assert result.metadata.parallel_backend == "sequential_moving_budget"
+    assert result.metadata.backtest_workers_effective == 1
+
+
+def test_moving_budget_fails_when_selected_asset_variacao_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_optimize_squad = runner_module.optimize_squad
+
+    def fake_optimize_squad(*args: object, **kwargs: object) -> object:
+        result = original_optimize_squad(*args, **kwargs)  # type: ignore[arg-type]
+        return replace(result, selected=result.selected.drop(columns=["variacao"], errors="ignore"))
+
+    monkeypatch.setattr(runner_module, "optimize_squad", fake_optimize_squad)
+
+    with pytest.raises(
+        runner_module.BacktestRoundEvaluationError,
+        match="Selected squad is missing required variacao column",
+    ) as exc_info:
+        run_backtest(
+            BacktestConfig(project_root=tmp_path, start_round=2, budget=100.0),
+            season_df=_minimal_two_round_feasible_season(),
+        )
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_moving_budget_passes_current_budget_without_mutating_initial_config_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_config_budgets: list[float] = []
+    observed_optimizer_budgets: list[float] = []
+    original_optimize_squad = runner_module.optimize_squad
+
+    def fake_optimize_squad(*args: object, **kwargs: object) -> object:
+        config = kwargs["config"]
+        budget = kwargs["budget"]
+        assert isinstance(config, BacktestConfig)
+        observed_config_budgets.append(float(config.budget))
+        observed_optimizer_budgets.append(float(budget))
+        return original_optimize_squad(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(runner_module, "optimize_squad", fake_optimize_squad)
+    season_df = _minimal_two_round_feasible_season()
+    season_df.loc[season_df["rodada"].eq(2), "variacao"] = -1.0
+    round_3 = pd.DataFrame(
+        [
+            _moving_budget_player(3, athlete_id, posicao, 5.0, 1.0, 0.0)
+            for athlete_id, posicao in [
+                (1, "gol"),
+                (2, "zag"),
+                (3, "zag"),
+                (4, "zag"),
+                (5, "mei"),
+                (6, "mei"),
+                (7, "mei"),
+                (8, "mei"),
+                (9, "ata"),
+                (10, "ata"),
+                (11, "ata"),
+                (12, "tec"),
+            ]
+        ]
+    )
+    season_df = pd.concat([season_df, round_3], ignore_index=True)
+
+    run_backtest(
+        BacktestConfig(project_root=tmp_path, start_round=2, budget=100.0, jobs=12),
+        season_df=season_df,
+    )
+
+    assert set(observed_config_budgets) == {100.0}
+    assert any(value == pytest.approx(88.0) for value in observed_optimizer_budgets)
+
+
+def test_moving_budget_fails_when_selected_asset_variacao_is_null(tmp_path: Path) -> None:
+    season_df = _minimal_two_round_feasible_season()
+    season_df.loc[season_df["rodada"].eq(2), "variacao"] = pd.NA
+
+    with pytest.raises(
+        runner_module.BacktestRoundEvaluationError,
+        match="Selected squad variacao must contain finite numeric values",
+    ) as exc_info:
+        run_backtest(
+            BacktestConfig(project_root=tmp_path, start_round=2, budget=100.0),
+            season_df=season_df,
+        )
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_run_metadata_records_moving_budget_policy(tmp_path: Path) -> None:
+    result = run_backtest(
+        BacktestConfig(project_root=tmp_path, start_round=2, budget=100.0),
+        season_df=_minimal_two_round_feasible_season(),
+    )
+
+    assert result.metadata.budget_policy == "moving"
+    assert result.metadata.initial_budget == 100.0
+
+
+def _minimal_two_round_feasible_season() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for rodada in [1, 2]:
+        for athlete_id, posicao in [
+            (1, "gol"),
+            (2, "zag"),
+            (3, "zag"),
+            (4, "zag"),
+            (5, "mei"),
+            (6, "mei"),
+            (7, "mei"),
+            (8, "mei"),
+            (9, "ata"),
+            (10, "ata"),
+            (11, "ata"),
+            (12, "tec"),
+        ]:
+            rows.append(_moving_budget_player(rodada, athlete_id, posicao, 8.0, 5.0, 0.0))
+    return pd.DataFrame(rows)
 
 
 def test_round_frame_store_returns_deep_copies_for_candidates_and_training() -> None:
@@ -543,7 +775,7 @@ def test_run_backtest_records_parallel_metadata_defaults(tmp_path: Path) -> None
     assert result.metadata.backtest_jobs == 1
     assert result.metadata.backtest_workers_effective == 1
     assert result.metadata.model_n_jobs_effective == -1
-    assert result.metadata.parallel_backend == "sequential"
+    assert result.metadata.parallel_backend == "sequential_moving_budget"
     assert set(result.metadata.thread_env) == {
         "OMP_NUM_THREADS",
         "MKL_NUM_THREADS",
@@ -555,13 +787,42 @@ def test_run_backtest_records_parallel_metadata_defaults(tmp_path: Path) -> None
     assert metadata["backtest_jobs"] == 1
     assert metadata["backtest_workers_effective"] == 1
     assert metadata["model_n_jobs_effective"] == -1
-    assert metadata["parallel_backend"] == "sequential"
+    assert metadata["parallel_backend"] == "sequential_moving_budget"
     assert set(metadata["thread_env"]) == {
         "OMP_NUM_THREADS",
         "MKL_NUM_THREADS",
         "OPENBLAS_NUM_THREADS",
         "BLIS_NUM_THREADS",
     }
+    assert isinstance(metadata["threadpool_info"], list)
+    assert metadata["runtime_profile_enabled"] is False
+    assert metadata["round_profiles"] == []
+
+
+def test_run_backtest_runtime_profile_records_round_breakdown(tmp_path: Path) -> None:
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+
+    result = run_backtest(
+        BacktestConfig(project_root=tmp_path, start_round=5, budget=100, profile_runtime=True),
+        season_df=season_df,
+    )
+
+    assert result.metadata.runtime_profile_enabled is True
+    assert len(result.metadata.round_profiles) == 1
+    profile = result.metadata.round_profiles[0]
+    assert profile["round_number"] == 5
+    assert profile["training_rows"] > 0
+    assert profile["candidate_rows"] > 0
+    assert profile["primary_model_fit_seconds"] >= 0.0
+    assert profile["primary_model_predict_seconds"] >= 0.0
+    assert profile["optimizer_total_seconds"] >= 0.0
+    assert set(profile["optimizer_seconds_by_strategy"]) == {"baseline", "random_forest", "price"}
+    assert profile["transformed_feature_rows"] == profile["training_rows"]
+    assert profile["transformed_feature_columns"] >= profile["feature_count"]
+
+    metadata = json.loads((tmp_path / "data/08_reporting/backtests/2025/run_metadata.json").read_text())
+    assert metadata["runtime_profile_enabled"] is True
+    assert metadata["round_profiles"][0]["round_number"] == 5
 
 
 def test_run_backtest_jobs_2_matches_jobs_1_outputs(tmp_path: Path) -> None:
@@ -583,9 +844,10 @@ def test_run_backtest_jobs_2_matches_jobs_1_outputs(tmp_path: Path) -> None:
     assert_frame_equal(sequential.diagnostics, parallel.diagnostics, check_dtype=False, atol=1e-10, rtol=0)
     assert _semantic_metadata(sequential.metadata) == _semantic_metadata(parallel.metadata)
     assert parallel.metadata.backtest_jobs == 2
-    assert parallel.metadata.backtest_workers_effective == 2
-    assert parallel.metadata.model_n_jobs_effective == 1
-    assert parallel.metadata.parallel_backend == "threads"
+    assert parallel.metadata.backtest_workers_effective == 1
+    assert parallel.metadata.model_n_jobs_effective == -1
+    assert parallel.metadata.parallel_backend == "sequential_moving_budget"
+    assert parallel.metadata.warnings == ["Target-round parallelism is disabled by moving-budget semantics."]
 
 
 def test_run_backtest_jobs_above_worker_rounds_records_effective_workers(tmp_path: Path) -> None:
@@ -598,23 +860,23 @@ def test_run_backtest_jobs_above_worker_rounds_records_effective_workers(tmp_pat
 
     assert result.metadata.backtest_jobs == 4
     assert result.metadata.backtest_workers_effective == 1
-    assert result.metadata.model_n_jobs_effective == 1
-    assert result.metadata.parallel_backend == "threads"
+    assert result.metadata.model_n_jobs_effective == -1
+    assert result.metadata.parallel_backend == "sequential_moving_budget"
 
     metadata = json.loads((tmp_path / "data/08_reporting/backtests/2025/run_metadata.json").read_text())
     assert metadata["backtest_jobs"] == 4
     assert metadata["backtest_workers_effective"] == 1
-    assert metadata["model_n_jobs_effective"] == 1
-    assert metadata["parallel_backend"] == "threads"
+    assert metadata["model_n_jobs_effective"] == -1
+    assert metadata["parallel_backend"] == "sequential_moving_budget"
 
 
 @pytest.mark.parametrize(
-    ("jobs", "expected_model_n_jobs"),
-    [
-        (1, -1),
-        (2, 1),
-    ],
-)
+        ("jobs", "expected_model_n_jobs"),
+        [
+            (1, -1),
+            (2, -1),
+        ],
+    )
 def test_run_backtest_start_after_max_round_records_no_workers(tmp_path: Path, jobs: int, expected_model_n_jobs: int) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
 
@@ -666,7 +928,7 @@ def test_run_backtest_missing_round_is_not_submitted_to_worker(tmp_path: Path, m
     assert 2 not in set(result.player_predictions.get("rodada", pd.Series(dtype=int)).dropna().astype(int).tolist())
 
 
-def test_parallel_worker_failure_preserves_round_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_moving_budget_round_failure_preserves_round_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 7)], ignore_index=True)
     original = runner_module._evaluate_target_round
 
@@ -1110,7 +1372,12 @@ def test_strict_alignment_policy_exclude_round_removes_invalid_round_before_trai
         "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json": "abc"
     }
     assert 3 not in set(result.player_predictions["rodada"].dropna().astype(int).tolist())
-    assert 3 not in set(result.round_results["rodada"].dropna().astype(int).tolist())
+    round_3 = result.round_results[result.round_results["rodada"].eq(3)]
+    assert set(round_3["strategy"]) == {"baseline", "random_forest", "price"}
+    assert round_3["solver_status"].eq("Excluded").all()
+    assert round_3["budget_before_round"].eq(100.0).all()
+    assert round_3["budget_after_round"].eq(100.0).all()
+    assert round_3["budget_delta"].eq(0.0).all()
 
 
 def test_run_backtest_does_not_build_prediction_frame_for_excluded_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1181,7 +1448,12 @@ def test_strict_alignment_policy_exclude_round_removes_missing_strict_fixture_ro
 
     assert result.metadata.excluded_rounds == [3]
     assert 3 not in set(result.player_predictions["rodada"].dropna().astype(int).tolist())
-    assert 3 not in set(result.round_results["rodada"].dropna().astype(int).tolist())
+    round_3 = result.round_results[result.round_results["rodada"].eq(3)]
+    assert set(round_3["strategy"]) == {"baseline", "random_forest", "price"}
+    assert round_3["solver_status"].eq("Excluded").all()
+    assert round_3["budget_before_round"].eq(100.0).all()
+    assert round_3["budget_after_round"].eq(100.0).all()
+    assert round_3["budget_delta"].eq(0.0).all()
     assert result.metadata.fixture_manifest_paths == [
         "data/01_raw/fixtures_strict/2025/partidas-1.manifest.json",
         "data/01_raw/fixtures_strict/2025/partidas-2.manifest.json",

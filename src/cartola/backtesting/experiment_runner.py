@@ -16,6 +16,7 @@ from typing import Literal, Mapping, Sequence, SupportsFloat, SupportsInt, cast
 
 import pandas as pd
 
+from cartola.backtesting.budgeting import BUDGET_POLICY_MOVING, normalize_budget_policy
 from cartola.backtesting.experiment_config import (
     ChildRunSpec,
     ExperimentGroup,
@@ -35,6 +36,7 @@ from cartola.backtesting.experiment_metrics import (
     promotion_status,
     top_k_rows_by_round,
 )
+from cartola.backtesting.experiment_reports import build_experiment_html_reports
 from cartola.backtesting.experiment_signatures import (
     ComparabilityError,
     candidate_pool_signature,
@@ -100,6 +102,9 @@ def run_model_experiment(
     project_root: Path,
     output_root: Path,
     started_at_utc: str,
+    models: tuple[str, ...] | None = None,
+    exclude_models: tuple[str, ...] = (),
+    profile_runtime: bool = False,
     progress_callback: ExperimentProgressCallback | None = None,
     tracker: ExperimentTracker | None = None,
 ) -> ExperimentRunResult:
@@ -113,6 +118,9 @@ def run_model_experiment(
         output_root=output_root,
         current_year=current_year,
         jobs=jobs,
+        models=models,
+        exclude_models=exclude_models,
+        profile_runtime=profile_runtime,
     )
     total_children = len(identity_specs)
     matrix_hash = config_hash({"child_runs": [spec.config_identity for spec in identity_specs]})
@@ -138,6 +146,9 @@ def run_model_experiment(
         output_root=output_root / run_id,
         current_year=current_year,
         jobs=jobs,
+        models=models,
+        exclude_models=exclude_models,
+        profile_runtime=profile_runtime,
     )
     _emit_progress(
         progress_callback,
@@ -196,8 +207,13 @@ def run_model_experiment(
                 "group": group,
                 "start_round": start_round,
                 "budget": budget,
+                "initial_budget": budget,
+                "budget_policy": BUDGET_POLICY_MOVING,
                 "current_year": current_year,
                 "jobs": jobs,
+                "models": list(models) if models is not None else None,
+                "exclude_models": list(exclude_models),
+                "profile_runtime": profile_runtime,
                 "scoring_contract_version": SCORING_CONTRACT_VERSION,
             },
             tags={
@@ -859,6 +875,7 @@ def _experiment_index_row(
         "seasons": list(seasons),
         "start_round": start_round,
         "budget": budget,
+        "budget_policy": BUDGET_POLICY_MOVING,
         "current_year": current_year,
         "jobs": jobs,
         "scoring_contract_version": SCORING_CONTRACT_VERSION,
@@ -904,6 +921,7 @@ def _child_index_row(
         "model_id": spec.model_id,
         "feature_pack": spec.feature_pack,
         "fixture_mode": spec.fixture_mode,
+        "budget_policy": result.metadata.budget_policy,
         "footystats_mode": spec.backtest_config.footystats_mode,
         "matchup_context_mode": spec.backtest_config.matchup_context_mode,
         "output_path": _relative_path(spec.output_path, project_root=project_root),
@@ -967,10 +985,12 @@ def _child_params(spec: ChildRunSpec) -> dict[str, object]:
         "model_id": spec.model_id,
         "feature_pack": spec.feature_pack,
         "fixture_mode": spec.fixture_mode,
+        "budget_policy": BUDGET_POLICY_MOVING,
         "footystats_mode": spec.backtest_config.footystats_mode,
         "matchup_context_mode": spec.backtest_config.matchup_context_mode,
         "start_round": spec.backtest_config.start_round,
         "budget": spec.backtest_config.budget,
+        "initial_budget": spec.backtest_config.budget,
         "current_year": spec.backtest_config.current_year,
         "jobs": spec.jobs,
         "scoring_contract_version": SCORING_CONTRACT_VERSION,
@@ -1042,6 +1062,7 @@ def _primary_summary_rows(spec: ChildRunSpec, result: BacktestResult, *, child_i
                 "model_id": spec.model_id,
                 "feature_pack": spec.feature_pack,
                 "fixture_mode": spec.fixture_mode,
+                "budget_policy": result.metadata.budget_policy,
                 **row,
             }
         )
@@ -1075,6 +1096,7 @@ def _prediction_metric_rows(spec: ChildRunSpec, result: BacktestResult, *, child
         _prediction_metric_row(
             spec,
             child_id=child_id,
+            budget_policy=result.metadata.budget_policy,
             metric_scope=metric_scope,
             k=k,
             frame=frame,
@@ -1088,6 +1110,7 @@ def _prediction_metric_row(
     spec: ChildRunSpec,
     *,
     child_id: str,
+    budget_policy: str,
     metric_scope: str,
     k: int | None,
     frame: pd.DataFrame,
@@ -1102,6 +1125,7 @@ def _prediction_metric_row(
         "model_id": spec.model_id,
         "feature_pack": spec.feature_pack,
         "fixture_mode": spec.fixture_mode,
+        "budget_policy": normalize_budget_policy(budget_policy),
         "metric_scope": metric_scope,
         "k": k,
         "observed_count": len(paired),
@@ -1211,6 +1235,7 @@ def _calibration_decile_rows(spec: ChildRunSpec, result: BacktestResult, *, chil
                 "model_id": spec.model_id,
                 "feature_pack": spec.feature_pack,
                 "fixture_mode": spec.fixture_mode,
+                "budget_policy": normalize_budget_policy(result.metadata.budget_policy),
                 "decile": decile_number,
                 "row_count": len(decile_frame),
                 "predicted_mean": float(decile_frame["predicted"].mean()),
@@ -1260,6 +1285,8 @@ def _rank_summary(per_season_summary: pd.DataFrame, prediction_metrics: pd.DataF
         ranked.insert(0, "rank", pd.Series(dtype="int64"))
         return ranked
 
+    per_season_summary = _with_normalized_budget_policy(per_season_summary)
+    prediction_metrics = _with_normalized_budget_policy(prediction_metrics)
     baseline_by_season = _baseline_actual_points_by_season(per_season_summary)
     top50_spearman_baseline = _baseline_metric_by_season(
         prediction_metrics,
@@ -1273,12 +1300,23 @@ def _rank_summary(per_season_summary: pd.DataFrame, prediction_metrics: pd.DataF
             baseline_by_season=baseline_by_season,
             top50_spearman_baseline=top50_spearman_baseline,
         )
-        for _group_key, group_frame in per_season_summary.groupby(["model_id", "feature_pack", "fixture_mode"], sort=False)
+        for _group_key, group_frame in per_season_summary.groupby(
+            ["model_id", "feature_pack", "fixture_mode", "budget_policy"],
+            sort=False,
+        )
     ]
     ranked = pd.DataFrame(rows)
     ranked = ranked.sort_values(
-        by=["promotion_eligible", "aggregate_delta", "total_actual_points", "model_id", "feature_pack", "fixture_mode"],
-        ascending=[False, False, False, True, True, True],
+        by=[
+            "promotion_eligible",
+            "aggregate_delta",
+            "total_actual_points",
+            "model_id",
+            "feature_pack",
+            "fixture_mode",
+            "budget_policy",
+        ],
+        ascending=[False, False, False, True, True, True, True],
         na_position="last",
         kind="mergesort",
     ).reset_index(drop=True)
@@ -1290,12 +1328,16 @@ _RANKED_SUMMARY_COLUMNS = [
     "model_id",
     "feature_pack",
     "fixture_mode",
+    "budget_policy",
     "seasons_evaluated",
     "total_rounds",
     "total_actual_points",
     "average_actual_points",
     "total_predicted_points",
     "average_predicted_points",
+    "worst_min_budget",
+    "worst_max_budget_drawdown",
+    "total_budget_constrained_rounds",
     "baseline_total_actual_points",
     "aggregate_delta",
     "average_actual_delta_per_round",
@@ -1312,23 +1354,30 @@ def _aggregate_summary_row(
     group_frame: pd.DataFrame,
     *,
     prediction_metrics: pd.DataFrame,
-    baseline_by_season: Mapping[tuple[int, str], float],
-    top50_spearman_baseline: Mapping[tuple[int, str], float],
+    baseline_by_season: Mapping[tuple[int, str, str], float],
+    top50_spearman_baseline: Mapping[tuple[int, str, str], float],
 ) -> dict[str, object]:
     first = group_frame.iloc[0]
     model_id = str(first["model_id"])
     feature_pack = str(first["feature_pack"])
     fixture_mode = str(first["fixture_mode"])
+    budget_policy = normalize_budget_policy(first.get("budget_policy"))
     total_rounds = int(group_frame["rounds"].sum())
     total_actual_points = float(group_frame["total_actual_points"].sum())
     total_predicted_points = float(group_frame["total_predicted_points"].sum())
+    worst_min_budget = _column_min_or_none(group_frame, "min_budget")
+    worst_max_budget_drawdown = _column_max_or_none(group_frame, "max_budget_drawdown")
+    total_budget_constrained_rounds = _column_int_sum_or_none(group_frame, "budget_constrained_rounds")
     season_deltas = _season_deltas(group_frame, baseline_by_season=baseline_by_season)
     aggregate_delta = _sum_or_none([delta for delta, _rounds in season_deltas])
     baseline_total_actual_points = _sum_or_none(
         [
-            baseline_by_season[(int(row["season"]), str(row["fixture_mode"]))]
+            baseline_by_season[
+                (int(row["season"]), str(row["fixture_mode"]), normalize_budget_policy(row.get("budget_policy")))
+            ]
             for row in group_frame.to_dict(orient="records")
-            if (int(row["season"]), str(row["fixture_mode"])) in baseline_by_season
+            if (int(row["season"]), str(row["fixture_mode"]), normalize_budget_policy(row.get("budget_policy")))
+            in baseline_by_season
         ]
     )
     average_actual_delta_per_round = None if aggregate_delta is None or total_rounds == 0 else aggregate_delta / total_rounds
@@ -1339,6 +1388,7 @@ def _aggregate_summary_row(
         model_id=model_id,
         feature_pack=feature_pack,
         fixture_mode=fixture_mode,
+        budget_policy=budget_policy,
         metric_scope="selected_players",
         metric_column="calibration_slope",
     )
@@ -1347,6 +1397,7 @@ def _aggregate_summary_row(
         model_id=model_id,
         feature_pack=feature_pack,
         fixture_mode=fixture_mode,
+        budget_policy=budget_policy,
         metric_scope="top50_candidates",
         metric_column="spearman",
     )
@@ -1366,12 +1417,16 @@ def _aggregate_summary_row(
         "model_id": model_id,
         "feature_pack": feature_pack,
         "fixture_mode": fixture_mode,
+        "budget_policy": budget_policy,
         "seasons_evaluated": int(group_frame["season"].nunique()),
         "total_rounds": total_rounds,
         "total_actual_points": total_actual_points,
         "average_actual_points": None if total_rounds == 0 else total_actual_points / total_rounds,
         "total_predicted_points": total_predicted_points,
         "average_predicted_points": None if total_rounds == 0 else total_predicted_points / total_rounds,
+        "worst_min_budget": worst_min_budget,
+        "worst_max_budget_drawdown": worst_max_budget_drawdown,
+        "total_budget_constrained_rounds": total_budget_constrained_rounds,
         "baseline_total_actual_points": baseline_total_actual_points,
         "aggregate_delta": aggregate_delta,
         "average_actual_delta_per_round": average_actual_delta_per_round,
@@ -1384,12 +1439,14 @@ def _aggregate_summary_row(
     }
 
 
-def _baseline_actual_points_by_season(per_season_summary: pd.DataFrame) -> dict[tuple[int, str], float]:
+def _baseline_actual_points_by_season(per_season_summary: pd.DataFrame) -> dict[tuple[int, str, str], float]:
     baseline = per_season_summary[
         per_season_summary["model_id"].eq("random_forest") & per_season_summary["feature_pack"].eq("ppg")
     ]
     return {
-        (int(row["season"]), str(row["fixture_mode"])): float(row["total_actual_points"])
+        (int(row["season"]), str(row["fixture_mode"]), normalize_budget_policy(row.get("budget_policy"))): float(
+            row["total_actual_points"]
+        )
         for row in baseline.to_dict(orient="records")
     }
 
@@ -1399,7 +1456,7 @@ def _baseline_metric_by_season(
     *,
     metric_scope: str,
     metric_column: str,
-) -> dict[tuple[int, str], float]:
+) -> dict[tuple[int, str, str], float]:
     if prediction_metrics.empty or metric_column not in prediction_metrics.columns:
         return {}
     baseline = prediction_metrics[
@@ -1407,22 +1464,26 @@ def _baseline_metric_by_season(
         & prediction_metrics["feature_pack"].eq("ppg")
         & prediction_metrics["metric_scope"].eq(metric_scope)
     ]
-    values: dict[tuple[int, str], float] = {}
+    values: dict[tuple[int, str, str], float] = {}
     for row in baseline.to_dict(orient="records"):
         value = row[metric_column]
         if not pd.isna(value):
-            values[(int(row["season"]), str(row["fixture_mode"]))] = float(value)
+            values[
+                (int(row["season"]), str(row["fixture_mode"]), normalize_budget_policy(row.get("budget_policy")))
+            ] = float(value)
     return values
 
 
 def _season_deltas(
     group_frame: pd.DataFrame,
     *,
-    baseline_by_season: Mapping[tuple[int, str], float],
+    baseline_by_season: Mapping[tuple[int, str, str], float],
 ) -> list[tuple[float, int]]:
     deltas: list[tuple[float, int]] = []
     for row in group_frame.to_dict(orient="records"):
-        baseline = baseline_by_season.get((int(row["season"]), str(row["fixture_mode"])))
+        baseline = baseline_by_season.get(
+            (int(row["season"]), str(row["fixture_mode"]), normalize_budget_policy(row.get("budget_policy")))
+        )
         if baseline is not None:
             deltas.append((float(row["total_actual_points"]) - baseline, int(row["rounds"])))
     return deltas
@@ -1434,12 +1495,49 @@ def _sum_or_none(values: Sequence[float]) -> float | None:
     return float(sum(values))
 
 
+def _column_min_or_none(frame: pd.DataFrame, column: str) -> float | None:
+    if column not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return float(values.min())
+
+
+def _column_max_or_none(frame: pd.DataFrame, column: str) -> float | None:
+    if column not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return float(values.max())
+
+
+def _column_int_sum_or_none(frame: pd.DataFrame, column: str) -> int | None:
+    if column not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return int(values.sum())
+
+
+def _with_normalized_budget_policy(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    if "budget_policy" not in result.columns:
+        result["budget_policy"] = normalize_budget_policy(None)
+    else:
+        result["budget_policy"] = result["budget_policy"].map(normalize_budget_policy)
+    return result
+
+
 def _mean_metric(
     prediction_metrics: pd.DataFrame,
     *,
     model_id: str,
     feature_pack: str,
     fixture_mode: str,
+    budget_policy: str,
     metric_scope: str,
     metric_column: str,
 ) -> float | None:
@@ -1449,6 +1547,7 @@ def _mean_metric(
         prediction_metrics["model_id"].eq(model_id)
         & prediction_metrics["feature_pack"].eq(feature_pack)
         & prediction_metrics["fixture_mode"].eq(fixture_mode)
+        & prediction_metrics["budget_policy"].eq(normalize_budget_policy(budget_policy))
         & prediction_metrics["metric_scope"].eq(metric_scope)
     ][metric_column].dropna()
     if values.empty:
@@ -1458,12 +1557,15 @@ def _mean_metric(
 
 def _mean_baseline_metric(
     group_frame: pd.DataFrame,
-    baseline_by_season: Mapping[tuple[int, str], float],
+    baseline_by_season: Mapping[tuple[int, str, str], float],
 ) -> float | None:
     values = [
-        baseline_by_season[(int(row["season"]), str(row["fixture_mode"]))]
+        baseline_by_season[
+            (int(row["season"]), str(row["fixture_mode"]), normalize_budget_policy(row.get("budget_policy")))
+        ]
         for row in group_frame.to_dict(orient="records")
-        if (int(row["season"]), str(row["fixture_mode"])) in baseline_by_season
+        if (int(row["season"]), str(row["fixture_mode"]), normalize_budget_policy(row.get("budget_policy")))
+        in baseline_by_season
     ]
     if not values:
         return None
@@ -1498,6 +1600,8 @@ def _metadata(
         "seasons": list(seasons),
         "start_round": start_round,
         "budget": budget,
+        "budget_policy": BUDGET_POLICY_MOVING,
+        "initial_budget": budget,
         "current_year": current_year,
         "jobs": jobs,
         "matrix_hash": matrix_hash,
@@ -1540,11 +1644,7 @@ def _write_success_artifacts(
     calibration_deciles.to_csv(output_path / "calibration_deciles.csv", index=False, float_format=CSV_FLOAT_FORMAT)
     _write_json(output_path / "comparability_report.json", {"status": "ok"})
     (output_path / "comparison_report.md").write_text("# Model Feature Experiment\n\nStatus: ok\n", encoding="utf-8")
-    (output_path / "calibration_plots.html").write_text("<!doctype html><title>Calibration plots</title>\n", encoding="utf-8")
-    (output_path / "squad_performance_comparison.html").write_text(
-        "<!doctype html><title>Squad performance comparison</title>\n",
-        encoding="utf-8",
-    )
+    build_experiment_html_reports(output_path)
 
 
 def _write_failure_artifacts(output_path: Path, metadata: Mapping[str, object]) -> None:

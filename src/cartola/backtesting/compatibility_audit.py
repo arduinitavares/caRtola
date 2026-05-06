@@ -23,6 +23,7 @@ from cartola.backtesting.scoring_contract import (
 )
 
 ROUND_FILE_RE = re.compile(r"^rodada-(\d+)\.csv$")
+LEGACY_MARKET_FILE_RE = re.compile(r"^Mercado_(\d+)\.txt$")
 EXPECTED_STRATEGIES: tuple[str, ...] = ("baseline", "random_forest", "price")
 CSV_ERROR_MESSAGE_LIMIT = 300
 CSV_COLUMNS: tuple[str, ...] = (
@@ -254,11 +255,25 @@ def discover_seasons(config: AuditConfig) -> list[SeasonDiscovery]:
     )
     for season_path in season_paths:
         round_files = sorted(season_path.glob("rodada-*.csv"))
+        legacy_market_files = sorted(
+            season_path.glob("Mercado_*.txt"),
+            key=lambda path: _legacy_market_sort_key(path),
+        )
+        if not round_files and legacy_market_files:
+            round_files = legacy_market_files
         if not round_files:
             continue
 
         try:
-            detected_rounds = sorted(parse_round_number(path) for path in round_files)
+            usable_round_files: list[Path] = []
+            detected_rounds: list[int] = []
+            for path in round_files:
+                round_number = _discovery_round_number(path)
+                if round_number <= 0:
+                    continue
+                usable_round_files.append(path)
+                detected_rounds.append(round_number)
+            detected_rounds = sorted(detected_rounds)
         except Exception as exc:  # noqa: BLE001 - audit reports exceptions per season
             error = _error_detail("discovery", exc)
             discoveries.append(
@@ -275,12 +290,15 @@ def discover_seasons(config: AuditConfig) -> list[SeasonDiscovery]:
             )
             continue
 
+        if not usable_round_files:
+            continue
+
         discoveries.append(
             SeasonDiscovery(
                 season=int(season_path.name),
                 season_path=season_path,
-                round_files=round_files,
-                round_file_count=len(round_files),
+                round_files=usable_round_files,
+                round_file_count=len(usable_round_files),
                 min_round=min(detected_rounds),
                 max_round=max(detected_rounds),
                 detected_rounds=detected_rounds,
@@ -288,6 +306,24 @@ def discover_seasons(config: AuditConfig) -> list[SeasonDiscovery]:
         )
 
     return discoveries
+
+
+def _discovery_round_number(path: Path) -> int:
+    if match := ROUND_FILE_RE.match(path.name):
+        return int(match.group(1))
+    if match := LEGACY_MARKET_FILE_RE.match(path.name):
+        # Mercado_1 is the opening market snapshot; Mercado_2 contains round 1 outcomes.
+        return int(match.group(1)) - 1
+    if path.name.startswith("rodada-"):
+        raise ValueError(f"Invalid round CSV filename: {path}")
+    raise ValueError(f"Invalid round filename: {path}")
+
+
+def _legacy_market_sort_key(path: Path) -> int:
+    match = LEGACY_MARKET_FILE_RE.match(path.name)
+    if not match:
+        raise ValueError(f"Invalid legacy market filename: {path}")
+    return int(match.group(1))
 
 
 def classify_season(season: int, detected_rounds: list[int], config: AuditConfig) -> tuple[str, bool, list[str]]:

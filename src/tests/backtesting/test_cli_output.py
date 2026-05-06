@@ -5,6 +5,7 @@ import pytest
 from rich.console import Console
 
 import cartola.backtesting.cli_output as cli_output
+from cartola.backtesting.budgeting import BUDGET_POLICY_MOVING
 from cartola.backtesting.cli_output import (
     ChartOutput,
     _build_performance_figure,
@@ -37,6 +38,8 @@ def _metadata_for_config(
         backtest_workers_effective=2,
         model_n_jobs_effective=-1,
         parallel_backend="loky",
+        budget_policy=BUDGET_POLICY_MOVING,
+        initial_budget=config.budget,
         thread_env={
             "OMP_NUM_THREADS": None,
             "MKL_NUM_THREADS": None,
@@ -161,6 +164,10 @@ def test_render_backtest_success_prints_summary_and_run_details(tmp_path: Path) 
     assert "70.25" in text
     assert "+5.50" in text
     assert "Run details" in text
+    assert "Budget policy" in text
+    assert "moving" in text
+    assert "Initial budget" in text
+    assert "100.00" in text
     assert "Performance chart" in text
     assert "data/08_reporting/backtests/2026/charts/strategy_performance_by_round.html" in text
     assert "cartola_standard_2026_v1" in text

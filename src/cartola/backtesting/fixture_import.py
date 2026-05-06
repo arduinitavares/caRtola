@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,15 +40,29 @@ def fetch_thesportsdb_round(
     api_key: str,
     league_id: int = DEFAULT_THESPORTSDB_LEAGUE_ID,
 ) -> list[dict[str, Any]]:
-    response = requests.get(
-        THESPORTSDB_ROUND_URL.format(api_key=api_key),
-        params={"id": league_id, "r": round_number, "s": season},
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    events = payload.get("events") or []
-    return list(events)
+    for attempt in range(3):
+        response = requests.get(
+            THESPORTSDB_ROUND_URL.format(api_key=api_key),
+            params={"id": league_id, "r": round_number, "s": season},
+            timeout=30,
+        )
+        if getattr(response, "status_code", None) == 429 and attempt < 2:
+            time.sleep(_retry_after_seconds(response.headers.get("Retry-After")))
+            continue
+        response.raise_for_status()
+        payload = response.json()
+        events = payload.get("events") or []
+        return list(events)
+    raise RuntimeError("Unreachable fixture fetch retry state")
+
+
+def _retry_after_seconds(value: str | None) -> float:
+    if value is None:
+        return 60.0
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return 60.0
 
 
 def events_to_fixture_frame(

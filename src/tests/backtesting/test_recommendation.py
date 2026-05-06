@@ -11,6 +11,7 @@ from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
 from cartola.backtesting.footystats_features import FootyStatsPPGLoadResult
 from cartola.backtesting.recommendation import (
     RecommendationConfig,
+    _backtest_config,
     _finalized_live_data_evidence,
     _validate_mode_scope,
     _visible_season_frame,
@@ -139,6 +140,22 @@ def _footystats_rows(rounds: range, clubs: range = range(1, 19)) -> pd.DataFrame
     return pd.DataFrame(rows)
 
 
+def _strict_fixture_rows(rounds: range, clubs: range = range(1, 19)) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    club_ids = list(clubs)
+    for round_number in rounds:
+        for index in range(0, len(club_ids), 2):
+            rows.append(
+                {
+                    "rodada": round_number,
+                    "id_clube_home": club_ids[index],
+                    "id_clube_away": club_ids[index + 1],
+                    "data": f"2026-05-{round_number:02d}T19:00:00Z",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def test_visible_season_frame_excludes_future_rounds() -> None:
     season_df = _season_frame(range(1, 6), target_round=3, live_target=True)
 
@@ -160,6 +177,36 @@ def test_replay_mode_allows_historical_season() -> None:
     config = RecommendationConfig(season=2025, target_round=10, mode="replay", current_year=2026)
 
     _validate_mode_scope(config)
+
+
+def test_matchup_context_requires_strict_fixture_mode() -> None:
+    config = RecommendationConfig(
+        season=2026,
+        target_round=14,
+        mode="live",
+        current_year=2026,
+        matchup_context_mode="cartola_matchup_v1",
+    )
+
+    with pytest.raises(ValueError, match="matchup_context_mode='cartola_matchup_v1' requires fixture_mode='strict'"):
+        _validate_mode_scope(config)
+
+
+def test_backtest_config_preserves_strict_matchup_modes(tmp_path: Path) -> None:
+    config = RecommendationConfig(
+        season=2026,
+        target_round=14,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+        fixture_mode="strict",
+        matchup_context_mode="cartola_matchup_v1",
+    )
+
+    backtest_config = _backtest_config(config)
+
+    assert backtest_config.fixture_mode == "strict"
+    assert backtest_config.matchup_context_mode == "cartola_matchup_v1"
 
 
 def test_finalized_evidence_ignores_zero_filled_live_rows() -> None:
@@ -563,6 +610,91 @@ def test_run_recommendation_outputs_captain_contract_fields(
         assert result.summary[key] == value
     assert result.metadata["formation"] == result.summary["formation"]
     assert result.metadata["formation_search"] == "all_official_formations"
+
+
+def test_run_recommendation_strict_matchup_loads_fixture_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
+
+    season_df = _season_frame(range(1, 4), target_round=3, live_target=True)
+    load_calls: list[dict[str, object]] = []
+
+    def fake_load_strict_fixtures(**kwargs: object) -> StrictFixturesLoadResult:
+        load_calls.append(kwargs)
+        return StrictFixturesLoadResult(
+            fixtures=_strict_fixture_rows(range(1, 4)),
+            manifest_paths=[
+                "data/01_raw/fixtures_strict/2026/partidas-1.manifest.json",
+                "data/01_raw/fixtures_strict/2026/partidas-2.manifest.json",
+                "data/01_raw/fixtures_strict/2026/partidas-3.manifest.json",
+            ],
+            manifest_sha256={
+                "data/01_raw/fixtures_strict/2026/partidas-1.manifest.json": "a" * 64,
+                "data/01_raw/fixtures_strict/2026/partidas-2.manifest.json": "b" * 64,
+                "data/01_raw/fixtures_strict/2026/partidas-3.manifest.json": "c" * 64,
+            },
+            generator_versions=["fixture_snapshot_v1"],
+        )
+
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_strict_fixtures", fake_load_strict_fixtures)
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+        footystats_mode="none",
+        fixture_mode="strict",
+        matchup_context_mode="cartola_matchup_v1",
+    )
+
+    result = run_recommendation(config)
+
+    assert load_calls == [
+        {
+            "season": 2026,
+            "project_root": tmp_path,
+            "required_rounds": [1, 2, 3],
+        }
+    ]
+    assert result.metadata["fixture_mode"] == "strict"
+    assert result.metadata["matchup_context_mode"] == "cartola_matchup_v1"
+    assert result.metadata["fixture_source_directory"] == "data/01_raw/fixtures_strict/2026"
+    assert result.metadata["fixture_manifest_paths"] == [
+        "data/01_raw/fixtures_strict/2026/partidas-1.manifest.json",
+        "data/01_raw/fixtures_strict/2026/partidas-2.manifest.json",
+        "data/01_raw/fixtures_strict/2026/partidas-3.manifest.json",
+    ]
+    assert result.metadata["fixture_manifest_sha256"][
+        "data/01_raw/fixtures_strict/2026/partidas-3.manifest.json"
+    ] == "c" * 64
+    assert result.metadata["fixture_generator_versions"] == ["fixture_snapshot_v1"]
+    assert "matchup_is_home" in result.metadata["feature_columns"]
+
+
+def test_run_recommendation_strict_fixture_missing_fails_loudly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = _season_frame(range(1, 4), target_round=3, live_target=True)
+    monkeypatch.setattr("cartola.backtesting.recommendation.load_season_data", lambda *a, **k: season_df)
+
+    config = RecommendationConfig(
+        season=2026,
+        target_round=3,
+        mode="live",
+        project_root=tmp_path,
+        current_year=2026,
+        footystats_mode="none",
+        fixture_mode="strict",
+        matchup_context_mode="cartola_matchup_v1",
+    )
+
+    with pytest.raises(FileNotFoundError, match="Required strict fixture"):
+        run_recommendation(config)
 
 
 def test_run_recommendation_supports_ridge_primary_model(

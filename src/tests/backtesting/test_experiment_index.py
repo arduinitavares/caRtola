@@ -4,6 +4,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+from cartola.backtesting.budgeting import BUDGET_POLICY_FIXED, BUDGET_POLICY_MOVING
 from cartola.backtesting.experiment_index import (
     SCHEMA_VERSION,
     ExperimentIndex,
@@ -31,6 +34,58 @@ def test_index_initializes_schema_wal_timeout_and_version(tmp_path: Path) -> Non
     assert journal_mode == "wal"
     assert user_version == SCHEMA_VERSION
     assert {"experiments", "child_runs"}.issubset(tables)
+    with sqlite3.connect(db_path) as connection:
+        experiment_columns = {row[1] for row in connection.execute("PRAGMA table_info(experiments)").fetchall()}
+        child_run_columns = {row[1] for row in connection.execute("PRAGMA table_info(child_runs)").fetchall()}
+    assert "budget_policy" in experiment_columns
+    assert "budget_policy" in child_run_columns
+
+
+def test_index_migrates_v1_rows_as_fixed_budget(tmp_path: Path) -> None:
+    db_path = tmp_path / "experiment_index.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE experiments (experiment_id TEXT PRIMARY KEY, budget REAL NOT NULL)")
+        connection.execute(
+            """
+            CREATE TABLE child_runs (
+                experiment_id TEXT NOT NULL,
+                child_run_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                feature_pack TEXT NOT NULL,
+                comparability_partition TEXT NOT NULL,
+                PRIMARY KEY (experiment_id, child_run_id)
+            )
+            """
+        )
+        connection.execute("INSERT INTO experiments (experiment_id, budget) VALUES ('exp-legacy', 100.0)")
+        connection.execute(
+            """
+            INSERT INTO child_runs (
+                experiment_id,
+                child_run_id,
+                model_id,
+                feature_pack,
+                comparability_partition
+            )
+            VALUES ('exp-legacy', 'child-legacy', 'ridge', 'ppg', 'season=2025')
+            """
+        )
+        connection.execute("PRAGMA user_version = 1")
+
+    ExperimentIndex(db_path).initialize()
+
+    with sqlite3.connect(db_path) as connection:
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        experiment_policy = connection.execute(
+            "SELECT budget_policy FROM experiments WHERE experiment_id = 'exp-legacy'"
+        ).fetchone()[0]
+        child_policy = connection.execute(
+            "SELECT budget_policy FROM child_runs WHERE experiment_id = 'exp-legacy'"
+        ).fetchone()[0]
+
+    assert user_version == SCHEMA_VERSION
+    assert experiment_policy == BUDGET_POLICY_FIXED
+    assert child_policy == BUDGET_POLICY_FIXED
 
 
 def test_index_connection_factory_sets_busy_timeout(tmp_path: Path) -> None:
@@ -69,6 +124,34 @@ def test_experiment_upsert_is_keyed_by_experiment_id(tmp_path: Path) -> None:
         ).fetchall()
 
     assert rows == [("ok", 8, 1, "[2024,2025]")]
+
+
+def test_upserts_normalize_missing_budget_policy_to_fixed(tmp_path: Path) -> None:
+    index = ExperimentIndex(tmp_path / "experiment_index.sqlite")
+    index.initialize()
+
+    experiment_row = _experiment_row()
+    child_row = _child_run_row()
+    del experiment_row["budget_policy"]
+    del child_row["budget_policy"]
+
+    index.upsert_experiment(experiment_row)
+    index.upsert_child_run(child_row)
+
+    with sqlite3.connect(index.path) as connection:
+        experiment_policy = connection.execute("SELECT budget_policy FROM experiments").fetchone()[0]
+        child_policy = connection.execute("SELECT budget_policy FROM child_runs").fetchone()[0]
+
+    assert experiment_policy == BUDGET_POLICY_FIXED
+    assert child_policy == BUDGET_POLICY_FIXED
+
+
+def test_upserts_reject_unknown_budget_policy(tmp_path: Path) -> None:
+    index = ExperimentIndex(tmp_path / "experiment_index.sqlite")
+    index.initialize()
+
+    with pytest.raises(ValueError, match="Unknown budget policy"):
+        index.upsert_experiment(_experiment_row(budget_policy="legacy"))
 
 
 def test_child_upsert_is_keyed_by_experiment_id_and_child_run_id(
@@ -187,6 +270,7 @@ def _experiment_row(**overrides: object) -> dict[str, object]:
         "seasons": json.dumps([2025]),
         "start_round": 5,
         "budget": 100.0,
+        "budget_policy": BUDGET_POLICY_MOVING,
         "current_year": 2026,
         "jobs": 12,
         "scoring_contract_version": "cartola_standard_2026_v1",
@@ -215,6 +299,7 @@ def _child_run_row(**overrides: object) -> dict[str, object]:
         "model_id": "random_forest",
         "feature_pack": "ppg",
         "fixture_mode": "none",
+        "budget_policy": BUDGET_POLICY_MOVING,
         "footystats_mode": "ppg",
         "matchup_context_mode": "none",
         "output_path": (

@@ -6,7 +6,9 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
+from typing import TYPE_CHECKING, Any
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -21,13 +23,23 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from cartola.backtesting.experiment_runner import ExperimentProgressEvent, run_model_experiment
-from cartola.backtesting.experiment_tracking import ExperimentTracker, MLflowExperimentTracker, NoOpExperimentTracker
+if TYPE_CHECKING:
+    from cartola.backtesting.experiment_runner import ExperimentProgressEvent
+    from cartola.backtesting.experiment_tracking import ExperimentTracker
+
+
+run_model_experiment: Callable[..., Any] | None = None
+MLflowExperimentTracker: type[Any] | None = None
+NoOpExperimentTracker: type[Any] | None = None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Cartola model feature experiment groups.")
-    parser.add_argument("--group", choices=("production-parity", "matchup-research"), required=True)
+    parser.add_argument(
+        "--group",
+        choices=("production-parity", "matchup-research", "xgboost-research", "xgboost-sensitivity-v2"),
+        required=True,
+    )
     parser.add_argument("--seasons", default="2023,2024,2025")
     parser.add_argument("--start-round", type=int, default=5)
     parser.add_argument("--budget", type=float, default=100.0)
@@ -35,6 +47,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/experiments/model_feature"))
     parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--models", default=None, help="Comma-separated model IDs to include.")
+    parser.add_argument("--exclude-models", default="", help="Comma-separated model IDs to exclude.")
+    parser.add_argument("--profile-runtime", action="store_true", help="Write per-round runtime profile rows to metadata.")
     parser.add_argument("--tracker", choices=("none", "mlflow"), default="none")
     parser.add_argument("--mlflow-tracking-uri", default=None)
     return parser.parse_args(argv)
@@ -47,8 +62,46 @@ def _parse_seasons(value: str) -> tuple[int, ...]:
     return seasons
 
 
+def _parse_optional_csv(value: str | None) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    parsed = tuple(part.strip() for part in value.split(",") if part.strip())
+    return parsed or None
+
+
+def _parse_csv(value: str | None) -> tuple[str, ...]:
+    return _parse_optional_csv(value) or ()
+
+
 def _timestamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def _bootstrap_dotenv(project_root: Path) -> bool:
+    dotenv_path = project_root.expanduser() / ".env"
+    if not dotenv_path.is_file():
+        return False
+    load_dotenv(dotenv_path=dotenv_path, override=False)
+    return True
+
+
+def _load_runtime_dependencies() -> None:
+    global MLflowExperimentTracker, NoOpExperimentTracker, run_model_experiment
+
+    if run_model_experiment is None:
+        from cartola.backtesting.experiment_runner import run_model_experiment as imported_run_model_experiment
+
+        run_model_experiment = imported_run_model_experiment
+    if MLflowExperimentTracker is None or NoOpExperimentTracker is None:
+        from cartola.backtesting.experiment_tracking import (
+            MLflowExperimentTracker as ImportedMLflowExperimentTracker,
+        )
+        from cartola.backtesting.experiment_tracking import (
+            NoOpExperimentTracker as ImportedNoOpExperimentTracker,
+        )
+
+        MLflowExperimentTracker = ImportedMLflowExperimentTracker
+        NoOpExperimentTracker = ImportedNoOpExperimentTracker
 
 
 def _print_error(console: Console, error: Exception) -> None:
@@ -197,6 +250,11 @@ def _format_duration(seconds: float | None) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    _bootstrap_dotenv(args.project_root)
+    _load_runtime_dependencies()
+    if run_model_experiment is None or MLflowExperimentTracker is None or NoOpExperimentTracker is None:
+        raise RuntimeError("Experiment runtime dependencies were not loaded.")
+
     stdout = Console()
     stderr = Console(stderr=True)
     tracker = (
@@ -216,6 +274,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 project_root=args.project_root,
                 output_root=args.output_root,
                 started_at_utc=_timestamp(),
+                models=_parse_optional_csv(args.models),
+                exclude_models=_parse_csv(args.exclude_models),
+                profile_runtime=args.profile_runtime,
                 progress_callback=progress_callback,
                 tracker=tracker,
             )

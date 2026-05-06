@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from threading import Lock
 from time import perf_counter
 
 import pandas as pd
+from threadpoolctl import threadpool_info as _raw_threadpool_info
 
+from cartola.backtesting.budgeting import (
+    BUDGET_POLICY_MOVING,
+    BudgetRoundUpdate,
+    BudgetState,
+    advance_budget,
+    initial_budget_state,
+)
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
 from cartola.backtesting.features import (
@@ -46,6 +53,12 @@ ROUND_RESULT_COLUMNS: list[str] = [
     "formation",
     "selected_count",
     "budget_used",
+    "budget_before_round",
+    "budget_after_round",
+    "budget_delta",
+    "budget_remaining",
+    "budget_peak",
+    "budget_drawdown",
     "predicted_points",
     "predicted_points_base",
     "captain_bonus_predicted",
@@ -106,6 +119,8 @@ class BacktestMetadata:
     backtest_workers_effective: int
     model_n_jobs_effective: int
     parallel_backend: str
+    budget_policy: str
+    initial_budget: float
     thread_env: dict[str, str | None]
     scoring_contract_version: str
     captain_scoring_enabled: bool
@@ -130,6 +145,9 @@ class BacktestMetadata:
     footystats_missing_join_keys_by_round: dict[str, list[dict[str, int]]]
     footystats_duplicate_join_keys_by_round: dict[str, list[dict[str, int]]]
     footystats_extra_club_rows_by_round: dict[str, list[dict[str, int]]]
+    runtime_profile_enabled: bool = False
+    round_profiles: list[dict[str, object]] = field(default_factory=list)
+    threadpool_info: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -148,6 +166,8 @@ class RoundEvaluationResult:
     round_rows: list[dict[str, object]]
     selected_frames: list[pd.DataFrame]
     prediction_frames: list[pd.DataFrame]
+    budget_states: dict[str, BudgetState] = field(default_factory=dict)
+    profile: dict[str, object] = field(default_factory=dict)
 
 
 class BacktestRoundEvaluationError(RuntimeError):
@@ -287,6 +307,7 @@ def _run_backtest(
         data,
         policy=config.strict_alignment_policy if config.fixture_mode == "strict" else "fail",
     )
+    max_round = _max_round(data)
     excluded_rounds = sorted({*resolved_fixtures.excluded_rounds, *alignment_excluded_rounds})
     if excluded_rounds:
         data = data[~pd.to_numeric(data["rodada"], errors="raise").isin(excluded_rounds)].copy()
@@ -314,24 +335,15 @@ def _run_backtest(
     selected_frames: list[pd.DataFrame] = []
     prediction_frames: list[pd.DataFrame] = []
 
-    max_round = _max_round(data)
     model_feature_columns = feature_columns_for_config(config)
     empty_training_columns = list(dict.fromkeys([*MARKET_COLUMNS, *model_feature_columns, "target"]))
     target_rounds = list(range(config.start_round, max_round + 1))
-    model_n_jobs_effective = _effective_model_n_jobs(config.jobs)
-    skipped_results, worker_rounds = _target_round_work(
-        target_rounds=target_rounds,
-        excluded_rounds=excluded_rounds,
-        cached_round_set=cached_round_set,
-        primary_model_id=resolved_primary_model_id,
-    )
-    backtest_workers_effective = min(config.jobs, len(worker_rounds))
-    if backtest_workers_effective == 0:
-        parallel_backend = "none"
-    elif config.jobs == 1:
-        parallel_backend = "sequential"
-    else:
-        parallel_backend = "threads"
+    model_n_jobs_effective = _effective_model_n_jobs(1)
+    backtest_workers_effective = 1 if target_rounds else 0
+    parallel_backend = "sequential_moving_budget" if target_rounds else "none"
+    moving_budget_warnings = []
+    if config.jobs > 1 and target_rounds:
+        moving_budget_warnings.append("Target-round parallelism is disabled by moving-budget semantics.")
     metadata = BacktestMetadata(
         season=config.season,
         start_round=config.start_round,
@@ -343,6 +355,8 @@ def _run_backtest(
         backtest_workers_effective=backtest_workers_effective,
         model_n_jobs_effective=model_n_jobs_effective,
         parallel_backend=parallel_backend,
+        budget_policy=BUDGET_POLICY_MOVING,
+        initial_budget=float(config.budget),
         thread_env=_thread_env(),
         scoring_contract_version=SCORING_CONTRACT_VERSION,
         captain_scoring_enabled=CAPTAIN_SCORING_ENABLED,
@@ -357,7 +371,7 @@ def _run_backtest(
         fixture_manifest_sha256=resolved_fixtures.manifest_sha256,
         generator_versions=resolved_fixtures.generator_versions,
         excluded_rounds=excluded_rounds,
-        warnings=resolved_fixtures.warnings,
+        warnings=[*resolved_fixtures.warnings, *moving_budget_warnings],
         footystats_mode=config.footystats_mode,
         footystats_evaluation_scope=config.footystats_evaluation_scope,
         footystats_league_slug=config.footystats_league_slug,
@@ -371,12 +385,16 @@ def _run_backtest(
         footystats_missing_join_keys_by_round=footystats_diagnostics.missing_join_keys_by_round,
         footystats_duplicate_join_keys_by_round=footystats_diagnostics.duplicate_join_keys_by_round,
         footystats_extra_club_rows_by_round=footystats_diagnostics.extra_club_rows_by_round,
+        runtime_profile_enabled=config.profile_runtime,
+        round_profiles=[],
+        threadpool_info=_threadpool_info(),
     )
     round_results_for_targets = [
-        *skipped_results,
-        *_run_round_workers(
+        *_run_rounds_with_moving_budget(
             config=config,
-            worker_rounds=worker_rounds,
+            target_rounds=target_rounds,
+            excluded_rounds=set(excluded_rounds),
+            cached_round_set=cached_round_set,
             round_frame_store=round_frame_store,
             empty_training_columns=empty_training_columns,
             model_feature_columns=model_feature_columns,
@@ -385,10 +403,14 @@ def _run_backtest(
             model_params=model_params,
         ),
     ]
-    for evaluation in sorted(round_results_for_targets, key=lambda item: item.round_number):
+    ordered_evaluations = sorted(round_results_for_targets, key=lambda item: item.round_number)
+    round_profiles: list[dict[str, object]] = []
+    for evaluation in ordered_evaluations:
         round_rows.extend(evaluation.round_rows)
         selected_frames.extend(evaluation.selected_frames)
         prediction_frames.extend(evaluation.prediction_frames)
+        if config.profile_runtime and evaluation.profile:
+            round_profiles.append(evaluation.profile)
 
     round_results = pd.DataFrame(round_rows, columns=pd.Index(ROUND_RESULT_COLUMNS))
     selected_players = _concat_or_empty(selected_frames)
@@ -417,11 +439,11 @@ def _run_backtest(
     summary = _normalize_float_outputs(summary)
     diagnostics = _normalize_float_outputs(diagnostics)
 
-    metadata = BacktestMetadata(
-        **{
-            **metadata.__dict__,
-            "wall_clock_seconds": round(perf_counter() - started_at, OUTPUT_FLOAT_PRECISION),
-        }
+    metadata = replace(
+        metadata,
+        wall_clock_seconds=round(perf_counter() - started_at, OUTPUT_FLOAT_PRECISION),
+        round_profiles=round_profiles,
+        threadpool_info=_threadpool_info(),
     )
     _write_outputs(config, round_results, selected_players, player_predictions, summary, diagnostics, metadata)
     return BacktestResult(
@@ -500,39 +522,27 @@ def _thread_env() -> dict[str, str | None]:
     return {key: os.environ.get(key) for key in THREAD_ENV_KEYS}
 
 
-def _target_round_work(
-    *,
-    target_rounds: list[int],
-    excluded_rounds: list[int],
-    cached_round_set: set[int],
-    primary_model_id: ModelId,
-) -> tuple[list[RoundEvaluationResult], list[int]]:
-    skipped_results: list[RoundEvaluationResult] = []
-    worker_rounds: list[int] = []
-    excluded_round_set = set(excluded_rounds)
-    for round_number in target_rounds:
-        if round_number in excluded_round_set:
-            continue
-        if round_number not in cached_round_set:
-            round_rows: list[dict[str, object]] = []
-            _record_skipped_round(round_rows, round_number, "Empty", primary_model_id=primary_model_id)
-            skipped_results.append(
-                RoundEvaluationResult(
-                    round_number=round_number,
-                    round_rows=round_rows,
-                    selected_frames=[],
-                    prediction_frames=[],
-                )
-            )
-            continue
-        worker_rounds.append(round_number)
-    return skipped_results, worker_rounds
+def _threadpool_info() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for item in _raw_threadpool_info():
+        rows.append(
+            {
+                "user_api": item.get("user_api"),
+                "internal_api": item.get("internal_api"),
+                "num_threads": item.get("num_threads"),
+                "prefix": item.get("prefix"),
+                "version": item.get("version"),
+            }
+        )
+    return rows
 
 
-def _run_round_workers(
+def _run_rounds_with_moving_budget(
     *,
     config: BacktestConfig,
-    worker_rounds: list[int],
+    target_rounds: list[int],
+    excluded_rounds: set[int],
+    cached_round_set: set[int],
     round_frame_store: RoundFrameStore,
     empty_training_columns: list[str],
     model_feature_columns: list[str],
@@ -540,48 +550,61 @@ def _run_round_workers(
     primary_model_id: ModelId,
     model_params: Mapping[str, object] | None = None,
 ) -> list[RoundEvaluationResult]:
-    if config.jobs == 1:
-        return [
-            _evaluate_target_round(
-                round_number=round_number,
-                config=config,
-                round_frame_store=round_frame_store,
-                empty_training_columns=empty_training_columns,
-                model_feature_columns=model_feature_columns,
-                model_n_jobs_effective=model_n_jobs_effective,
-                primary_model_id=primary_model_id,
-                model_params=model_params,
-            )
-            for round_number in worker_rounds
-        ]
-
-    if not worker_rounds:
-        return []
-
-    max_workers = min(config.jobs, len(worker_rounds))
+    budget_states = {
+        strategy: initial_budget_state(config.budget)
+        for strategy in _strategies(primary_model_id)
+    }
     results: list[RoundEvaluationResult] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_round = {
-            executor.submit(
-                _evaluate_target_round,
+    for round_number in target_rounds:
+        if round_number in excluded_rounds or round_number not in cached_round_set:
+            result = _evaluate_skipped_target_round_with_budget_state(
                 round_number=round_number,
-                config=config,
-                round_frame_store=round_frame_store,
-                empty_training_columns=empty_training_columns,
-                model_feature_columns=model_feature_columns,
-                model_n_jobs_effective=model_n_jobs_effective,
+                status="Excluded" if round_number in excluded_rounds else "Empty",
                 primary_model_id=primary_model_id,
-                model_params=model_params,
-            ): round_number
-            for round_number in worker_rounds
-        }
-        for future in as_completed(future_to_round):
-            round_number = future_to_round[future]
+                budget_states=budget_states,
+            )
+        else:
             try:
-                results.append(future.result())
+                result = _evaluate_target_round(
+                    round_number=round_number,
+                    config=config,
+                    round_frame_store=round_frame_store,
+                    empty_training_columns=empty_training_columns,
+                    model_feature_columns=model_feature_columns,
+                    model_n_jobs_effective=model_n_jobs_effective,
+                    primary_model_id=primary_model_id,
+                    model_params=model_params,
+                    budget_states=budget_states,
+                )
             except Exception as exc:
                 raise BacktestRoundEvaluationError(round_number, str(exc)) from exc
+        budget_states = result.budget_states
+        results.append(result)
     return results
+
+
+def _evaluate_skipped_target_round_with_budget_state(
+    *,
+    round_number: int,
+    status: str,
+    primary_model_id: ModelId,
+    budget_states: Mapping[str, BudgetState],
+) -> RoundEvaluationResult:
+    round_rows: list[dict[str, object]] = []
+    next_budget_states = _record_skipped_round(
+        round_rows,
+        round_number,
+        status,
+        primary_model_id=primary_model_id,
+        budget_states=budget_states,
+    )
+    return RoundEvaluationResult(
+        round_number=round_number,
+        round_rows=round_rows,
+        selected_frames=[],
+        prediction_frames=[],
+        budget_states=next_budget_states,
+    )
 
 
 def _evaluate_target_round(
@@ -594,35 +617,68 @@ def _evaluate_target_round(
     model_n_jobs_effective: int,
     primary_model_id: ModelId,
     model_params: Mapping[str, object] | None = None,
+    budget_states: Mapping[str, BudgetState] | None = None,
 ) -> RoundEvaluationResult:
+    round_started = perf_counter()
+    profile: dict[str, object] = {"round_number": round_number} if config.profile_runtime else {}
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
     prediction_frames: list[pd.DataFrame] = []
+    next_budget_states = dict(budget_states or {})
 
+    started = perf_counter()
     training = round_frame_store.training_frame(
         target_round=round_number,
         playable_statuses=config.playable_statuses,
         empty_columns=empty_training_columns,
     )
+    training_frame_seconds = perf_counter() - started
+    started = perf_counter()
     candidates = round_frame_store.prediction_frame(round_number)
     candidates = candidates[candidates["status"].isin(config.playable_statuses)].copy(deep=True)
+    candidate_frame_seconds = perf_counter() - started
+    if config.profile_runtime:
+        profile.update(
+            {
+                "training_frame_seconds": training_frame_seconds,
+                "candidate_frame_seconds": candidate_frame_seconds,
+                "training_rows": len(training),
+                "training_columns": len(training.columns),
+                "candidate_rows": len(candidates),
+                "candidate_columns": len(candidates.columns),
+                "feature_count": len(model_feature_columns),
+            }
+        )
 
     if training.empty or candidates.empty:
-        _record_skipped_round(
+        if config.profile_runtime:
+            profile.update(
+                {
+                    "status": "TrainingEmpty" if training.empty else "Empty",
+                    "total_seconds": perf_counter() - round_started,
+                }
+            )
+        next_budget_states = _record_skipped_round(
             round_rows,
             round_number,
             "TrainingEmpty" if training.empty else "Empty",
             primary_model_id=primary_model_id,
+            budget_states=next_budget_states,
         )
         return RoundEvaluationResult(
             round_number=round_number,
             round_rows=round_rows,
             selected_frames=selected_frames,
             prediction_frames=prediction_frames,
+            budget_states=next_budget_states,
+            profile=profile,
         )
 
     scored_candidates = candidates.copy()
+    started = perf_counter()
     baseline_model = BaselinePredictor().fit(training)
+    baseline_fit_seconds = perf_counter() - started
+    started = perf_counter()
     primary_model = create_point_predictor(
         model_id=primary_model_id,
         random_seed=config.random_seed,
@@ -630,16 +686,41 @@ def _evaluate_target_round(
         n_jobs=model_n_jobs_effective,
         model_params=model_params,
     ).fit(training)
+    primary_model_fit_seconds = perf_counter() - started
     primary_score_column = f"{primary_model_id}_score"
+    started = perf_counter()
     scored_candidates["baseline_score"] = baseline_model.predict(scored_candidates)
+    baseline_predict_seconds = perf_counter() - started
+    started = perf_counter()
     scored_candidates[primary_score_column] = primary_model.predict(scored_candidates)
+    primary_model_predict_seconds = perf_counter() - started
     scored_candidates["price_score"] = scored_candidates[MARKET_OPEN_PRICE_COLUMN].astype(float)
     prediction_frames.append(scored_candidates.copy())
+    if config.profile_runtime:
+        profile.update(
+            {
+                "baseline_fit_seconds": baseline_fit_seconds,
+                "primary_model_fit_seconds": primary_model_fit_seconds,
+                "baseline_predict_seconds": baseline_predict_seconds,
+                "primary_model_predict_seconds": primary_model_predict_seconds,
+                **getattr(primary_model, "last_fit_profile_", {}),
+                **getattr(primary_model, "last_predict_profile_", {}),
+            }
+        )
 
+    optimizer_seconds_by_strategy: dict[str, float] = {}
     for strategy, score_column in _strategies(primary_model_id).items():
         strategy_candidates = scored_candidates.copy()
         strategy_candidates["predicted_points"] = strategy_candidates[score_column]
-        result = optimize_squad(strategy_candidates, score_column="predicted_points", config=config)
+        budget_state = next_budget_states.get(strategy, initial_budget_state(config.budget))
+        started = perf_counter()
+        result = optimize_squad(
+            strategy_candidates,
+            score_column="predicted_points",
+            config=config,
+            budget=budget_state.current_budget,
+        )
+        optimizer_seconds_by_strategy[strategy] = perf_counter() - started
         actual_scores = _actual_scores_for_result(
             result.selected,
             round_number=round_number,
@@ -654,6 +735,8 @@ def _evaluate_target_round(
         )
         policy_summary = _policy_round_summary(policy_diagnostics)
         actual_points_with_captain = actual_scores["actual_points_with_captain"]
+        budget_update = advance_budget(budget_state, result.selected, budget_used=result.budget_used)
+        next_budget_states[strategy] = budget_update.next_state
         round_rows.append(
             {
                 "rodada": round_number,
@@ -662,6 +745,12 @@ def _evaluate_target_round(
                 "formation": result.formation_name,
                 "selected_count": result.selected_count,
                 "budget_used": result.budget_used,
+                "budget_before_round": budget_update.budget_before_round,
+                "budget_after_round": budget_update.budget_after_round,
+                "budget_delta": budget_update.budget_delta,
+                "budget_remaining": budget_update.budget_remaining,
+                "budget_peak": budget_update.budget_peak,
+                "budget_drawdown": budget_update.budget_drawdown,
                 "predicted_points": result.predicted_points_with_captain,
                 "predicted_points_base": result.predicted_points_base,
                 "captain_bonus_predicted": result.captain_bonus_predicted,
@@ -683,11 +772,22 @@ def _evaluate_target_round(
             selected["strategy"] = strategy
             selected_frames.append(selected)
 
+    if config.profile_runtime:
+        profile.update(
+            {
+                "status": "ok",
+                "optimizer_seconds_by_strategy": optimizer_seconds_by_strategy,
+                "optimizer_total_seconds": sum(optimizer_seconds_by_strategy.values()),
+                "total_seconds": perf_counter() - round_started,
+            }
+        )
     return RoundEvaluationResult(
         round_number=round_number,
         round_rows=round_rows,
         selected_frames=selected_frames,
         prediction_frames=prediction_frames,
+        budget_states=next_budget_states,
+        profile=profile,
     )
 
 
@@ -933,8 +1033,18 @@ def _record_skipped_round(
     status: str,
     *,
     primary_model_id: ModelId,
-) -> None:
+    budget_states: Mapping[str, BudgetState] | None = None,
+) -> dict[str, BudgetState]:
+    next_budget_states = dict(budget_states or {})
+    empty_selected = pd.DataFrame({"variacao": pd.Series(dtype=float)})
     for strategy in _strategies(primary_model_id):
+        budget_state = next_budget_states.get(strategy)
+        if budget_state is None:
+            budget_fields = _missing_budget_fields()
+        else:
+            budget_update = advance_budget(budget_state, empty_selected, budget_used=0.0)
+            next_budget_states[strategy] = budget_update.next_state
+            budget_fields = _budget_fields_from_update(budget_update)
         round_rows.append(
             {
                 "rodada": round_number,
@@ -943,6 +1053,7 @@ def _record_skipped_round(
                 "formation": "",
                 "selected_count": 0,
                 "budget_used": 0.0,
+                **budget_fields,
                 "predicted_points": 0.0,
                 "predicted_points_base": 0.0,
                 "captain_bonus_predicted": 0.0,
@@ -961,6 +1072,29 @@ def _record_skipped_round(
                 "actual_points_with_upside_captain": None,
             }
         )
+    return next_budget_states
+
+
+def _missing_budget_fields() -> dict[str, object]:
+    return {
+        "budget_before_round": None,
+        "budget_after_round": None,
+        "budget_delta": None,
+        "budget_remaining": None,
+        "budget_peak": None,
+        "budget_drawdown": None,
+    }
+
+
+def _budget_fields_from_update(budget_update: BudgetRoundUpdate) -> dict[str, object]:
+    return {
+        "budget_before_round": budget_update.budget_before_round,
+        "budget_after_round": budget_update.budget_after_round,
+        "budget_delta": budget_update.budget_delta,
+        "budget_remaining": budget_update.budget_remaining,
+        "budget_peak": budget_update.budget_peak,
+        "budget_drawdown": budget_update.budget_drawdown,
+    }
 
 
 def _concat_or_empty(frames: list[pd.DataFrame]) -> pd.DataFrame:

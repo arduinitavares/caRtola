@@ -381,6 +381,8 @@ def _fake_result(*, config: object, total_actual_points: float) -> BacktestResul
         backtest_workers_effective=1,
         model_n_jobs_effective=-1,
         parallel_backend="sequential",
+        budget_policy="moving",
+        initial_budget=100.0,
         thread_env={},
         scoring_contract_version="cartola_standard_2026_v1",
         captain_scoring_enabled=True,

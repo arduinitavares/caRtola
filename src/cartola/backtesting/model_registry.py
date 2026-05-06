@@ -13,14 +13,34 @@ from cartola.backtesting.models import (
     HistGradientBoostingPointPredictor,
     RandomForestPointPredictor,
     RidgePointPredictor,
+    XGBoostPointPredictor,
 )
 
-ModelId = Literal["random_forest", "extra_trees", "hist_gradient_boosting", "ridge"]
+ModelId = Literal[
+    "random_forest",
+    "extra_trees",
+    "hist_gradient_boosting",
+    "ridge",
+    "xgboost_conservative",
+    "xgboost_balanced",
+    "xgboost_capacity",
+    "xgboost_depth1_stumps",
+    "xgboost_depth2_slow",
+    "xgboost_depth2_fast",
+    "xgboost_depth2_more_trees",
+    "xgboost_depth2_heavy_child",
+    "xgboost_depth2_subsample",
+    "xgboost_depth2_l2_heavy",
+    "xgboost_depth2_l1_gamma",
+    "xgboost_depth3_slow",
+]
 _FloatConvertible = str | bytes | bytearray | SupportsFloat | SupportsIndex
 
 
 class PointPredictor(Protocol):
     pipeline: object
+    last_fit_profile_: dict[str, object]
+    last_predict_profile_: dict[str, object]
 
     def fit(self, frame: pd.DataFrame) -> PointPredictor: ...
 
@@ -72,6 +92,219 @@ MODEL_SPECS: dict[ModelId, ModelSpec] = {
             "alpha": 1.0,
         },
     ),
+    "xgboost_conservative": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 300,
+            "max_depth": 2,
+            "learning_rate": 0.03,
+            "min_child_weight": 10.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 20.0,
+            "reg_alpha": 0.0,
+        },
+    ),
+    "xgboost_balanced": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 250,
+            "max_depth": 3,
+            "learning_rate": 0.05,
+            "min_child_weight": 5.0,
+            "subsample": 0.85,
+            "colsample_bytree": 0.85,
+            "reg_lambda": 10.0,
+            "reg_alpha": 0.0,
+        },
+    ),
+    "xgboost_capacity": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 200,
+            "max_depth": 4,
+            "learning_rate": 0.05,
+            "min_child_weight": 3.0,
+            "subsample": 0.9,
+            "colsample_bytree": 0.9,
+            "reg_lambda": 5.0,
+            "reg_alpha": 0.0,
+        },
+    ),
+    "xgboost_depth1_stumps": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 400,
+            "max_depth": 1,
+            "learning_rate": 0.05,
+            "min_child_weight": 10.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 20.0,
+            "reg_alpha": 0.1,
+            "gamma": 0.1,
+        },
+    ),
+    "xgboost_depth2_slow": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 400,
+            "max_depth": 2,
+            "learning_rate": 0.02,
+            "min_child_weight": 10.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 20.0,
+            "reg_alpha": 0.1,
+            "gamma": 0.1,
+        },
+    ),
+    "xgboost_depth2_fast": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 200,
+            "max_depth": 2,
+            "learning_rate": 0.05,
+            "min_child_weight": 10.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 20.0,
+            "reg_alpha": 0.1,
+            "gamma": 0.1,
+        },
+    ),
+    "xgboost_depth2_more_trees": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 450,
+            "max_depth": 2,
+            "learning_rate": 0.03,
+            "min_child_weight": 10.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 20.0,
+            "reg_alpha": 0.1,
+            "gamma": 0.1,
+        },
+    ),
+    "xgboost_depth2_heavy_child": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 300,
+            "max_depth": 2,
+            "learning_rate": 0.03,
+            "min_child_weight": 18.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 20.0,
+            "reg_alpha": 0.1,
+            "gamma": 0.1,
+        },
+    ),
+    "xgboost_depth2_subsample": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 300,
+            "max_depth": 2,
+            "learning_rate": 0.03,
+            "min_child_weight": 10.0,
+            "subsample": 0.7,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 20.0,
+            "reg_alpha": 0.1,
+            "gamma": 0.1,
+        },
+    ),
+    "xgboost_depth2_l2_heavy": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 300,
+            "max_depth": 2,
+            "learning_rate": 0.03,
+            "min_child_weight": 10.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 50.0,
+            "reg_alpha": 0.1,
+            "gamma": 0.1,
+        },
+    ),
+    "xgboost_depth2_l1_gamma": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 300,
+            "max_depth": 2,
+            "learning_rate": 0.03,
+            "min_child_weight": 10.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 20.0,
+            "reg_alpha": 1.0,
+            "gamma": 1.0,
+        },
+    ),
+    "xgboost_depth3_slow": ModelSpec(
+        predictor_type=XGBoostPointPredictor,
+        supports_n_jobs=True,
+        parameters={
+            "estimator": "xgboost.XGBRegressor",
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_estimators": 300,
+            "max_depth": 3,
+            "learning_rate": 0.02,
+            "min_child_weight": 15.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_lambda": 30.0,
+            "reg_alpha": 0.5,
+            "gamma": 0.5,
+        },
+    ),
 }
 
 
@@ -91,13 +324,13 @@ def create_point_predictor(
 ) -> PointPredictor:
     resolved_model_id = resolve_model_id(model_id)
     spec = MODEL_SPECS[resolved_model_id]
-    validated_params = _validate_model_param_overrides(resolved_model_id, model_params)
+    effective_params = effective_model_parameters(resolved_model_id, model_params)
 
     return spec.predictor_type(
         random_seed=random_seed,
         feature_columns=feature_columns,
         n_jobs=n_jobs,
-        model_params=validated_params,
+        model_params={key: value for key, value in effective_params.items() if key != "estimator"},
     )
 
 

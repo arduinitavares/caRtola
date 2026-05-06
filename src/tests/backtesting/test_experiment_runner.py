@@ -8,10 +8,11 @@ from typing import cast
 import pandas as pd
 import pytest
 
+from cartola.backtesting.budgeting import BUDGET_POLICY_FIXED, BUDGET_POLICY_MOVING
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.experiment_config import ExperimentGroup, build_child_run_specs, config_hash, experiment_id
 from cartola.backtesting.experiment_index import ExperimentIndex
-from cartola.backtesting.experiment_runner import ExperimentProgressEvent, run_model_experiment
+from cartola.backtesting.experiment_runner import ExperimentProgressEvent, _rank_summary, run_model_experiment
 from cartola.backtesting.experiment_signatures import ComparabilityError
 from cartola.backtesting.experiment_tracking import InMemoryExperimentTracker, TrackerStatus, TrackerWarning
 from cartola.backtesting.runner import BacktestMetadata, BacktestResult
@@ -31,6 +32,8 @@ def _metadata(config: BacktestConfig, *, model_n_jobs_effective: int = 7) -> Bac
         backtest_workers_effective=1,
         model_n_jobs_effective=model_n_jobs_effective,
         parallel_backend="sequential",
+        budget_policy=BUDGET_POLICY_MOVING,
+        initial_budget=config.budget,
         thread_env={
             "OMP_NUM_THREADS": None,
             "MKL_NUM_THREADS": None,
@@ -117,25 +120,43 @@ def _result(
                 "rounds": 1,
                 "total_actual_points": 1.0,
                 "average_actual_points": 1.0,
-                "total_predicted_points": 1.0,
-                "actual_points_delta_vs_price": -0.5,
-            },
+            "total_predicted_points": 1.0,
+            "initial_budget": config.budget,
+            "final_budget": config.budget,
+            "total_budget_delta": 0.0,
+            "min_budget": config.budget,
+            "max_budget_drawdown": 0.0,
+            "budget_constrained_rounds": 0,
+            "actual_points_delta_vs_price": -0.5,
+        },
             {
                 "strategy": model_id,
                 "rounds": 1,
                 "total_actual_points": total_actual_points,
                 "average_actual_points": total_actual_points,
-                "total_predicted_points": total_predicted_points,
-                "actual_points_delta_vs_price": 0.5,
-            },
+            "total_predicted_points": total_predicted_points,
+            "initial_budget": config.budget,
+            "final_budget": config.budget + 1.0,
+            "total_budget_delta": 1.0,
+            "min_budget": config.budget,
+            "max_budget_drawdown": 0.0,
+            "budget_constrained_rounds": 0,
+            "actual_points_delta_vs_price": 0.5,
+        },
             {
                 "strategy": "price",
                 "rounds": 1,
                 "total_actual_points": 1.5,
                 "average_actual_points": 1.5,
-                "total_predicted_points": 1.5,
-                "actual_points_delta_vs_price": 0.0,
-            },
+            "total_predicted_points": 1.5,
+            "initial_budget": config.budget,
+            "final_budget": config.budget,
+            "total_budget_delta": 0.0,
+            "min_budget": config.budget,
+            "max_budget_drawdown": 0.0,
+            "budget_constrained_rounds": 0,
+            "actual_points_delta_vs_price": 0.0,
+        },
         ]
     )
     return BacktestResult(
@@ -215,6 +236,15 @@ def test_experiment_runner_executes_child_runs_sequentially(tmp_path: Path, monk
         "squad_performance_comparison.html",
     ):
         assert (result.output_path / artifact).exists()
+    squad_html = (result.output_path / "squad_performance_comparison.html").read_text(encoding="utf-8")
+    calibration_html = (result.output_path / "calibration_plots.html").read_text(encoding="utf-8")
+    assert "Plotly.newPlot" in squad_html
+    metadata = json.loads((result.output_path / "experiment_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["budget_policy"] == BUDGET_POLICY_MOVING
+    assert metadata["initial_budget"] == 100.0
+    assert "Plotly.newPlot" in calibration_html
+    assert "random_forest / ppg / none" in squad_html
+    assert "promotion_eligible" in squad_html
 
 
 def test_experiment_runner_emits_progress_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -486,6 +516,42 @@ def test_ranked_summary_aggregates_configs_across_seasons(
     assert row["average_actual_delta_per_round"] == 2.5
     assert row["improved_seasons"] == 2
     assert row["worst_season_avg_delta"] == 2.0
+    assert row["worst_min_budget"] == 100.0
+    assert row["worst_max_budget_drawdown"] == 0.0
+    assert row["total_budget_constrained_rounds"] == 0
+
+
+def test_ranked_summary_keeps_budget_policies_distinct() -> None:
+    per_season = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "model_id": "random_forest",
+                "feature_pack": "ppg",
+                "fixture_mode": "none",
+                "budget_policy": BUDGET_POLICY_FIXED,
+                "rounds": 1,
+                "total_actual_points": 10.0,
+                "total_predicted_points": 10.0,
+            },
+            {
+                "season": 2025,
+                "model_id": "random_forest",
+                "feature_pack": "ppg",
+                "fixture_mode": "none",
+                "budget_policy": BUDGET_POLICY_MOVING,
+                "rounds": 1,
+                "total_actual_points": 20.0,
+                "total_predicted_points": 20.0,
+            },
+        ]
+    )
+
+    ranked = _rank_summary(per_season, pd.DataFrame())
+
+    assert len(ranked) == 2
+    assert set(ranked["budget_policy"]) == {BUDGET_POLICY_FIXED, BUDGET_POLICY_MOVING}
+    assert set(ranked["total_actual_points"]) == {10.0, 20.0}
 
 
 def test_prediction_metrics_and_calibration_deciles_are_populated(
@@ -662,16 +728,16 @@ def test_experiment_runner_writes_index_rows_for_successful_fake_run(
     index_path = tmp_path / "data/08_reporting/experiments/experiment_index.sqlite"
     with sqlite3.connect(index_path) as connection:
         experiment_rows = connection.execute(
-            "SELECT experiment_id, status, completed_child_run_count, failed_child_run_count FROM experiments"
+            "SELECT experiment_id, status, budget_policy, completed_child_run_count, failed_child_run_count FROM experiments"
         ).fetchall()
         child_count = connection.execute("SELECT COUNT(*) FROM child_runs").fetchone()[0]
         first_child = connection.execute(
-            "SELECT child_run_id, status, comparable_within_partition FROM child_runs ORDER BY child_run_id LIMIT 1"
+            "SELECT child_run_id, status, budget_policy, comparable_within_partition FROM child_runs ORDER BY child_run_id LIMIT 1"
         ).fetchone()
 
-    assert experiment_rows == [(result.experiment_id, "ok", 8, 0)]
+    assert experiment_rows == [(result.experiment_id, "ok", BUDGET_POLICY_MOVING, 8, 0)]
     assert child_count == 8
-    assert first_child[1:] == ("ok", 1)
+    assert first_child[1:] == ("ok", BUDGET_POLICY_MOVING, 1)
 
 
 def test_experiment_runner_sends_tracker_events_and_finalizes(
@@ -707,7 +773,11 @@ def test_experiment_runner_sends_tracker_events_and_finalizes(
     assert tracker.events[0]["event"] == "start_experiment"
     assert tracker.events[0]["experiment_name"] == "cartola-production-parity"
     assert tracker.events[0]["run_name"] == result.experiment_id
+    assert tracker.events[0]["params"]["budget_policy"] == BUDGET_POLICY_MOVING
+    assert tracker.events[0]["params"]["initial_budget"] == 100.0
     assert [event["event"] for event in tracker.events].count("start_child") == 8
+    assert tracker.events[1]["params"]["budget_policy"] == BUDGET_POLICY_MOVING
+    assert tracker.events[1]["params"]["initial_budget"] == 100.0
     assert [event["event"] for event in tracker.events].count("end_child") == 8
     assert tracker.events[-1] == {"event": "end_experiment", "status": "ok"}
 

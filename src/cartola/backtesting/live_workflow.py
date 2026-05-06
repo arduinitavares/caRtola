@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from cartola.backtesting.config import FootyStatsMode
+from cartola.backtesting.config import FixtureMode, FootyStatsMode, MatchupContextMode
 from cartola.backtesting.market_capture import (
     CARTOLA_STATUS_ENDPOINT,
     LiveCaptureMetadata,
@@ -37,6 +37,8 @@ class LiveWorkflowConfig:
     project_root: Path = Path(".")
     output_root: Path = Path("data/08_reporting/recommendations")
     model_id: ModelId = "random_forest"
+    fixture_mode: FixtureMode = "none"
+    matchup_context_mode: MatchupContextMode = "none"
     footystats_mode: FootyStatsMode = "ppg"
     footystats_league_slug: str = "brazil-serie-a"
     footystats_dir: Path = Path("data/footystats")
@@ -107,6 +109,8 @@ def _live_workflow_link(
         "target_round": target_round,
         "budget": float(config.budget),
         "model_id": config.model_id,
+        "fixture_mode": config.fixture_mode,
+        "matchup_context_mode": config.matchup_context_mode,
         "footystats_mode": config.footystats_mode,
         "footystats_league_slug": config.footystats_league_slug,
         "capture_csv_path": str(capture.csv_path),
@@ -289,6 +293,8 @@ def run_live_round(config: LiveWorkflowConfig, *, now: Clock = lambda: datetime.
         project_root=config.project_root,
         output_root=config.output_root,
         model_id=config.model_id,
+        fixture_mode=config.fixture_mode,
+        matchup_context_mode=config.matchup_context_mode,
         footystats_mode=config.footystats_mode,
         footystats_league_slug=config.footystats_league_slug,
         footystats_dir=config.footystats_dir,

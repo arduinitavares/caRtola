@@ -5,7 +5,7 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
 - GitHub Actions quality workflow with repo-local checks.
 - `scripts/pyrepo-check --all`: Ruff, ty, Bandit, pytest.
 - Walk-forward backtesting pipeline for Cartola.
-- Fixed-budget squad optimization with standard Cartola 2026 scoring.
+- Moving-budget squad optimization with standard Cartola 2026 scoring.
 - Baseline, price, and RandomForest strategies.
 - ILP optimizer searches all official Cartola formations.
 - Captain-aware optimizer:
@@ -60,7 +60,7 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - `scripts/recommend_squad.py` for `live` and `replay` modes,
   - hard data boundary at `rodada <= target_round`,
   - RF training uses only rounds `< target_round`,
-  - `fixture_mode=none` fixed for v1 recommendations,
+  - defaults to `fixture_mode=none`,
   - `footystats_mode=ppg` available for current-year/live usage,
   - replay mode can evaluate actual points after optimization,
   - live mode suppresses actual/scout output columns and rejects finalized target-round data unless explicitly allowed.
@@ -75,6 +75,14 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - uses the captured `rodada_atual` as the recommendation target,
   - archives every recommendation under `runs/run_started_at=...`,
   - links recommendation metadata back to the capture CSV/hash/metadata.
+- Strict/live matchup recommendation integration:
+  - `scripts/recommend_squad.py` and `scripts/run_live_round.py` now accept `--fixture-mode none|strict` and `--matchup-context-mode none|cartola_matchup_v1`,
+  - live matchup context is opt-in and requires `fixture_mode=strict`,
+  - strict fixture CSV/manifests are loaded from `data/01_raw/fixtures_strict/{season}/`,
+  - missing strict fixture evidence raises instead of falling back to no-fixture or exploratory reconstruction,
+  - live target-round fixture coverage is validated against candidate clubs, while historical training rounds keep strict played-club alignment checks,
+  - recommendation metadata records fixture mode, matchup mode, strict manifest paths/hashes, generator versions, and feature columns,
+  - CLI defaults remain unchanged: `random_forest`, `ppg`, `fixture_mode=none`, and `matchup_context_mode=none`.
 - Matchup fixture coverage audit:
   - `scripts/audit_matchup_fixture_coverage.py` checks whether requested seasons have fixture context for every played club-round,
   - prefers strict fixture CSVs with valid manifests and falls back to exploratory fixture CSVs,
@@ -96,10 +104,10 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - records matchup mode and feature columns in `run_metadata.json`.
 - Backtest performance engine:
   - builds per-round prediction frames once per run with an in-memory `RoundFrameStore`,
-  - exposes `--jobs` for target-round parallelism,
-  - uses thread-based workers with parent-owned aggregation/writes,
-  - forces RF `n_jobs=1` when `--jobs > 1` to avoid nested parallelism,
-  - records cache, worker, backend, thread-env, and wall-clock metadata in `run_metadata.json`,
+  - historical multi-round optimization is sequential because each strategy has a stateful moving-budget path,
+  - `--budget` now means initial budget for historical backtests and experiments,
+  - `--jobs` remains accepted for compatibility/metadata, but target-round workers are disabled under moving-budget semantics,
+  - records budget policy, initial/final/min budget, drawdown, constrained rounds, cache, backend, thread-env, and wall-clock metadata in `run_metadata.json`,
   - keeps report semantics and scoring unchanged.
 - Backtest output UX:
   - Rich terminal summary for `python -m cartola.backtesting.cli`,
@@ -113,19 +121,25 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - production-parity group for no-fixture comparisons,
   - matchup-research group for exploratory fixture/matchup-context comparisons,
   - private experiment-only primary model strategy support without exposing `--model-id` in the normal backtest CLI,
-  - sequential child backtests; `--jobs` only controls per-child target-round parallelism,
+  - sequential child backtests; per-child target-round optimization is sequential under moving-budget semantics,
   - source/candidate/solver comparability signatures that fail closed before ranking,
+  - budget policy is part of experiment metadata/indexing so old fixed-budget artifacts are not comparable to moving-budget runs,
   - aggregate ranked summary by model/feature config,
-  - prediction metrics, calibration deciles, per-season summary, metadata, comparability report, Markdown report, and HTML report artifacts.
+  - prediction metrics, calibration deciles, per-season summary, metadata, comparability report, Markdown report, and self-contained Plotly HTML report artifacts.
 - Experiment observability:
   - durable SQLite experiment index under `data/08_reporting/experiments/experiment_index.sqlite`,
   - optional tracker adapter boundary for future MLflow/local tracking,
   - best-effort tracking warnings that do not change experiment success semantics,
   - artifact-pointer policy so large child CSVs remain in the report tree instead of being duplicated into trackers.
+- Experiment report UX:
+  - model-feature experiments now generate real offline Plotly dashboards for `squad_performance_comparison.html` and `calibration_plots.html`,
+  - report charts use persisted CSV/JSON artifacts as source of truth and do not rerun backtests,
+  - configuration identity includes `model_id`, `feature_pack`, and `fixture_mode` so exploratory and no-fixture results do not collapse into one label,
+  - missing report artifacts or required columns render explicit incomplete-report pages instead of blank placeholders.
 - Production model selection for live recommendations:
   - `scripts/recommend_squad.py` and `scripts/run_live_round.py` now accept `--model-id`,
   - live/replay recommendations can use any model in the controlled registry,
-  - current best no-fixture candidate can be deployed directly instead of being experiment-only.
+  - historical promotion evidence must be rerun under moving budget before changing defaults.
 - Constrained Ridge alpha tuning runner:
   - `scripts/run_ridge_tuning.py`,
   - fixed, predeclared Ridge alpha matrix: `0.01`, `0.03`, `0.1`, `0.3`, `1.0`, `3.0`, `10.0`, `30.0`, `100.0`, and `300.0`,
@@ -134,6 +148,18 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - screen stage ranks the full fixed matrix and final stage reruns the primary incumbent, secondary control, and top challengers,
   - writes `ranked_summary.csv`, `prediction_metrics.csv`, `calibration_deciles.csv`, `comparability_report.json`, `promotion_report.json`, `tuning_generation_manifest.json`, Markdown, and HTML reports under `data/08_reporting/experiments/model_tuning/`,
   - refuses promotion when final reruns are skipped, comparison controls drift, comparability fails, required metrics are missing, or lift is below the practical threshold.
+- Fixed XGBoost candidate exploration:
+  - adds `xgboost_conservative`, `xgboost_balanced`, and `xgboost_capacity` to the controlled model registry,
+  - keeps XGBoost out of the default `production-parity` and `matchup-research` matrices so historical comparisons do not silently change,
+  - adds an explicit `xgboost-research` group that evaluates only the fixed XGBoost candidates on `ppg_xg` and `ppg_xg_matchup`,
+  - uses the `XGBRegressor` scikit-learn API with `tree_method=hist`, `objective=reg:squarederror`, fixed regularization settings, and per-child `n_jobs` control,
+  - lazy-loads the native XGBoost runtime so normal workflows remain import-safe when the local OpenMP runtime is missing.
+- Fixed XGBoost sensitivity generation:
+  - adds `xgboost-sensitivity-v2` as a frozen local sensitivity matrix around the `xgboost_conservative` winner,
+  - evaluates only `ppg_xg_matchup` so the generation answers whether the conservative matchup win is a robust region or an isolated spike,
+  - includes `ridge` and `xgboost_conservative` controls in the same matrix,
+  - adds local variants for depth-1 stumps, slower/faster depth-2 learning, more trees, heavier `min_child_weight`, stronger subsampling, stronger L2, L1/gamma pruning, and a regularized depth-3 check,
+  - keeps Optuna deferred until this fixed generation proves the local XGBoost region is season-stable.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -146,12 +172,20 @@ The 2025 fixture-context result showed the first meaningful model lift: RF beat 
 
 The multi-season audit shows the current pipeline is compatible with recent seasons but not all historical data yet:
 
-- `2023`, `2024`, `2025`: load, feature checks, and no-fixture backtests pass.
+- `2021`, `2022`, `2023`, `2024`, `2025`: load, feature checks, and no-fixture backtests pass.
 - `2026`: load, feature checks, and no-fixture backtest pass as a partial current-season smoke test; metrics are not comparable to complete seasons yet.
-- `2022`: marked irregular because the raw round layout is unusual.
+- `2021`: legacy `Mercado_*.txt` Latin-1 JSON market files are now read directly; the loader skips `Mercado_1.txt` as the opening snapshot and treats `Mercado_2.txt` through `Mercado_39.txt` as rounds `1..38`. FootyStats 2021 is classified as an integration candidate, and a bounded `ppg_xg` no-fixture smoke backtest passes.
+- `2022`: now ignores the `rodada-0.csv` market snapshot during season loading and compatibility discovery; FootyStats 2022 is classified as an integration candidate, and a bounded `ppg_xg` no-fixture smoke backtest passes.
 - `2018`, `2019`, `2020`: structurally complete, but currently fail at load time and need schema compatibility work before they can expand the training/evaluation history.
 
-The first production-parity model/feature experiment is complete for `2023`,
+Historical backtests and model experiments now use moving-budget semantics.
+For these runs, `--budget 100` means initial budget only: every strategy starts
+from 100, optimizes each target round under its current budget, then updates its
+next-round budget from the selected squad's official historical `variacao`.
+This means old fixed-budget backtest/experiment evidence is non-comparable and
+must be rerun before making promotion decisions.
+
+The first fixed-budget production-parity model/feature experiment is complete for `2023`,
 `2024`, and `2025` with `fixture_mode=none`, `start_round=5`, and
 `budget=100`.
 
@@ -173,17 +207,45 @@ Second result:
 - improved seasons: `3 / 3`;
 - promotion status: `passes_v1_guardrails`.
 
-Interpretation: for no-fixture production, `ridge + ppg_xg` is now the best
-candidate profile. The result does **not** prove that matchup context is useful,
-because this group intentionally used `fixture_mode=none`. The next
-prediction-quality bet is the matchup-research group plus a constrained
-hyperparameter/model-spec experiment around the winning sklearn families.
+Interpretation: for no-fixture production, `ridge + ppg_xg` was the best
+fixed-budget candidate profile. It is now superseded as promotion evidence until
+rerun under moving budget. The result does **not** prove that matchup context is
+useful, because this group intentionally used `fixture_mode=none`.
 
-The constrained Ridge tuning runner is now implemented and smoke-tested on a
-single 2025 screen-only run. That smoke run validates the real backtest path,
-artifact writing, fixed candidate matrix, and `--skip-final-rerun` promotion
-guard. It is **not** promotion evidence: the full `2023,2024,2025` run with
-final reruns still needs to be executed before changing the live model profile.
+The first fixed-budget matchup-research model/feature experiment is complete for `2023`,
+`2024`, and `2025` with `fixture_mode=exploratory`, `start_round=5`, and
+`budget=100`. Comparability status is `ok`.
+
+Best aggregate matchup result:
+
+- `ridge + ppg_xg_matchup`;
+- total actual points: `6649.11`;
+- exploratory baseline `random_forest + ppg`: `6029.86`;
+- aggregate lift: `+619.25`;
+- average lift: `+6.07` points per round;
+- improved seasons: `3 / 3`;
+- promotion status: `passes_v1_guardrails`.
+
+Second matchup result:
+
+- `ridge + ppg_matchup`;
+- total actual points: `6633.94`;
+- aggregate lift: `+604.08`;
+- improved seasons: `3 / 3`;
+- promotion status: `passes_v1_guardrails`.
+
+Interpretation: `cartola_matchup_v1` was useful research signal in fixed-budget
+exploratory evidence. For Ridge,
+`ppg_xg_matchup` beat `ppg_xg` by `+133.87` total points, about `+1.31` per
+round. This is strong enough to justify a strict/live matchup integration spec,
+but it is now superseded until rerun under moving budget and remains
+**exploratory fixture evidence**, not strict no-leakage live proof.
+
+The full constrained Ridge tuning run is complete for `2023`, `2024`, and
+`2025` with final reruns enabled. `promotion_report.json` recommends
+`keep_incumbent`: no tuned alpha cleared the practical lift threshold over
+`ridge + ppg_xg + alpha=1.0`. Keep `ridge + ppg_xg + alpha=1.0` as the live
+no-fixture profile.
 
 The FootyStats compatibility audit is now implemented and the current `data/footystats/` files are Brazil Serie A seasons, not sample EPL data. The audit result is:
 
@@ -235,8 +297,8 @@ Per-season RF average points deltas for `ppg -> ppg_xg`:
 Interpretation: pre-match xG slightly improved player-level fit metrics but hurt
 RF squad selection in aggregate. The later production-parity experiment changed
 the model context: `ridge + ppg_xg` beat `ridge + ppg` overall. Therefore xG is
-not a universal default for every model, but it is part of the current best
-no-fixture production candidate.
+not a universal default for every model. Its fixed-budget Ridge evidence is
+superseded until rerun under moving budget.
 
 Important distinction:
 
@@ -274,18 +336,18 @@ The backtest runner now uses the standard Cartola 2026 scoring contract:
 - round-level `predicted_points` and `actual_points` include the captain multiplier;
 - selected-player `predicted_points` remains the raw per-athlete model score.
 
-The backtest budget is still fixed per round. A run with `--budget 100` means
-every round is optimized independently with at most C$ 100. It does **not** yet
-simulate patrimonio growth from previous rounds.
-
-Official Globo/ge documentation confirms that patrimonio changes through
-selected asset price movement, not directly through total lineup points. The
-exact price-variation formula is not publicly documented; official guidance
-uses qualitative rules and the PRO "Minimo Para Valorizar" concept. Therefore,
-future patrimonio simulation should replay official pre/post market prices or
-official variation fields instead of reverse-engineering a hidden formula.
+The historical backtest budget is now moving per strategy. A run with
+`--budget 100` means each strategy starts with C$ 100. After each completed
+target round, the selected players' and tecnico's official historical
+`variacao` is summed into that strategy's next-round budget. The budget update
+happens only after selection and scoring, and a selected historical asset with
+missing `variacao` invalidates the run instead of being treated as zero.
 
 **How To Run Now**
+For historical backtests and experiments below, `--budget 100` is the initial
+moving budget. Old fixed-budget reports should not be compared against new
+outputs unless they have been rerun under `budget_policy=moving`.
+
 No fixture context:
 
 ```bash
@@ -346,6 +408,32 @@ uv run --frozen python scripts/run_ridge_tuning.py \
   --budget 100 \
   --current-year 2026 \
   --jobs 12
+```
+
+Fixed XGBoost candidate exploration:
+
+```bash
+uv run --frozen python scripts/run_model_experiments.py \
+  --group xgboost-research \
+  --seasons 2023,2024,2025 \
+  --start-round 5 \
+  --budget 100 \
+  --current-year 2026 \
+  --jobs 12 \
+  --profile-runtime
+```
+
+Fixed XGBoost sensitivity v2 experiment:
+
+```bash
+uv run --frozen python scripts/run_model_experiments.py \
+  --group xgboost-sensitivity-v2 \
+  --seasons 2023,2024,2025 \
+  --start-round 5 \
+  --budget 100 \
+  --current-year 2026 \
+  --jobs 12 \
+  --profile-runtime
 ```
 
 Fast implementation smoke for the tuning runner:
@@ -455,7 +543,7 @@ uv run --frozen python scripts/capture_market_round.py \
   --current-year 2026
 ```
 
-Live squad recommendation for the current production season:
+Live squad recommendation for the current no-fixture production profile:
 
 ```bash
 uv run --frozen python scripts/run_live_round.py \
@@ -479,6 +567,19 @@ uv run --frozen python scripts/recommend_squad.py \
   --current-year 2026
 ```
 
+Opt-in strict matchup live recommendation after strict fixture evidence exists for the open round:
+
+```bash
+uv run --frozen python scripts/run_live_round.py \
+  --season 2026 \
+  --budget 100 \
+  --model-id xgboost_depth2_slow \
+  --footystats-mode ppg_xg \
+  --fixture-mode strict \
+  --matchup-context-mode cartola_matchup_v1 \
+  --current-year 2026
+```
+
 Replay a completed current-season round without looking past that round:
 
 ```bash
@@ -498,49 +599,52 @@ uv run --frozen scripts/pyrepo-check --all
 ```
 
 **Roadmap**
-1. Treat `ridge + ppg_xg + fixture_mode=none` as the current best no-fixture live candidate.
+1. Rerun the model/feature leaderboards under moving-budget semantics before making any promotion decision.
    - Keep `random_forest + ppg` available as the historical baseline.
    - Continue to record the chosen model id and feature mode in every recommendation output.
-   - Do not claim matchup-context production value from this result.
-2. Run the matchup-research model/feature experiment.
-   - Seasons: `2023`, `2024`, `2025`.
-   - Group: `matchup-research`.
-   - Purpose: decide whether `cartola_matchup_v1` is worth promoting into the next strict-fixture integration design.
-   - Baseline: `random_forest + ppg + fixture_mode=exploratory + matchup_context_mode=none`.
-   - Treat this as research evidence only, not strict live proof.
-3. Run the constrained Ridge tuning experiment before adding external model libraries.
-   - Spec: `docs/superpowers/specs/2026-05-01-constrained-ridge-tuning-design.md`.
-   - Implementation exists; the remaining step is a full `2023,2024,2025` execution with final reruns enabled.
-   - Use the generated `promotion_report.json` as the authority for whether a tuned candidate can replace `ridge + ppg_xg + alpha=1.0`.
-   - Keep `ridge + ppg_xg + alpha=1.0` as the live no-fixture profile unless the full tuning run clears final-rerun reproducibility, exact comparability, null-metric, and practical-lift gates.
-   - Defer RandomForest/ExtraTrees tuning until calibration wrappers are designed; the first production-parity result suggests tree overprediction is structural, not just a small hyperparameter miss.
-   - Defer HGB, Optuna, XGBoost, LightGBM, and CatBoost until the Ridge tuning baseline is measured.
-4. Interpret experiment outputs before building broader modeling features.
-   - Start with `ranked_summary.csv`.
-   - Check `per_season_summary.csv` for season robustness.
-   - Check `prediction_metrics.csv` and `calibration_deciles.csv` to understand whether squad lift came from better ranking or just noisy optimization.
-   - Check `comparability_report.json`; do not trust any ranking if comparability failed.
-5. Make one model/feature decision after matchup and constrained tuning:
-   - keep `ridge + ppg_xg` as the no-fixture live profile;
-   - switch to a tuned sklearn variant only if it clears the same guardrails;
-   - write a strict fixture integration spec if matchup context wins;
-   - reject matchup context for now and focus on calibration/model diagnostics.
+   - The old fixed-budget evidence favored `ridge + ppg_xg + alpha=1.0 + fixture_mode=none`, but it is now superseded until rerun under moving budget.
+   - For single-round live recommendations, `--budget` still means the caller-provided current available budget for that one open round.
+   - Strict matchup mode is available only as an opt-in research/live candidate until it survives real strict pre-lock rounds.
+2. Use strict matchup mode in the next open round only after capturing strict fixture evidence.
+   - Capture strict fixture snapshots before generating the recommendation.
+   - First candidate to test: `xgboost_depth2_slow + ppg_xg + cartola_matchup_v1`, because it beat Ridge in all three exploratory seasons and fixed the 2025 regression seen in the faster aggregate winner.
+   - Inspect `run_metadata.json` for fixture manifest paths/hashes and `candidate_predictions.csv` before trusting the squad.
+   - Do not fall back to exploratory fixtures in live mode.
+3. Treat the fixed XGBoost sensitivity result as exploratory fixed-budget evidence, not production proof.
+   - The `xgboost-sensitivity-v2` run showed a stable candidate region, with `xgboost_depth2_slow` preferred over the higher-aggregate `xgboost_depth2_fast` because 2025 was non-negative.
+   - Do not add XGBoost to production defaults until it beats the freshly rerun moving-budget incumbent under the same comparability guardrails and does not materially regress 2025.
+   - Treat each fixed candidate list as a frozen generation. Any change to the XGBoost specs should become a new experiment group/generation, not an informal rerun.
+   - On macOS, XGBoost requires the native OpenMP runtime (`libomp`) to be installed before the XGBoost children can run.
+   - Defer RandomForest/ExtraTrees tuning until calibration wrappers are designed; tree models still fail calibration guardrails.
+   - Defer HGB tuning despite the runtime fix; it is now operationally usable, but it did not beat Ridge.
+   - Defer Optuna until the fixed XGBoost sensitivity pass shows a season-stable local region, not a single lucky aggregate winner.
+   - Future Optuna work should use a seeded `TPESampler`, SQLite storage, a frozen search space, explicit trial manifests, and final full-backtest reruns for finalists; pruned or predictive-only trials must never be promotion-eligible.
+   - Defer LightGBM and CatBoost until XGBoost has a clear fixed-candidate result.
+4. Use generated Plotly experiment reports as the standard review surface.
+   - Start with `squad_performance_comparison.html` and `calibration_plots.html`.
+   - Use `ranked_summary.csv`, `per_season_summary.csv`, `prediction_metrics.csv`, `calibration_deciles.csv`, and `comparability_report.json` as source-of-truth artifacts.
+   - Do not trust any ranking if comparability failed.
+5. Add live-lineup risk guardrails before trusting automated round picks.
+   - GitHub issues are disabled for the repository, so this item tracks the round-14 goalkeeper incident locally.
+   - Root cause: live recommendations currently treat Cartola `Provavel` as playable, but `Provavel` is not confirmed-lineup evidence.
+   - Add a max capture-age warning or hard guard, especially for `capture_policy=skip` and `capture_policy=missing`.
+   - Flag selected low-sample players, such as very low `num_jogos` or prior appearance count, before the squad is trusted.
+   - Longer term: add a confirmed-lineup source or manual exclusion/override workflow before market lock.
 6. Use `scripts/run_live_round.py` for each 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
 7. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
-   - Future step: integrate strict fixtures into live recommendations as an explicit opt-in mode after several successful live captures.
-8. Audit patrimonio data before changing budget semantics.
-   - Verify historical raw data contains reliable pre-round price and post-round price or official variation fields.
-   - Verify tecnico rows have the same market fields.
-   - Verify DNP/no-play behavior preserves or changes price as expected.
-   - Verify whether enough information exists to replay official patrimonio without reverse-engineering Cartola's hidden valuation formula.
-9. Add simulated patrimonio only after the audit passes.
-   - Add `budget_mode=fixed|simulated_patrimonio`.
-   - Keep `fixed` as the current controlled-comparison mode.
-   - In `simulated_patrimonio`, start from `--budget`, optimize round N with current patrimonio, then update patrimonio from selected players' and tecnico's official post-round market values.
-   - Persist `budget_available`, `budget_used`, `unspent_cash`, `patrimonio_after_round`, and `patrimonio_delta`.
-   - Do not apply the captain multiplier to patrimonio unless an official source proves that Cartola does.
-10. Defer wider matchup features until v1 is measured:
+   - These snapshots are now consumed by opt-in strict matchup live recommendations.
+8. Harden moving-budget evidence before replacing any live default.
+   - Rerun production-parity, matchup-research, XGBoost sensitivity, and Ridge controls with moving budget.
+   - Compare only artifacts with `budget_policy=moving`; treat missing `budget_policy` as old fixed-budget evidence.
+   - Inspect `initial_budget`, `final_budget`, `total_budget_delta`, `min_budget`, `max_budget_drawdown`, and `budget_constrained_rounds` alongside points.
+   - Validate that selected player and tecnico rows always preserve finite historical `variacao` in completed rounds.
+9. Keep budget modeling realistic but deliberately simple.
+   - Historical multi-round backtests use official historical `variacao`; no hidden Cartola price formula is reverse-engineered.
+   - Budget updates are strategy-specific and happen only after selection/scoring.
+   - Do not reintroduce a normal fixed-budget mode.
+   - Live open-round recommendations remain single-round until completed-round replay data exists to update the budget path.
+10. Defer wider matchup features until strict/live matchup v1 has real-round evidence:
    - home/away split priors,
    - shorter roll3 variants,
    - odds/goal-environment fields,
@@ -548,19 +652,21 @@ uv run --frozen scripts/pyrepo-check --all
 11. Add DNP probability modeling if needed:
     - predict `p_play`,
     - use `expected_points = predicted_points * p_play`.
-12. Defer external model libraries until the constrained sklearn tuning pass is measured.
-    - XGBoost is technically compatible through `XGBRegressor` and its scikit-learn API.
-    - Possible later candidates: XGBoost, CatBoost, or LightGBM.
-    - Add one external model family at a time, with fixed specs and dependency/runtime tracking.
-    - Do not start broad grid search over external libraries before the Ridge/RF tuning baseline is established.
+12. Keep adaptive hyperparameter search behind the fixed-candidate baseline.
+    - XGBoost is the first external family and should be evaluated only through the fixed `xgboost-research` generation for now.
+    - Possible later candidates: CatBoost or LightGBM, one family at a time.
+    - Optuna remains a future search engine, not v1 implementation scope.
+    - Do not start broad grid search over external libraries before fixed candidates, strict/live matchup integration, and live reliability guardrails are understood.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:
 
 1. Fix historical loader compatibility for structurally complete failing seasons:
-   - inspect 2018, 2019, and 2020 load errors from the compatibility audit JSON,
+   - inspect 2020, 2019, and 2018 load errors from the compatibility audit JSON,
    - add schema normalization only where needed,
    - rerun the audit until those seasons reach `load_status=ok`.
-2. Decide how to handle irregular historical seasons:
-   - inspect the 2022 round layout,
-   - document whether it should be normalized, excluded, or handled with season-specific rules.
+2. Re-evaluate model/feature experiments with 2021 and 2022 included as frozen generations:
+   - start with no-fixture `production-parity` over `2021,2022,2023,2024,2025`,
+   - treat this as a new experiment generation, not a replacement for the original `2023-2025` evidence,
+   - inspect 2022-specific duplicate `(rodada, id_atleta)` rows before making promotion claims,
+   - compare 2021/2022 calibration against 2023-2025 before making live/default promotion claims.

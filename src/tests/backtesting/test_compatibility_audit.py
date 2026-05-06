@@ -53,6 +53,40 @@ def test_discover_seasons_includes_numeric_dirs_with_round_files(tmp_path: Path)
     assert seasons[0].max_round == 2
 
 
+def test_discover_seasons_ignores_round_zero_market_snapshot(tmp_path: Path) -> None:
+    _touch_round(tmp_path, 2022, "rodada-0.csv")
+    for round_number in range(1, 39):
+        _touch_round(tmp_path, 2022, f"rodada-{round_number}.csv")
+
+    config = audit.AuditConfig(project_root=tmp_path, current_year=2026)
+
+    seasons = audit.discover_seasons(config)
+
+    assert len(seasons) == 1
+    assert seasons[0].discovery_error is None
+    assert seasons[0].round_file_count == 38
+    assert seasons[0].detected_rounds == list(range(1, 39))
+    assert audit.classify_season(2022, seasons[0].detected_rounds, config) == ("complete_historical", True, [])
+
+
+def test_discover_seasons_reads_legacy_market_files_and_ignores_opening_snapshot(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2021"
+    season_dir.mkdir(parents=True)
+    for market_number in range(1, 40):
+        (season_dir / f"Mercado_{market_number}.txt").write_text("{}", encoding="utf-8")
+
+    config = audit.AuditConfig(project_root=tmp_path, current_year=2026)
+
+    seasons = audit.discover_seasons(config)
+
+    assert len(seasons) == 1
+    assert seasons[0].discovery_error is None
+    assert seasons[0].round_file_count == 38
+    assert seasons[0].detected_rounds == list(range(1, 39))
+    assert [path.name for path in seasons[0].round_files[:2]] == ["Mercado_2.txt", "Mercado_3.txt"]
+    assert audit.classify_season(2021, seasons[0].detected_rounds, config) == ("complete_historical", True, [])
+
+
 def test_discover_seasons_records_malformed_round_filename(tmp_path: Path) -> None:
     _touch_round(tmp_path, 2025, "rodada-final.csv")
 

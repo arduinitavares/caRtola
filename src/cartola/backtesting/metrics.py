@@ -5,6 +5,7 @@ from collections.abc import Mapping
 
 import pandas as pd
 
+from cartola.backtesting.budgeting import BUDGET_CONSTRAINT_TOLERANCE
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN
 from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER
 
@@ -14,6 +15,12 @@ SUMMARY_COLUMNS: list[str] = [
     "total_actual_points",
     "average_actual_points",
     "total_predicted_points",
+    "initial_budget",
+    "final_budget",
+    "total_budget_delta",
+    "min_budget",
+    "max_budget_drawdown",
+    "budget_constrained_rounds",
 ]
 
 DIAGNOSTIC_COLUMNS: list[str] = ["section", "strategy", "position", "metric", "value"]
@@ -30,19 +37,30 @@ def build_summary(round_results: pd.DataFrame, benchmark_strategy: str = "price"
     if optimal_results.empty:
         return pd.DataFrame(columns=pd.Index(columns))
 
-    summary = (
-        optimal_results.groupby("strategy", as_index=False)
-        .agg(
-            rounds=("rodada", "nunique"),
-            total_actual_points=("actual_points", "sum"),
-            average_actual_points=("actual_points", "mean"),
-            total_predicted_points=("predicted_points", "sum"),
+    rows: list[dict[str, object]] = []
+    optimal_strategies = set(optimal_results["strategy"])
+    for strategy, strategy_rounds in round_results.groupby("strategy", sort=False):
+        if strategy not in optimal_strategies:
+            continue
+        optimal_strategy_rounds = strategy_rounds[strategy_rounds["solver_status"].eq("Optimal")]
+        actual_points = optimal_strategy_rounds["actual_points"].astype(float)
+        predicted_points = optimal_strategy_rounds["predicted_points"].astype(float)
+        rows.append(
+            {
+                "strategy": strategy,
+                "rounds": optimal_strategy_rounds["rodada"].nunique(),
+                "total_actual_points": actual_points.sum(),
+                "average_actual_points": actual_points.mean(),
+                "total_predicted_points": predicted_points.sum(),
+                **_budget_summary(strategy_rounds),
+            }
         )
-        .sort_values("total_actual_points", ascending=False)
-        .reset_index(drop=True)
-    )
+    summary = pd.DataFrame(rows).sort_values("total_actual_points", ascending=False).reset_index(drop=True)
 
-    benchmark_rows = summary.loc[summary["strategy"] == benchmark_strategy, "total_actual_points"]
+    benchmark_rows = summary.loc[
+        summary["strategy"].eq(benchmark_strategy) & summary["rounds"].gt(0),
+        "total_actual_points",
+    ]
     if benchmark_rows.empty:
         summary[delta_column] = pd.NA
         return summary.loc[:, columns]
@@ -50,6 +68,51 @@ def build_summary(round_results: pd.DataFrame, benchmark_strategy: str = "price"
     benchmark_total = benchmark_rows.iloc[0]
     summary[delta_column] = summary["total_actual_points"] - benchmark_total
     return summary.loc[:, columns]
+
+
+def _budget_summary(strategy_rounds: pd.DataFrame) -> dict[str, object]:
+    budget_columns = {
+        "budget_before_round",
+        "budget_after_round",
+        "budget_delta",
+        "budget_remaining",
+    }
+    if not budget_columns.issubset(strategy_rounds.columns):
+        return {
+            "initial_budget": pd.NA,
+            "final_budget": pd.NA,
+            "total_budget_delta": pd.NA,
+            "min_budget": pd.NA,
+            "max_budget_drawdown": pd.NA,
+            "budget_constrained_rounds": pd.NA,
+        }
+
+    ordered = strategy_rounds.sort_values("rodada", kind="mergesort")
+    before = ordered["budget_before_round"].astype(float)
+    after = ordered["budget_after_round"].astype(float)
+    remaining = ordered["budget_remaining"].astype(float)
+    drawdown = (
+        ordered["budget_drawdown"].astype(float)
+        if "budget_drawdown" in ordered.columns
+        else _budget_drawdown_from_path(after, initial_budget=float(before.iloc[0]))
+    )
+    return {
+        "initial_budget": float(before.iloc[0]),
+        "final_budget": float(after.iloc[-1]),
+        "total_budget_delta": float(ordered["budget_delta"].astype(float).sum()),
+        "min_budget": float(pd.concat([before, after], ignore_index=True).min()),
+        "max_budget_drawdown": float(drawdown.max()),
+        "budget_constrained_rounds": int((remaining <= BUDGET_CONSTRAINT_TOLERANCE).sum()),
+    }
+
+
+def _budget_drawdown_from_path(after: pd.Series, *, initial_budget: float) -> pd.Series:
+    peak = initial_budget
+    drawdowns: list[float] = []
+    for budget_after_round in after:
+        peak = max(peak, float(budget_after_round))
+        drawdowns.append(peak - float(budget_after_round))
+    return pd.Series(drawdowns, index=after.index, dtype=float)
 
 
 def build_diagnostics(
@@ -208,7 +271,7 @@ def _append_random_selection_diagnostics(
                 candidate_pool,
                 formation,
                 score_column=score_column,
-                budget=budget,
+                budget=_round_budget(round_row, fallback=budget),
                 random_draws=random_draws,
                 random_seed=_round_seed(random_seed, round_number, formation),
             )
@@ -302,6 +365,12 @@ def _random_valid_squad_points(
             points.append(base_actual + (CAPTAIN_MULTIPLIER - 1.0) * captain_actual)
 
     return points
+
+
+def _round_budget(round_row: pd.Series, *, fallback: float) -> float:
+    if "budget_before_round" not in round_row.index or pd.isna(round_row["budget_before_round"]):
+        return float(fallback)
+    return float(round_row["budget_before_round"])
 
 
 def _finite_random_actual_points(frame: pd.DataFrame) -> pd.Series:

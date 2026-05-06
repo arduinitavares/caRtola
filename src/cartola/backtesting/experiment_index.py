@@ -6,7 +6,9 @@ import sqlite3
 from pathlib import Path
 from typing import Mapping, Sequence, TypedDict
 
-SCHEMA_VERSION = 1
+from cartola.backtesting.budgeting import normalize_budget_policy
+
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 5000
 
 EXPERIMENT_COLUMNS = (
@@ -20,6 +22,7 @@ EXPERIMENT_COLUMNS = (
     "seasons",
     "start_round",
     "budget",
+    "budget_policy",
     "current_year",
     "jobs",
     "scoring_contract_version",
@@ -44,6 +47,7 @@ CHILD_RUN_COLUMNS = (
     "model_id",
     "feature_pack",
     "fixture_mode",
+    "budget_policy",
     "footystats_mode",
     "matchup_context_mode",
     "output_path",
@@ -95,9 +99,10 @@ class ExperimentIndex:
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if user_version not in (0, SCHEMA_VERSION):
+            if user_version not in (0, 1, SCHEMA_VERSION):
                 raise ValueError(f"Unsupported experiment index schema version: {user_version}")
             _create_schema(connection)
+            _migrate_schema(connection, user_version)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def upsert_experiment(self, row: Mapping[str, object]) -> None:
@@ -124,7 +129,10 @@ class ExperimentIndex:
         conflict_columns: Sequence[str],
         row: Mapping[str, object],
     ) -> None:
-        missing = [column for column in columns if column not in row]
+        row_values = dict(row)
+        if "budget_policy" in columns:
+            row_values["budget_policy"] = normalize_budget_policy(row_values.get("budget_policy"))
+        missing = [column for column in columns if column not in row_values]
         if missing:
             raise ValueError(f"Missing {table} columns: {', '.join(missing)}")
 
@@ -136,7 +144,7 @@ class ExperimentIndex:
             for column in columns
             if column not in conflict_columns
         )
-        values = [_sqlite_value(row[column]) for column in columns]
+        values = [_sqlite_value(row_values[column]) for column in columns]
         # Table/column identifiers are internal constants; values are parameterized.
         sql = (
             f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "  # nosec B608
@@ -216,6 +224,7 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             seasons TEXT NOT NULL,
             start_round INTEGER NOT NULL,
             budget REAL NOT NULL,
+            budget_policy TEXT NOT NULL,
             current_year INTEGER NOT NULL,
             jobs INTEGER NOT NULL,
             scoring_contract_version TEXT NOT NULL,
@@ -243,6 +252,7 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             model_id TEXT NOT NULL,
             feature_pack TEXT NOT NULL,
             fixture_mode TEXT NOT NULL,
+            budget_policy TEXT NOT NULL,
             footystats_mode TEXT NOT NULL,
             matchup_context_mode TEXT NOT NULL,
             output_path TEXT NOT NULL,
@@ -286,6 +296,30 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         ON child_runs(comparability_partition)
         """
     )
+
+
+def _migrate_schema(connection: sqlite3.Connection, user_version: int) -> None:
+    if user_version == 0:
+        return
+    if user_version < 2:
+        _add_column_if_missing(
+            connection,
+            table="experiments",
+            column="budget_policy",
+            definition=f"TEXT NOT NULL DEFAULT '{normalize_budget_policy(None)}'",
+        )
+        _add_column_if_missing(
+            connection,
+            table="child_runs",
+            column="budget_policy",
+            definition=f"TEXT NOT NULL DEFAULT '{normalize_budget_policy(None)}'",
+        )
+
+
+def _add_column_if_missing(connection: sqlite3.Connection, *, table: str, column: str, definition: str) -> None:
+    columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({_quote_identifier(table)})").fetchall()}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {_quote_identifier(table)} ADD COLUMN {_quote_identifier(column)} {definition}")
 
 
 def _project_relative_path(path: Path, *, project_root: Path) -> str:

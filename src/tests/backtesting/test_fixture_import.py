@@ -123,6 +123,41 @@ def test_fetch_thesportsdb_round_calls_round_endpoint(monkeypatch: pytest.Monkey
     ]
 
 
+def test_fetch_thesportsdb_round_retries_rate_limit_with_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    sleeps = []
+    responses = [
+        {"status_code": 429, "headers": {"Retry-After": "2"}, "events": []},
+        {"status_code": 200, "headers": {}, "events": [{"idEvent": "ok"}]},
+    ]
+
+    class Response:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.status_code = int(payload["status_code"])
+            self.headers = dict(payload["headers"])
+            self._events = list(payload["events"])
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"status={self.status_code}")
+
+        def json(self) -> dict[str, list[dict[str, str]]]:
+            return {"events": self._events}
+
+    def fake_get(url: str, *, params: dict[str, int | str], timeout: int) -> Response:
+        calls.append((url, params, timeout))
+        return Response(responses.pop(0))
+
+    monkeypatch.setattr("cartola.backtesting.fixture_import.requests.get", fake_get)
+    monkeypatch.setattr("cartola.backtesting.fixture_import.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    events = fetch_thesportsdb_round(round_number=31, season=2021, api_key="abc", league_id=123)
+
+    assert events == [{"idEvent": "ok"}]
+    assert len(calls) == 2
+    assert sleeps == [2.0]
+
+
 def test_import_thesportsdb_fixtures_writes_canonical_round_files_and_returns_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_mapping(tmp_path)
     season_df = pd.DataFrame(

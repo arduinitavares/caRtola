@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -300,6 +301,32 @@ def test_compare_footystats_america_mineiro_to_cartola_america_mg(tmp_path: Path
     assert comparison.cartola_clubs_by_normalized_name == {"america mineiro": 327}
     assert comparison.mapped_teams == {"America Mineiro": 327}
     assert comparison.unmapped_footystats_teams == []
+
+
+def test_compare_footystats_teams_to_legacy_market_json_cartola_clubs(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2021"
+    season_dir.mkdir(parents=True)
+    payload = {
+        "clubes": {
+            "262": {"id": 262, "nome": "Flamengo", "abreviacao": "FLA"},
+            "275": {"id": 275, "nome": "Palmeiras", "abreviacao": "PAL"},
+        },
+        "posicoes": {},
+        "status": {},
+        "atletas": [],
+    }
+    (season_dir / "Mercado_1.txt").write_text(json.dumps(payload, ensure_ascii=False), encoding="latin-1")
+    (season_dir / "Mercado_2.txt").write_text(json.dumps(payload, ensure_ascii=False), encoding="latin-1")
+
+    comparison = audit.compare_teams_to_cartola(
+        season=2021,
+        footystats_team_names=["Flamengo", "Palmeiras", "Mirassol"],
+        project_root=tmp_path,
+    )
+
+    assert comparison.cartola_clubs_by_normalized_name == {"flamengo": 262, "palmeiras": 275}
+    assert comparison.mapped_teams == {"Flamengo": 262, "Palmeiras": 275}
+    assert comparison.unmapped_footystats_teams == ["Mirassol"]
 
 
 def test_compare_teams_to_cartola_ignores_non_round_and_malformed_round_files(tmp_path: Path) -> None:

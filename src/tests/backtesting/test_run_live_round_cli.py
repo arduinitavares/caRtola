@@ -24,6 +24,8 @@ def test_parse_args_builds_live_workflow_defaults() -> None:
     assert args.budget == 100.0
     assert args.footystats_mode == "ppg"
     assert args.model_id == "random_forest"
+    assert args.fixture_mode == "none"
+    assert args.matchup_context_mode == "none"
     assert args.capture_policy == "fresh"
     assert args.output_root == Path("data/08_reporting/recommendations")
 
@@ -64,6 +66,8 @@ def test_main_builds_workflow_config_and_prints_summary(
                 ),
                 "capture_metadata_path": str(tmp_path / "data/01_raw/2026/rodada-14.capture.json"),
                 "footystats_mode": "ppg",
+                "fixture_mode": "strict",
+                "matchup_context_mode": "cartola_matchup_v1",
             },
         )
 
@@ -79,11 +83,24 @@ def test_main_builds_workflow_config_and_prints_summary(
             "2026",
             "--model-id",
             "ridge",
+            "--fixture-mode",
+            "strict",
+            "--matchup-context-mode",
+            "cartola_matchup_v1",
         ]
     )
 
     assert exit_code == 0
-    assert observed == [LiveWorkflowConfig(season=2026, project_root=tmp_path, current_year=2026, model_id="ridge")]
+    assert observed == [
+        LiveWorkflowConfig(
+            season=2026,
+            project_root=tmp_path,
+            current_year=2026,
+            model_id="ridge",
+            fixture_mode="strict",
+            matchup_context_mode="cartola_matchup_v1",
+        )
+    ]
     output = capsys.readouterr().out
     assert "Live round complete" in output
     assert "Capture policy" in output
@@ -103,6 +120,10 @@ def test_main_builds_workflow_config_and_prints_summary(
     assert "Predicted points" not in output
     assert "FootyStats mode" in output
     assert "ppg" in output
+    assert "Fixture mode" in output
+    assert "strict" in output
+    assert "Matchup context" in output
+    assert "cartola_matchup_v1" in output
 
 
 def test_main_prints_expected_error_without_traceback(

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping
-from typing import Self
+from time import perf_counter
+from typing import Self, cast
 
 import pandas as pd
+from scipy import sparse
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
@@ -55,6 +58,8 @@ class SklearnPointPredictor:
         self.feature_columns = feature_columns
         self.n_jobs = n_jobs
         self.model_params = dict(model_params or {})
+        self.last_fit_profile_: dict[str, object] = {}
+        self.last_predict_profile_: dict[str, object] = {}
         numeric_features = [column for column in self.feature_columns if column != "posicao"]
         categorical_features = ["posicao"] if "posicao" in self.feature_columns else []
 
@@ -92,11 +97,48 @@ class SklearnPointPredictor:
         raise NotImplementedError
 
     def fit(self, frame: pd.DataFrame) -> Self:
-        self.pipeline.fit(frame[self.feature_columns], frame["target"])
+        x_train = frame[self.feature_columns]
+        y_train = frame["target"]
+        preprocess = self.pipeline.named_steps["preprocess"]
+        model = self.pipeline.named_steps["model"]
+
+        started = perf_counter()
+        transformed = preprocess.fit_transform(x_train, y_train)
+        preprocess_seconds = perf_counter() - started
+
+        started = perf_counter()
+        model.fit(transformed, y_train)
+        model_fit_seconds = perf_counter() - started
+
+        self.last_fit_profile_ = {
+            "training_rows": len(frame),
+            "training_columns": len(frame.columns),
+            "feature_count": len(self.feature_columns),
+            "preprocess_fit_transform_seconds": preprocess_seconds,
+            "model_fit_seconds": model_fit_seconds,
+            "model_n_iter": getattr(model, "n_iter_", None),
+            **_transformed_matrix_profile(transformed, prefix="transformed_feature"),
+        }
         return self
 
     def predict(self, frame: pd.DataFrame) -> pd.Series:
-        predictions = self.pipeline.predict(frame[self.feature_columns])
+        preprocess = self.pipeline.named_steps["preprocess"]
+        model = self.pipeline.named_steps["model"]
+
+        started = perf_counter()
+        transformed = preprocess.transform(frame[self.feature_columns])
+        transform_seconds = perf_counter() - started
+
+        started = perf_counter()
+        predictions = model.predict(transformed)
+        predict_seconds = perf_counter() - started
+
+        self.last_predict_profile_ = {
+            "prediction_rows": len(frame),
+            "candidate_transform_seconds": transform_seconds,
+            "model_predict_seconds": predict_seconds,
+            **_transformed_matrix_profile(transformed, prefix="candidate_transformed_feature"),
+        }
         return pd.Series(predictions, index=frame.index, dtype=float)
 
 
@@ -145,3 +187,61 @@ class RidgePointPredictor(SklearnPointPredictor):
     def _make_model(self, *, random_seed: int, n_jobs: int) -> Ridge:
         alpha = float(self.model_params.get("alpha", 1.0))
         return Ridge(alpha=alpha)
+
+
+class XGBoostPointPredictor(SklearnPointPredictor):
+    def _make_model(self, *, random_seed: int, n_jobs: int) -> object:
+        xgb_regressor = _load_xgb_regressor()
+        return xgb_regressor(
+            objective="reg:squarederror",
+            tree_method="hist",
+            n_estimators=int(self.model_params["n_estimators"]),
+            max_depth=int(self.model_params["max_depth"]),
+            learning_rate=float(self.model_params["learning_rate"]),
+            min_child_weight=float(self.model_params["min_child_weight"]),
+            subsample=float(self.model_params["subsample"]),
+            colsample_bytree=float(self.model_params["colsample_bytree"]),
+            reg_lambda=float(self.model_params["reg_lambda"]),
+            reg_alpha=float(self.model_params["reg_alpha"]),
+            gamma=float(self.model_params.get("gamma", 0.0)),
+            random_state=random_seed,
+            n_jobs=n_jobs,
+            verbosity=0,
+        )
+
+
+def _transformed_matrix_profile(matrix: object, *, prefix: str) -> dict[str, object]:
+    shape = getattr(matrix, "shape", (None, None))
+    rows = int(shape[0]) if len(shape) >= 1 and shape[0] is not None else None
+    columns = int(shape[1]) if len(shape) >= 2 and shape[1] is not None else None
+    return {
+        f"{prefix}_rows": rows,
+        f"{prefix}_columns": columns,
+        f"{prefix}_type": type(matrix).__name__,
+        f"{prefix}_sparse": bool(sparse.issparse(matrix)),
+        f"{prefix}_mb": _matrix_size_mb(matrix),
+    }
+
+
+def _matrix_size_mb(matrix: object) -> float | None:
+    if sparse.issparse(matrix):
+        sparse_matrix = sparse.csr_matrix(matrix)
+        return float(
+            (sparse_matrix.data.nbytes + sparse_matrix.indices.nbytes + sparse_matrix.indptr.nbytes) / (1024 * 1024)
+        )
+    nbytes = getattr(matrix, "nbytes", None)
+    if nbytes is None:
+        return None
+    return float(nbytes) / (1024 * 1024)
+
+
+def _load_xgb_regressor() -> type[object]:
+    try:
+        xgboost = importlib.import_module("xgboost")
+        xgb_regressor = getattr(xgboost, "XGBRegressor")
+    except Exception as exc:
+        raise RuntimeError(
+            "XGBoost is installed as an optional research dependency, but its native runtime could not be loaded. "
+            "On macOS, install the OpenMP runtime with `brew install libomp` before running XGBoost experiments."
+        ) from exc
+    return cast(type[object], xgb_regressor)

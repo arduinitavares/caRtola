@@ -27,6 +27,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/recommendations"))
     parser.add_argument("--model-id", choices=tuple(MODEL_SPECS), default="random_forest")
+    parser.add_argument("--fixture-mode", choices=("none", "strict"), default="none")
+    parser.add_argument("--matchup-context-mode", choices=("none", "cartola_matchup_v1"), default="none")
     parser.add_argument("--footystats-mode", choices=("none", "ppg", "ppg_xg"), default="ppg")
     parser.add_argument("--footystats-league-slug", default="brazil-serie-a")
     parser.add_argument("--footystats-dir", type=Path, default=Path("data/footystats"))
@@ -58,6 +60,8 @@ def _print_success(console: Console, metadata: dict[str, object]) -> None:
     table.add_row("Capture timestamp", str(metadata.get("capture_captured_at_utc")))
     table.add_row("Capture age seconds", str(metadata.get("capture_age_seconds")))
     table.add_row("Model", str(metadata.get("model_id")))
+    table.add_row("Fixture mode", str(metadata.get("fixture_mode")))
+    table.add_row("Matchup context", str(metadata.get("matchup_context_mode")))
     table.add_row("FootyStats mode", str(metadata.get("footystats_mode")))
     table.add_row("Selected players", str(metadata.get("selected_count")))
     table.add_row("Predicted total", _format_float(metadata.get("predicted_points")))
@@ -83,6 +87,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         project_root=args.project_root,
         output_root=args.output_root,
         model_id=args.model_id,
+        fixture_mode=args.fixture_mode,
+        matchup_context_mode=args.matchup_context_mode,
         footystats_mode=args.footystats_mode,
         footystats_league_slug=args.footystats_league_slug,
         footystats_dir=args.footystats_dir,

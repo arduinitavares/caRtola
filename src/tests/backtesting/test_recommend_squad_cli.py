@@ -22,13 +22,24 @@ def test_parse_args_requires_target_round() -> None:
         parse_args(["--season", "2026", "--mode", "live"])
 
 
-def test_parse_args_has_no_fixture_mode(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit):
-        parse_args(["--season", "2026", "--target-round", "14", "--mode", "live", "--fixture-mode", "none"])
+def test_parse_args_accepts_strict_matchup_modes() -> None:
+    args = parse_args(
+        [
+            "--season",
+            "2026",
+            "--target-round",
+            "14",
+            "--mode",
+            "live",
+            "--fixture-mode",
+            "strict",
+            "--matchup-context-mode",
+            "cartola_matchup_v1",
+        ]
+    )
 
-    captured = capsys.readouterr()
-    assert "unrecognized arguments" in captured.err
-    assert "--fixture-mode" in captured.err
+    assert args.fixture_mode == "strict"
+    assert args.matchup_context_mode == "cartola_matchup_v1"
 
 
 def test_parse_args_builds_live_defaults() -> None:
@@ -40,6 +51,8 @@ def test_parse_args_builds_live_defaults() -> None:
     assert args.budget == 100.0
     assert args.footystats_mode == "ppg"
     assert args.model_id == "random_forest"
+    assert args.fixture_mode == "none"
+    assert args.matchup_context_mode == "none"
     assert args.output_root == Path("data/08_reporting/recommendations")
 
 
@@ -90,6 +103,10 @@ def test_main_builds_recommendation_config(monkeypatch: pytest.MonkeyPatch, tmp_
             "2026",
             "--model-id",
             "ridge",
+            "--fixture-mode",
+            "strict",
+            "--matchup-context-mode",
+            "cartola_matchup_v1",
         ]
     )
 
@@ -102,6 +119,8 @@ def test_main_builds_recommendation_config(monkeypatch: pytest.MonkeyPatch, tmp_
             project_root=tmp_path,
             current_year=2026,
             model_id="ridge",
+            fixture_mode="strict",
+            matchup_context_mode="cartola_matchup_v1",
         )
     ]
     output = capsys.readouterr().out

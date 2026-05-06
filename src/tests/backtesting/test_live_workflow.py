@@ -113,6 +113,56 @@ def test_run_live_round_fresh_captures_and_uses_capture_round(
     assert result.workflow_metadata["status"] == "ok"
 
 
+def test_run_live_round_passes_strict_matchup_modes_to_recommendation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = _capture_metadata(tmp_path, round_number=14)
+    recommendation_calls: list[RecommendationConfig] = []
+
+    monkeypatch.setattr(
+        "cartola.backtesting.live_workflow.capture_market_round",
+        lambda config, **kwargs: MarketCaptureResult(
+            csv_path=metadata.csv_path,
+            metadata_path=metadata.metadata_path,
+            target_round=14,
+            athlete_count=747,
+            status_mercado=1,
+            deadline_timestamp=1777748340,
+            deadline_parse_status="ok",
+        ),
+    )
+    monkeypatch.setattr("cartola.backtesting.live_workflow.load_valid_live_capture", lambda **kwargs: metadata)
+
+    def fake_recommend(config: RecommendationConfig) -> RecommendationResult:
+        recommendation_calls.append(config)
+        return _recommendation_result(config)
+
+    monkeypatch.setattr("cartola.backtesting.live_workflow.run_recommendation", fake_recommend)
+
+    result = run_live_round(
+        LiveWorkflowConfig(
+            season=2026,
+            project_root=tmp_path,
+            current_year=2026,
+            model_id="xgboost_depth2_slow",
+            footystats_mode="ppg_xg",
+            fixture_mode="strict",
+            matchup_context_mode="cartola_matchup_v1",
+        ),
+        now=lambda: datetime(2026, 4, 29, 12, 34, 56, 123456, tzinfo=UTC),
+    )
+
+    assert recommendation_calls[0].fixture_mode == "strict"
+    assert recommendation_calls[0].matchup_context_mode == "cartola_matchup_v1"
+    assert recommendation_calls[0].model_id == "xgboost_depth2_slow"
+    assert recommendation_calls[0].footystats_mode == "ppg_xg"
+    assert recommendation_calls[0].live_workflow["fixture_mode"] == "strict"
+    assert recommendation_calls[0].live_workflow["matchup_context_mode"] == "cartola_matchup_v1"
+    assert result.workflow_metadata["fixture_mode"] == "strict"
+    assert result.workflow_metadata["matchup_context_mode"] == "cartola_matchup_v1"
+
+
 def test_run_live_round_missing_reuses_valid_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

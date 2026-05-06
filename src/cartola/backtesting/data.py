@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import pandas as pd
 
@@ -66,6 +67,7 @@ NUMERIC_COLUMNS: tuple[str, ...] = (
 )
 
 _ROUND_FILE_RE = re.compile(r"rodada-(\d+)\.csv$")
+_LEGACY_MARKET_FILE_RE = re.compile(r"Mercado_(\d+)\.txt$")
 FIXTURE_REQUIRED_COLUMNS: tuple[str, ...] = ("rodada", "id_clube_home", "id_clube_away", "data")
 _FIXTURE_FILE_RE = re.compile(r"partidas-(\d+)\.csv$")
 ROUND_ALIGNMENT_REPORT_COLUMNS: tuple[str, ...] = (
@@ -81,8 +83,10 @@ ROUND_ALIGNMENT_REPORT_COLUMNS: tuple[str, ...] = (
 
 
 def load_round_file(path: str | Path) -> pd.DataFrame:
-    csv_path = Path(path)
-    return normalize_round_frame(pd.read_csv(csv_path), source=csv_path)
+    round_path = Path(path)
+    if _LEGACY_MARKET_FILE_RE.match(round_path.name):
+        return normalize_round_frame(_read_legacy_market_frame(round_path), source=round_path)
+    return normalize_round_frame(pd.read_csv(round_path), source=round_path)
 
 
 def load_season_data(season: int, project_root: str | Path = ".") -> pd.DataFrame:
@@ -92,9 +96,17 @@ def load_season_data(season: int, project_root: str | Path = ".") -> pd.DataFram
     if not season_dir.is_dir():
         raise NotADirectoryError(f"Season path is not a directory: {season_dir}")
 
-    round_files = sorted(season_dir.glob("rodada-*.csv"), key=_round_number)
+    round_files = sorted(
+        (path for path in season_dir.glob("rodada-*.csv") if _round_number(path) > 0),
+        key=_round_number,
+    )
     if not round_files:
-        raise FileNotFoundError(f"No round CSV files found in season directory: {season_dir}")
+        round_files = sorted(
+            (path for path in season_dir.glob("Mercado_*.txt") if _legacy_market_round_number(path) > 0),
+            key=_legacy_market_round_number,
+        )
+    if not round_files:
+        raise FileNotFoundError(f"No round CSV files found; no legacy market files found in season directory: {season_dir}")
 
     return pd.concat((load_round_file(path) for path in round_files), ignore_index=True)
 
@@ -237,6 +249,53 @@ def _round_number(path: Path) -> int:
     if not match:
         raise ValueError(f"Invalid round CSV filename: {path}")
     return int(match.group(1))
+
+
+def _legacy_market_round_number(path: Path) -> int:
+    match = _LEGACY_MARKET_FILE_RE.match(path.name)
+    if not match:
+        raise ValueError(f"Invalid legacy market filename: {path}")
+    # Mercado_1 is the opening market snapshot; Mercado_2 contains round 1 outcomes.
+    return int(match.group(1)) - 1
+
+
+def _read_legacy_market_frame(path: Path) -> pd.DataFrame:
+    payload = json.loads(path.read_text(encoding="latin-1"))
+    raw_athletes = payload.get("atletas", [])
+    athletes = raw_athletes.values() if isinstance(raw_athletes, Mapping) else raw_athletes
+    clubs = payload.get("clubes", {})
+    rows: list[dict[str, object]] = []
+
+    for athlete in athletes:
+        if not isinstance(athlete, Mapping):
+            continue
+        row: dict[str, object] = {
+            f"atletas.{key}": value for key, value in athlete.items() if key != "scout"
+        }
+        scout = athlete.get("scout", {})
+        if isinstance(scout, Mapping):
+            row.update({column: scout.get(column, 0) for column in DEFAULT_SCOUT_COLUMNS})
+
+        club_id = athlete.get("clube_id")
+        club = _legacy_club_record(clubs, club_id)
+        if club is not None:
+            row["atletas.clube.id.full.name"] = (
+                club.get("nome") or club.get("nome_fantasia") or club.get("abreviacao")
+            )
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _legacy_club_record(clubs: object, club_id: object) -> Mapping[str, object] | None:
+    if not isinstance(clubs, Mapping) or club_id is None:
+        return None
+    club_mapping = cast("Mapping[object, object]", clubs)
+    for key in (club_id, str(club_id)):
+        club = club_mapping.get(key)
+        if isinstance(club, Mapping):
+            return cast("Mapping[str, object]", club)
+    return None
 
 
 def _fixture_round_number(path: Path) -> int:
