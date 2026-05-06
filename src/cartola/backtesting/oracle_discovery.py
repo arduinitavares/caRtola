@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
-from typing import Any, cast
+from time import perf_counter
+from typing import Any, Literal, cast
 
 import pandas as pd
 from pandas.errors import EmptyDataError, ParserError
@@ -22,6 +23,39 @@ class ArtifactValidationError(ValueError):
 
 class OracleObjectiveError(ValueError):
     pass
+
+
+OracleDiscoveryProgressEventType = Literal[
+    "report_started",
+    "child_started",
+    "work_planned",
+    "strategy_started",
+    "round_finished",
+    "strategy_finished",
+    "child_finished",
+    "report_finished",
+]
+
+
+@dataclass(frozen=True)
+class OracleDiscoveryProgressEvent:
+    event_type: OracleDiscoveryProgressEventType
+    output_path: Path
+    total_rounds: int
+    completed_rounds: int
+    source_child_id: str | None = None
+    child_index: int | None = None
+    total_children: int | None = None
+    season: int | None = None
+    strategy: str | None = None
+    model_id: str | None = None
+    feature_pack: str | None = None
+    round_number: int | None = None
+    elapsed_seconds: float | None = None
+    message: str | None = None
+
+
+OracleDiscoveryProgressCallback = Callable[[OracleDiscoveryProgressEvent], None]
 
 
 @dataclass(frozen=True)
@@ -370,8 +404,24 @@ def run_model_candidate_oracle(
     return row, selected
 
 
-def build_oracle_discovery_report(*, experiment_path: Path, output_path: Path) -> None:
+def build_oracle_discovery_report(
+    *,
+    experiment_path: Path,
+    output_path: Path,
+    progress_callback: OracleDiscoveryProgressCallback | None = None,
+) -> None:
+    started = perf_counter()
     output_path.mkdir(parents=True, exist_ok=True)
+    _emit_progress(
+        progress_callback,
+        OracleDiscoveryProgressEvent(
+            event_type="report_started",
+            output_path=output_path,
+            total_rounds=0,
+            completed_rounds=0,
+            elapsed_seconds=0.0,
+        ),
+    )
     contexts = load_source_run_contexts(experiment_path)
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
@@ -379,17 +429,64 @@ def build_oracle_discovery_report(*, experiment_path: Path, output_path: Path) -
     recall_rows: list[dict[str, object]] = []
     invalid_rows: list[dict[str, object]] = []
     source_provenance: list[dict[str, object]] = []
+    planned_children: list[tuple[SourceRunContext, ChildArtifacts, BacktestConfig]] = []
+    total_rounds = 0
 
-    for context in contexts:
+    for child_index, context in enumerate(contexts, start=1):
+        _emit_progress(
+            progress_callback,
+            _progress_event(
+                "child_started",
+                context=context,
+                output_path=output_path,
+                total_rounds=0,
+                completed_rounds=0,
+                child_index=child_index,
+                total_children=len(contexts),
+                elapsed_seconds=perf_counter() - started,
+            ),
+        )
         artifacts = validate_child_artifacts(context)
         config = _config_from_context(context, artifacts.metadata)
         source_provenance.append(_source_provenance_row(context, artifacts.metadata, config=config))
+        planned_children.append((context, artifacts, config))
+        total_rounds += _count_optimal_strategy_rounds(context, artifacts)
+
+    _emit_progress(
+        progress_callback,
+        OracleDiscoveryProgressEvent(
+            event_type="work_planned",
+            output_path=output_path,
+            total_rounds=total_rounds,
+            completed_rounds=0,
+            elapsed_seconds=perf_counter() - started,
+            message=f"oracle_rounds={total_rounds}",
+        ),
+    )
+
+    completed_rounds = 0
+    for child_index, (context, artifacts, config) in enumerate(planned_children, start=1):
         for strategy in context.analyzed_strategies:
             score_column = context.strategy_score_columns[strategy]
             strategy_rounds = artifacts.round_results.loc[
                 artifacts.round_results["strategy"].astype(str).eq(strategy)
                 & artifacts.round_results["solver_status"].astype(str).eq("Optimal")
             ]
+            _emit_progress(
+                progress_callback,
+                _progress_event(
+                    "strategy_started",
+                    context=context,
+                    output_path=output_path,
+                    total_rounds=total_rounds,
+                    completed_rounds=completed_rounds,
+                    child_index=child_index,
+                    total_children=len(contexts),
+                    strategy=strategy,
+                    elapsed_seconds=perf_counter() - started,
+                    message=f"strategy_rounds={len(strategy_rounds)}",
+                ),
+            )
             for _, source_round in strategy_rounds.iterrows():
                 round_number = int(source_round["rodada"])
                 identity = _identity(context, round_number=round_number, strategy=strategy)
@@ -408,6 +505,23 @@ def build_oracle_discovery_report(*, experiment_path: Path, output_path: Path) -
                     )
                 except OracleObjectiveError as exc:
                     invalid_rows.extend(_invalid_oracle_rows(identity, candidates, fallback_reason=str(exc)))
+                    completed_rounds += 1
+                    _emit_progress(
+                        progress_callback,
+                        _progress_event(
+                            "round_finished",
+                            context=context,
+                            output_path=output_path,
+                            total_rounds=total_rounds,
+                            completed_rounds=completed_rounds,
+                            child_index=child_index,
+                            total_children=len(contexts),
+                            strategy=strategy,
+                            round_number=round_number,
+                            elapsed_seconds=perf_counter() - started,
+                            message=str(exc),
+                        ),
+                    )
                     continue
 
                 round_rows.append(
@@ -424,6 +538,23 @@ def build_oracle_discovery_report(*, experiment_path: Path, output_path: Path) -
                 selected_frames.append(_oracle_selected_output(oracle_selected, identity=identity))
                 if selected.empty:
                     invalid_rows.append(_missing_selected_squad_row(_selected_squad_captain_identity(identity)))
+                    completed_rounds += 1
+                    _emit_progress(
+                        progress_callback,
+                        _progress_event(
+                            "round_finished",
+                            context=context,
+                            output_path=output_path,
+                            total_rounds=total_rounds,
+                            completed_rounds=completed_rounds,
+                            child_index=child_index,
+                            total_children=len(contexts),
+                            strategy=strategy,
+                            round_number=round_number,
+                            elapsed_seconds=perf_counter() - started,
+                            message="selected squad is empty",
+                        ),
+                    )
                     continue
                 try:
                     captain_profile = selected_squad_captain_oracle(selected)
@@ -434,6 +565,23 @@ def build_oracle_discovery_report(*, experiment_path: Path, output_path: Path) -
                             selected,
                             fallback_reason=str(exc),
                         )
+                    )
+                    completed_rounds += 1
+                    _emit_progress(
+                        progress_callback,
+                        _progress_event(
+                            "round_finished",
+                            context=context,
+                            output_path=output_path,
+                            total_rounds=total_rounds,
+                            completed_rounds=completed_rounds,
+                            child_index=child_index,
+                            total_children=len(contexts),
+                            strategy=strategy,
+                            round_number=round_number,
+                            elapsed_seconds=perf_counter() - started,
+                            message=str(exc),
+                        ),
                     )
                     continue
                 captain_rows.append(
@@ -447,6 +595,51 @@ def build_oracle_discovery_report(*, experiment_path: Path, output_path: Path) -
                     )
                 )
                 recall_rows.extend(_recall_rows(identity, oracle_selected, selected))
+                completed_rounds += 1
+                _emit_progress(
+                    progress_callback,
+                    _progress_event(
+                        "round_finished",
+                        context=context,
+                        output_path=output_path,
+                        total_rounds=total_rounds,
+                        completed_rounds=completed_rounds,
+                        child_index=child_index,
+                        total_children=len(contexts),
+                        strategy=strategy,
+                        round_number=round_number,
+                        elapsed_seconds=perf_counter() - started,
+                    ),
+                )
+
+            _emit_progress(
+                progress_callback,
+                _progress_event(
+                    "strategy_finished",
+                    context=context,
+                    output_path=output_path,
+                    total_rounds=total_rounds,
+                    completed_rounds=completed_rounds,
+                    child_index=child_index,
+                    total_children=len(contexts),
+                    strategy=strategy,
+                    elapsed_seconds=perf_counter() - started,
+                ),
+            )
+
+        _emit_progress(
+            progress_callback,
+            _progress_event(
+                "child_finished",
+                context=context,
+                output_path=output_path,
+                total_rounds=total_rounds,
+                completed_rounds=completed_rounds,
+                child_index=child_index,
+                total_children=len(contexts),
+                elapsed_seconds=perf_counter() - started,
+            ),
+        )
 
     _write_outputs(
         output_path=output_path,
@@ -458,6 +651,16 @@ def build_oracle_discovery_report(*, experiment_path: Path, output_path: Path) -
         experiment_path=experiment_path,
         source_context_count=len(contexts),
         source_provenance=source_provenance,
+    )
+    _emit_progress(
+        progress_callback,
+        OracleDiscoveryProgressEvent(
+            event_type="report_finished",
+            output_path=output_path,
+            total_rounds=total_rounds,
+            completed_rounds=completed_rounds,
+            elapsed_seconds=perf_counter() - started,
+        ),
     )
 
 
@@ -530,6 +733,58 @@ def load_source_run_contexts(experiment_path: Path) -> list[SourceRunContext]:
             )
         )
     return contexts
+
+
+def _emit_progress(
+    callback: OracleDiscoveryProgressCallback | None,
+    event: OracleDiscoveryProgressEvent,
+) -> None:
+    if callback is not None:
+        callback(event)
+
+
+def _progress_event(
+    event_type: OracleDiscoveryProgressEventType,
+    *,
+    context: SourceRunContext,
+    output_path: Path,
+    total_rounds: int,
+    completed_rounds: int,
+    child_index: int,
+    total_children: int,
+    strategy: str | None = None,
+    round_number: int | None = None,
+    elapsed_seconds: float | None = None,
+    message: str | None = None,
+) -> OracleDiscoveryProgressEvent:
+    return OracleDiscoveryProgressEvent(
+        event_type=event_type,
+        output_path=output_path,
+        total_rounds=total_rounds,
+        completed_rounds=completed_rounds,
+        source_child_id=context.source_child_id,
+        child_index=child_index,
+        total_children=total_children,
+        season=context.season,
+        strategy=strategy,
+        model_id=context.model_id,
+        feature_pack=context.feature_pack,
+        round_number=round_number,
+        elapsed_seconds=elapsed_seconds,
+        message=message,
+    )
+
+
+def _count_optimal_strategy_rounds(context: SourceRunContext, artifacts: ChildArtifacts) -> int:
+    total = 0
+    for strategy in context.analyzed_strategies:
+        total += int(
+            (
+                artifacts.round_results["strategy"].astype(str).eq(strategy)
+                & artifacts.round_results["solver_status"].astype(str).eq("Optimal")
+            ).sum()
+        )
+    return total
 
 
 def validate_child_artifacts(context: SourceRunContext) -> ChildArtifacts:

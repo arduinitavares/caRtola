@@ -746,10 +746,18 @@ def test_run_model_candidate_oracle_rejects_duplicate_round_athletes_before_opti
         )
 
 
-def _run_build_oracle_discovery_report(*, experiment_path: Path, output_path: Path) -> None:
+def _run_build_oracle_discovery_report(
+    *,
+    experiment_path: Path,
+    output_path: Path,
+    progress_callback: Callable[[object], None] | None = None,
+) -> None:
     builder = getattr(oracle_discovery, "build_oracle_discovery_report", None)
     assert callable(builder), "build_oracle_discovery_report should be implemented"
-    cast("Callable[..., None]", builder)(experiment_path=experiment_path, output_path=output_path)
+    kwargs: dict[str, object] = {"experiment_path": experiment_path, "output_path": output_path}
+    if progress_callback is not None:
+        kwargs["progress_callback"] = progress_callback
+    cast("Callable[..., None]", builder)(**kwargs)
 
 
 def _write_report_builder_experiment(
@@ -868,6 +876,56 @@ def test_build_oracle_discovery_report_writes_expected_artifacts(tmp_path: Path)
     metadata = json.loads((output / "oracle_discovery_metadata.json").read_text(encoding="utf-8"))
     assert metadata["source_mode"] == "artifact"
     assert metadata["source_experiment_path"] == str(experiment)
+
+
+def test_build_oracle_discovery_report_emits_progress_events(tmp_path: Path) -> None:
+    predictions = _report_builder_predictions()
+    selected_players = predictions.head(12).copy()
+    selected_players["strategy"] = "xgboost_depth2_l2_heavy"
+    selected_players["is_captain"] = selected_players["id_atleta"].eq(10)
+    round_results = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "strategy": "xgboost_depth2_l2_heavy",
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 100.0,
+                "budget_delta": 0.0,
+                "budget_used": 12.0,
+                "actual_points_with_captain": 83.5,
+                "captain_id": 10,
+            }
+        ]
+    )
+    experiment = _write_report_builder_experiment(
+        tmp_path,
+        predictions=predictions,
+        round_results=round_results,
+        selected_players=selected_players,
+    )
+    output = tmp_path / "oracle_out"
+    events: list[object] = []
+
+    _run_build_oracle_discovery_report(
+        experiment_path=experiment,
+        output_path=output,
+        progress_callback=events.append,
+    )
+
+    event_types = [getattr(event, "event_type") for event in events]
+    assert event_types[:3] == ["report_started", "child_started", "work_planned"]
+    assert event_types[-2:] == ["child_finished", "report_finished"]
+    assert event_types.count("strategy_started") == 3
+    assert event_types.count("round_finished") == 1
+    assert event_types.count("strategy_finished") == 3
+    planned = next(event for event in events if getattr(event, "event_type") == "work_planned")
+    round_finished = next(event for event in events if getattr(event, "event_type") == "round_finished")
+    finished = events[-1]
+    assert getattr(planned, "total_rounds") == 1
+    assert getattr(round_finished, "completed_rounds") == 1
+    assert getattr(finished, "completed_rounds") == 1
+    assert getattr(finished, "total_rounds") == 1
 
 
 def test_build_oracle_discovery_report_includes_strategy_in_shared_identity(tmp_path: Path) -> None:

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import NoReturn
+from types import SimpleNamespace
+from typing import NoReturn, cast
 
 import pytest
 
@@ -79,6 +81,71 @@ def test_main_calls_report_builder(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert observed["experiment_path"] == tmp_path / "exp"
     assert str(observed["output_path"]).startswith(str(tmp_path / "oracle"))
     assert "oracle_discovery_started_at=" in str(observed["output_path"])
+    assert callable(observed["progress_callback"])
+
+
+def test_main_renders_progress_events(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import scripts.run_oracle_knowledge_discovery as cli
+
+    def fake_builder(**kwargs: object) -> None:
+        progress_callback = cast("Callable[[object], None]", kwargs["progress_callback"])
+        progress_callback(
+            SimpleNamespace(
+                event_type="report_started",
+                output_path=tmp_path / "oracle" / "run",
+                total_rounds=0,
+                completed_rounds=0,
+                elapsed_seconds=0.0,
+            )
+        )
+        progress_callback(
+            SimpleNamespace(
+                event_type="work_planned",
+                output_path=tmp_path / "oracle" / "run",
+                total_rounds=2,
+                completed_rounds=0,
+                elapsed_seconds=0.1,
+            )
+        )
+        progress_callback(
+            SimpleNamespace(
+                event_type="round_finished",
+                output_path=tmp_path / "oracle" / "run",
+                total_rounds=2,
+                completed_rounds=1,
+                source_child_id="child-1",
+                season=2025,
+                strategy="ridge",
+                model_id="ridge",
+                feature_pack="ppg_xg",
+                round_number=5,
+                elapsed_seconds=0.2,
+            )
+        )
+        progress_callback(
+            SimpleNamespace(
+                event_type="report_finished",
+                output_path=tmp_path / "oracle" / "run",
+                total_rounds=2,
+                completed_rounds=2,
+                elapsed_seconds=0.3,
+            )
+        )
+
+    monkeypatch.setattr(cli, "build_oracle_discovery_report", fake_builder)
+
+    exit_code = main(["--experiment-path", str(tmp_path / "exp")])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "START oracle discovery" in captured.err
+    assert "PLAN oracle rounds=2" in captured.err
+    assert "DONE round 1/2" in captured.err
+    assert "DONE oracle discovery completed=2/2" in captured.err
 
 
 def test_main_reports_builder_failure_without_traceback(
