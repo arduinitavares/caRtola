@@ -734,10 +734,49 @@ def test_run_model_candidate_oracle_rejects_duplicate_round_athletes_before_opti
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _block_optimizer(monkeypatch)
-    candidates = pd.concat([_model_candidate_rows(), _model_candidate_rows().iloc[[0]]], ignore_index=True)
+    duplicate = _model_candidate_rows().iloc[[0]].copy()
+    duplicate["id_clube"] = 999
+    candidates = pd.concat([_model_candidate_rows(), duplicate], ignore_index=True)
     config = BacktestConfig(season=2025, start_round=5, budget=100.0, project_root=Path("."))
 
-    with pytest.raises(OracleObjectiveError, match="Duplicate candidate rows.*rodada.*id_atleta"):
+    with pytest.raises(OracleObjectiveError, match="Conflicting duplicate candidate rows"):
+        run_model_candidate_oracle(
+            candidates,
+            config=config,
+            budget_before_round=100.0,
+            score_column="model_score",
+        )
+
+
+def test_run_model_candidate_oracle_deduplicates_equivalent_candidate_rows() -> None:
+    candidates = _model_candidate_rows()
+    duplicate = candidates.iloc[[0]].copy()
+    duplicate["slug"] = None
+    duplicate["minimo_para_valorizar"] = 3.42
+    candidates = pd.concat([candidates, duplicate], ignore_index=True)
+    config = BacktestConfig(season=2025, start_round=5, budget=100.0)
+
+    row, selected = run_model_candidate_oracle(
+        candidates,
+        config=config,
+        budget_before_round=100.0,
+        score_column="model_score",
+    )
+
+    assert row["optimizer_status"] == "Optimal"
+    assert selected["id_atleta"].nunique() == len(selected)
+    player_1 = selected.loc[selected["id_atleta"] == 1].iloc[0]
+    assert player_1["minimo_para_valorizar"] == 3.42
+
+
+def test_run_model_candidate_oracle_rejects_conflicting_duplicate_candidate_rows() -> None:
+    candidates = _model_candidate_rows()
+    duplicate = candidates.iloc[[0]].copy()
+    duplicate["model_score"] = float(duplicate["model_score"].iloc[0]) + 2.0
+    candidates = pd.concat([candidates, duplicate], ignore_index=True)
+    config = BacktestConfig(season=2025, start_round=5, budget=100.0)
+
+    with pytest.raises(OracleObjectiveError, match="Conflicting duplicate candidate rows"):
         run_model_candidate_oracle(
             candidates,
             config=config,

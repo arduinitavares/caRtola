@@ -384,6 +384,7 @@ def run_model_candidate_oracle(
     budget_before_round: float,
     score_column: str,
 ) -> tuple[dict[str, object], pd.DataFrame]:
+    candidates = _deduplicate_model_candidates(candidates, score_column=score_column)
     _validate_model_candidate_identity(candidates)
     oracle_candidates = add_oracle_actual_points(candidates)
     _require_model_candidate_score_column(oracle_candidates, score_column)
@@ -1254,6 +1255,51 @@ def _require_selected_captain_oracle_columns(selected: pd.DataFrame) -> None:
 def _require_model_candidate_score_column(candidates: pd.DataFrame, score_column: str) -> None:
     if score_column not in candidates.columns:
         raise ArtifactValidationError(f"Missing model score column in candidates: {score_column}")
+
+
+def _critical_candidate_columns(candidates: pd.DataFrame, score_column: str) -> list[str]:
+    columns = [
+        "rodada",
+        "id_atleta",
+        "id_clube",
+        "posicao",
+        "preco_pre_rodada",
+        "pontuacao",
+        "entrou_em_campo",
+        "variacao",
+        score_column,
+    ]
+    return [column for column in dict.fromkeys(columns) if column in candidates.columns]
+
+
+def _deduplicate_model_candidates(candidates: pd.DataFrame, *, score_column: str) -> pd.DataFrame:
+    identity_columns = ["rodada", "id_atleta"]
+    if not set(identity_columns).issubset(candidates.columns):
+        return candidates
+
+    duplicate_mask = candidates[identity_columns].duplicated(keep=False)
+    if not bool(duplicate_mask.any()):
+        return candidates
+
+    critical_columns = _critical_candidate_columns(candidates, score_column)
+    winner_indices: list[object] = []
+    duplicate_keys = candidates.loc[duplicate_mask, identity_columns].drop_duplicates()
+    for _, key in duplicate_keys.iterrows():
+        round_mask = candidates["rodada"].isna() if pd.isna(key["rodada"]) else candidates["rodada"].eq(key["rodada"])
+        athlete_mask = (
+            candidates["id_atleta"].isna() if pd.isna(key["id_atleta"]) else candidates["id_atleta"].eq(key["id_atleta"])
+        )
+        group_mask = round_mask & athlete_mask
+        group = candidates.loc[group_mask]
+        if len(group.loc[:, critical_columns].drop_duplicates()) > 1:
+            raise OracleObjectiveError(
+                f"Conflicting duplicate candidate rows for rodada={key['rodada']} id_atleta={key['id_atleta']}"
+            )
+        populated_counts = group.notna().sum(axis=1)
+        winner_indices.append(populated_counts.sort_values(ascending=False, kind="mergesort").index[0])
+
+    keep_indices = candidates.index[~duplicate_mask].append(pd.Index(winner_indices)).sort_values()
+    return candidates.loc[keep_indices].reset_index(drop=True)
 
 
 def _validate_model_candidate_identity(candidates: pd.DataFrame) -> None:
