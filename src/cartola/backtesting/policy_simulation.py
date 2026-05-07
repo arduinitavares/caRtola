@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import argparse
 import html
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import numpy as np
 import pandas as pd
+from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
@@ -15,6 +19,7 @@ from cartola.backtesting.optimizer_policies import (
     NO_POLICY,
     FixtureCoverageError,
     OptimizerPolicy,
+    get_policy_set,
     normalize_policy_candidates,
     validate_fixture_coverage,
 )
@@ -235,6 +240,20 @@ class PolicyReplayResult:
 class PolicyDecision:
     status: str
     reason: str
+
+
+@dataclass(frozen=True)
+class PolicySimulationRunResult:
+    output_path: Path
+    simulation_id: str
+
+
+@dataclass(frozen=True)
+class _PolicySimulationChildSpec:
+    child_path: Path
+    season: int
+    model_id: str
+    feature_pack: str
 
 
 def load_policy_source_context(child_path: Path) -> PolicySourceContext:
@@ -757,6 +776,344 @@ def write_policy_simulation_report(
         "</html>\n",
         encoding="utf-8",
     )
+
+
+def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicySimulationRunResult:
+    selected_seasons = _parse_season_csv(str(args.seasons))
+    selected_models = _parse_required_csv(str(args.models), field_name="models")
+    selected_feature_packs = _parse_required_csv(str(args.feature_packs), field_name="feature_packs")
+    child_specs = _selected_policy_child_specs(
+        experiment_path=Path(args.experiment_path),
+        seasons=selected_seasons,
+        models=selected_models,
+        feature_packs=selected_feature_packs,
+    )
+    policy_set = get_policy_set(str(args.policy_set))
+    policies = _policies_with_no_policy(policy_set.policies)
+    simulation_id = _timestamp_id()
+    output_path = Path(args.output_root) / f"policy_simulation_started_at={simulation_id}"
+    fixture_identity_status = "unverified"
+    source_candidate_signature_status = "artifact_backed_unverified"
+
+    console.print(
+        "Policy simulation started "
+        f"simulation_id={simulation_id} child_count={len(child_specs)} output={output_path}"
+    )
+    round_rows, selected_player_rows, invalid_rows = _replay_policy_children(
+        child_specs=child_specs,
+        policies=policies,
+        console=console,
+    )
+    if invalid_rows and not bool(getattr(args, "allow_incomplete_report", False)):
+        raise PolicySimulationError(
+            "Policy simulation produced invalid rows; rerun with --allow-incomplete-report to write diagnostics."
+        )
+
+    round_results = pd.DataFrame(round_rows, columns=pd.Index(POLICY_ROUND_RESULT_COLUMNS))
+    selected_players = pd.DataFrame(selected_player_rows, columns=pd.Index(POLICY_SELECTED_PLAYER_COLUMNS))
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=selected_seasons,
+        fixture_identity_status=fixture_identity_status,
+    )
+    per_season_summary = build_policy_per_season_summary(round_results)
+    profile_summary = build_policy_profile_summary(round_results, selected_players)
+    manifest = _policy_simulation_manifest(
+        args=args,
+        simulation_id=simulation_id,
+        output_path=output_path,
+        selected_seasons=selected_seasons,
+        selected_models=selected_models,
+        selected_feature_packs=selected_feature_packs,
+        child_specs=child_specs,
+        policy_variants=tuple(policy.policy_variant for policy in policies),
+        fixture_identity_status=fixture_identity_status,
+        source_candidate_signature_status=source_candidate_signature_status,
+        invalid_row_count=len(invalid_rows),
+    )
+    comparability_report = _policy_comparability_report(
+        args=args,
+        selected_seasons=selected_seasons,
+        selected_models=selected_models,
+        selected_feature_packs=selected_feature_packs,
+        child_count=len(child_specs),
+        fixture_identity_status=fixture_identity_status,
+        source_candidate_signature_status=source_candidate_signature_status,
+    )
+    _write_policy_simulation_artifacts(
+        output_path=output_path,
+        manifest=manifest,
+        ranked_summary=ranked_summary,
+        per_season_summary=per_season_summary,
+        round_results=round_results,
+        selected_players=selected_players,
+        profile_summary=profile_summary,
+        comparability_report=comparability_report,
+    )
+    console.print(f"Policy simulation complete simulation_id={simulation_id} output={output_path}")
+    return PolicySimulationRunResult(output_path=output_path, simulation_id=simulation_id)
+
+
+def _replay_policy_children(
+    *,
+    child_specs: tuple[_PolicySimulationChildSpec, ...],
+    policies: tuple[OptimizerPolicy, ...],
+    console: Console,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    total_children = len(child_specs)
+    round_rows: list[dict[str, object]] = []
+    selected_player_rows: list[dict[str, object]] = []
+    invalid_rows: list[dict[str, object]] = []
+    if console.is_terminal and total_children:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]Policy simulation"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TextColumn("{task.fields[current]}"),
+            console=console,
+            transient=False,
+        ) as progress:
+            task_id = progress.add_task("policy_simulation", total=total_children, current="")
+            for child_index, spec in enumerate(child_specs, start=1):
+                progress.update(task_id, current=_child_label(spec))
+                child_result = _replay_policy_child(
+                    spec=spec,
+                    policies=policies,
+                    child_index=child_index,
+                    total_children=total_children,
+                    console=progress.console,
+                )
+                round_rows.extend(child_result.round_rows)
+                selected_player_rows.extend(child_result.selected_player_rows)
+                invalid_rows.extend(child_result.invalid_rows)
+                progress.advance(task_id)
+        return round_rows, selected_player_rows, invalid_rows
+
+    for child_index, spec in enumerate(child_specs, start=1):
+        child_result = _replay_policy_child(
+            spec=spec,
+            policies=policies,
+            child_index=child_index,
+            total_children=total_children,
+            console=console,
+        )
+        round_rows.extend(child_result.round_rows)
+        selected_player_rows.extend(child_result.selected_player_rows)
+        invalid_rows.extend(child_result.invalid_rows)
+    return round_rows, selected_player_rows, invalid_rows
+
+
+def _replay_policy_child(
+    *,
+    spec: _PolicySimulationChildSpec,
+    policies: tuple[OptimizerPolicy, ...],
+    child_index: int,
+    total_children: int,
+    console: Console,
+) -> PolicyReplayResult:
+    label = _child_label(spec)
+    console.print(f"START child {child_index}/{total_children} {label}")
+    result = run_policy_replay_for_child(child_path=spec.child_path, policies=policies)
+    _verify_no_policy_replay_coverage(spec.child_path, result)
+    console.print(
+        f"DONE child {child_index}/{total_children} {label} "
+        f"round_rows={len(result.round_rows)} selected_player_rows={len(result.selected_player_rows)}"
+    )
+    return result
+
+
+def _selected_policy_child_specs(
+    *,
+    experiment_path: Path,
+    seasons: tuple[int, ...],
+    models: tuple[str, ...],
+    feature_packs: tuple[str, ...],
+) -> tuple[_PolicySimulationChildSpec, ...]:
+    specs: list[_PolicySimulationChildSpec] = []
+    missing_paths: list[Path] = []
+    for season in seasons:
+        for model_id in models:
+            for feature_pack in feature_packs:
+                child_path = (
+                    experiment_path
+                    / "runs"
+                    / f"season={season}"
+                    / f"model={model_id}"
+                    / f"feature_pack={feature_pack}"
+                )
+                if not child_path.exists():
+                    missing_paths.append(child_path)
+                    continue
+                specs.append(
+                    _PolicySimulationChildSpec(
+                        child_path=child_path,
+                        season=season,
+                        model_id=model_id,
+                        feature_pack=feature_pack,
+                    )
+                )
+    if missing_paths:
+        missing = "\n".join(str(path) for path in missing_paths)
+        raise PolicySimulationError(f"Missing requested policy simulation child run paths:\n{missing}")
+    if not specs:
+        raise PolicySimulationError("No policy simulation child runs were selected.")
+    return tuple(specs)
+
+
+def _parse_season_csv(value: str) -> tuple[int, ...]:
+    parsed: list[int] = []
+    for part in value.split(","):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        try:
+            parsed.append(int(stripped))
+        except ValueError as exc:
+            raise PolicySimulationError(f"Invalid season value: {stripped!r}") from exc
+    if not parsed:
+        raise PolicySimulationError("At least one season is required.")
+    return tuple(parsed)
+
+
+def _parse_required_csv(value: str, *, field_name: str) -> tuple[str, ...]:
+    parsed = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not parsed:
+        raise PolicySimulationError(f"At least one {field_name} value is required.")
+    return parsed
+
+
+def _policies_with_no_policy(policies: tuple[OptimizerPolicy, ...]) -> tuple[OptimizerPolicy, ...]:
+    if any(policy.policy_variant == NO_POLICY.policy_variant for policy in policies):
+        return policies
+    return (NO_POLICY, *policies)
+
+
+def _verify_no_policy_replay_coverage(child_path: Path, result: PolicyReplayResult) -> None:
+    player_predictions = _read_csv(child_path / "player_predictions.csv")
+    target_rounds = set(_target_rounds_from_predictions(player_predictions))
+    replayed_no_policy_rounds = {
+        int(cast(Any, row["rodada"]))
+        for row in result.round_rows
+        if str(row["policy_variant"]) == NO_POLICY.policy_variant
+    }
+    missing_rounds = sorted(target_rounds - replayed_no_policy_rounds)
+    if missing_rounds:
+        raise PolicySimulationError(
+            f"Policy replay missing no_policy rows for child={child_path}: rounds={missing_rounds}"
+        )
+
+
+def _policy_simulation_manifest(
+    *,
+    args: argparse.Namespace,
+    simulation_id: str,
+    output_path: Path,
+    selected_seasons: tuple[int, ...],
+    selected_models: tuple[str, ...],
+    selected_feature_packs: tuple[str, ...],
+    child_specs: tuple[_PolicySimulationChildSpec, ...],
+    policy_variants: tuple[str, ...],
+    fixture_identity_status: str,
+    source_candidate_signature_status: str,
+    invalid_row_count: int,
+) -> dict[str, object]:
+    return {
+        "simulation_id": simulation_id,
+        "hypothesis_id": str(args.hypothesis_id),
+        "policy_set_id": str(args.policy_set),
+        "policy_variants": list(policy_variants),
+        "experiment_path": str(Path(args.experiment_path)),
+        "output_path": str(output_path),
+        "current_year": int(args.current_year),
+        "selected_seasons": list(selected_seasons),
+        "selected_models": list(selected_models),
+        "selected_feature_packs": list(selected_feature_packs),
+        "child_count": len(child_specs),
+        "children": [_child_manifest_row(spec) for spec in child_specs],
+        "fixture_identity_status": fixture_identity_status,
+        "budget_policy": "moving",
+        "source_candidate_signature_status": source_candidate_signature_status,
+        "invalid_row_count": invalid_row_count,
+        "allow_incomplete_report": bool(getattr(args, "allow_incomplete_report", False)),
+    }
+
+
+def _child_manifest_row(spec: _PolicySimulationChildSpec) -> dict[str, object]:
+    return {
+        "season": spec.season,
+        "model_id": spec.model_id,
+        "feature_pack": spec.feature_pack,
+        "child_path": str(spec.child_path),
+    }
+
+
+def _policy_comparability_report(
+    *,
+    args: argparse.Namespace,
+    selected_seasons: tuple[int, ...],
+    selected_models: tuple[str, ...],
+    selected_feature_packs: tuple[str, ...],
+    child_count: int,
+    fixture_identity_status: str,
+    source_candidate_signature_status: str,
+) -> dict[str, object]:
+    return {
+        "status": "diagnostic_only",
+        "reason": "fixture identity is unverified for policy simulation.",
+        "hypothesis_id": str(args.hypothesis_id),
+        "policy_set_id": str(args.policy_set),
+        "experiment_path": str(Path(args.experiment_path)),
+        "selected_seasons": list(selected_seasons),
+        "selected_models": list(selected_models),
+        "selected_feature_packs": list(selected_feature_packs),
+        "child_count": child_count,
+        "fixture_identity_status": fixture_identity_status,
+        "budget_policy": "moving",
+        "source_candidate_signature_status": source_candidate_signature_status,
+    }
+
+
+def _write_policy_simulation_artifacts(
+    *,
+    output_path: Path,
+    manifest: dict[str, object],
+    ranked_summary: pd.DataFrame,
+    per_season_summary: pd.DataFrame,
+    round_results: pd.DataFrame,
+    selected_players: pd.DataFrame,
+    profile_summary: pd.DataFrame,
+    comparability_report: dict[str, object],
+) -> None:
+    output_path.mkdir(parents=True, exist_ok=False)
+    _write_json(output_path / "policy_simulation_manifest.json", manifest)
+    ranked_summary.to_csv(output_path / "policy_ranked_summary.csv", index=False)
+    per_season_summary.to_csv(output_path / "policy_per_season_summary.csv", index=False)
+    round_results.to_csv(output_path / "policy_round_results.csv", index=False)
+    selected_players.to_csv(output_path / "policy_selected_players.csv", index=False)
+    profile_summary.to_csv(output_path / "policy_profile_summary.csv", index=False)
+    _write_json(output_path / "policy_comparability_report.json", comparability_report)
+    write_policy_simulation_report(
+        output_path,
+        manifest=manifest,
+        ranked_summary=ranked_summary,
+        per_season_summary=per_season_summary,
+        profile_summary=profile_summary,
+        comparability_report=comparability_report,
+    )
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+
+
+def _child_label(spec: _PolicySimulationChildSpec) -> str:
+    return f"season={spec.season} model={spec.model_id} feature_pack={spec.feature_pack}"
+
+
+def _timestamp_id() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _policy_variant_season_summaries(round_results: pd.DataFrame) -> pd.DataFrame:
