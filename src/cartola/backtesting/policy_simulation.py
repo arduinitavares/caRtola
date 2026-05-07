@@ -17,6 +17,7 @@ from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.optimizer_policies import (
     NO_POLICY,
+    DuplicateCandidateError,
     FixtureCoverageError,
     OptimizerPolicy,
     get_policy_set,
@@ -209,6 +210,9 @@ POLICY_PROFILE_SUMMARY_COLUMNS: tuple[str, ...] = (
 
 class PolicySimulationError(ValueError):
     pass
+
+
+_INCOMPLETE_REPLAY_ERRORS: tuple[type[ValueError], ...] = (PolicySimulationError, DuplicateCandidateError, ValueError)
 
 
 @dataclass(frozen=True)
@@ -942,10 +946,10 @@ def _replay_policy_child(
     try:
         result = run_policy_replay_for_child(child_path=spec.child_path, policies=policies)
         _verify_no_policy_replay_coverage(spec.child_path, result)
-    except PolicySimulationError as exc:
+    except _INCOMPLETE_REPLAY_ERRORS as exc:
         if not allow_incomplete_report:
             raise
-        console.print(f"FAIL child {child_index}/{total_children} {label} error={exc}")
+        console.print(f"FAIL child {child_index}/{total_children} {label} error_type={type(exc).__name__} error={exc}")
         return PolicyReplayResult(
             round_rows=[],
             selected_player_rows=[],
@@ -1171,7 +1175,7 @@ def _child_label(spec: _PolicySimulationChildSpec) -> str:
     return f"season={spec.season} model={spec.model_id} feature_pack={spec.feature_pack}"
 
 
-def _invalid_policy_replay_row(*, spec: _PolicySimulationChildSpec, error: PolicySimulationError) -> dict[str, object]:
+def _invalid_policy_replay_row(*, spec: _PolicySimulationChildSpec, error: ValueError) -> dict[str, object]:
     return {
         "season": spec.season,
         "model_id": spec.model_id,

@@ -194,6 +194,59 @@ def test_main_allows_incomplete_report_and_writes_invalid_rows(tmp_path: Path) -
     assert "fixture coverage" in str(invalid_rows.loc[0, "error_message"])
 
 
+def test_main_allows_incomplete_report_for_duplicate_candidate_rows(tmp_path: Path) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "policy_simulations"
+    child = (
+        experiment_path
+        / "runs"
+        / "season=2025"
+        / "model=test_model"
+        / "feature_pack=synthetic_pack"
+    )
+    _write_policy_child(child)
+    player_predictions_path = child / "player_predictions.csv"
+    player_predictions = pd.read_csv(player_predictions_path)
+    duplicate = player_predictions.iloc[[0]].copy()
+    duplicate.loc[:, "test_model_score"] = 999.0
+    pd.concat([player_predictions, duplicate], ignore_index=True).to_csv(player_predictions_path, index=False)
+
+    exit_code = main(
+        [
+            "--experiment-path",
+            str(experiment_path),
+            "--hypothesis-id",
+            "H001-smoke",
+            "--policy-set",
+            "opponent-overlap-v1",
+            "--models",
+            "test_model",
+            "--feature-packs",
+            "synthetic_pack",
+            "--seasons",
+            "2025",
+            "--current-year",
+            "2026",
+            "--output-root",
+            str(output_root),
+            "--allow-incomplete-report",
+        ]
+    )
+
+    assert exit_code == 0
+    output_path = next(output_root.glob("policy_simulation_started_at=*"))
+    assert (output_path / "policy_invalid_rows.csv").exists()
+    manifest = json.loads((output_path / "policy_simulation_manifest.json").read_text(encoding="utf-8"))
+    invalid_rows = pd.read_csv(output_path / "policy_invalid_rows.csv")
+    assert manifest["invalid_row_count"] > 0
+    assert not invalid_rows.empty
+    assert invalid_rows.loc[0, "season"] == 2025
+    assert invalid_rows.loc[0, "model_id"] == "test_model"
+    assert invalid_rows.loc[0, "feature_pack"] == "synthetic_pack"
+    assert invalid_rows.loc[0, "error_type"] == "DuplicateCandidateError"
+    assert "Conflicting duplicate candidate rows" in str(invalid_rows.loc[0, "error_message"])
+
+
 @pytest.mark.parametrize(
     ("flag", "value", "message"),
     [
