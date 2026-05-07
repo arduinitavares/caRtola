@@ -270,9 +270,11 @@ def _avg_same_club_count(frame: pd.DataFrame) -> float | None:
 
 
 def _numeric_gap(left: object, right: object) -> float | None:
-    if left is None or right is None:
+    left_value = _numeric_or_none(left)
+    right_value = _numeric_or_none(right)
+    if left_value is None or right_value is None:
         return None
-    return float(left) - float(right)
+    return left_value - right_value
 
 
 def _bool_or_none(value: object) -> bool | None:
