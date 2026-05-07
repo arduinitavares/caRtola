@@ -123,6 +123,7 @@ Required `player_predictions.csv` columns:
 - `nome_clube`;
 - `preco_pre_rodada`;
 - `pontuacao`;
+- `entrou_em_campo`;
 - `variacao`;
 - primary score column for the selected model strategy.
 
@@ -163,7 +164,26 @@ Required source metadata:
 - `scoring_contract_version=cartola_standard_2026_v1`;
 - primary model id;
 - feature pack;
-- strategy roles or explicit score-column mapping.
+- strategy roles or explicit score-column mapping;
+- fixture identity metadata for every replayed round.
+
+If parent experiment metadata provides strategy roles but not explicit score columns, V1 uses this deterministic score-column mapping:
+
+```text
+baseline -> baseline_score
+price -> price_score
+primary model strategy -> {model_id}_score
+```
+
+Every mapped score column must exist in `player_predictions.csv`.
+
+Candidate-pool signatures must be computed from persisted `player_predictions.csv` rows after duplicate normalization, using sorted rows and stable JSON hashing over:
+
+```text
+rodada, id_atleta, id_clube, posicao, preco_pre_rodada, primary_score_column
+```
+
+If parent experiment metadata already stores candidate-pool signatures, the computed signatures must match those stored values. If stored signatures are missing, the simulation may compute signatures for internal policy comparability, but the manifest must record `source_candidate_signature_status=computed_from_artifact`.
 
 If any required artifact or column is missing, fail before running simulations.
 
@@ -171,7 +191,7 @@ Old fixed-budget artifacts are ineligible.
 
 ## Fixture Contract
 
-Opponent overlap must be computed from the same historical fixture source used by the source experiment.
+Opponent overlap must be computed from fixture rows proven to match the source experiment fixture identity.
 
 For V1, load fixtures with the existing historical fixture loader:
 
@@ -185,11 +205,49 @@ Required fixture columns:
 - `id_clube_home`;
 - `id_clube_away`.
 
-If the source child used `fixture_mode=exploratory`, the policy simulation may use exploratory fixture CSVs, but the report must label the result as exploratory.
+### Fixture Identity
+
+For each replayed season and round, compute a fixture signature from sorted fixture rows using:
+
+```text
+rodada, id_clube_home, id_clube_away
+```
+
+The hash algorithm is SHA-256 over canonical JSON records with integer club and round IDs.
+
+For strict fixture runs, the source strict manifest hash must match the current strict manifest hash. If not, fail.
+
+For exploratory fixture runs, the source experiment should contain fixture source path/hash metadata. If the source experiment has enough fixture hashes, current fixture signatures must match the stored source signatures.
+
+If the source experiment lacks fixture hashes, mark:
+
+```text
+fixture_identity_status=unverified
+```
+
+In that case the policy simulation may still run as diagnostic evidence, but:
+
+- `candidate_policy` decisions are suppressed;
+- the ranked summary uses `decision_status=diagnostic_only`;
+- the HTML report must show that fixture identity is unverified;
+- results must not be used as H001 acceptance evidence.
 
 If the source child used `fixture_mode=strict`, the policy simulation must require strict fixture metadata and fail if strict evidence is missing.
 
 The policy simulation must not silently fall back from strict to exploratory.
+
+### Fixture Coverage
+
+For H001, missing fixture coverage is not the same as a verified no-fixture state.
+
+A candidate club contributes zero overlap only when either:
+
+- the fixture file explicitly proves the club has no fixture in that round; or
+- the source run used an explicitly declared neutral/no-fixture policy for that round and the report is marked non-decision evidence.
+
+If fixture coverage is missing for any candidate or selected club in a replayed round, mark the round invalid for H001.
+
+The policy simulation must write missing fixture coverage into `policy_comparability_report.json` and suppress policy decisions for affected child runs.
 
 ## Opponent-Overlap Definition
 
@@ -338,7 +396,69 @@ Soft policies subtract a fixed weight times this count from the objective.
 
 Hard policies constrain this count.
 
-If a candidate club has no fixture for the round, it contributes no opponent-overlap variables and should not be penalized.
+If a candidate club has a verified no-fixture state for the round, it contributes no opponent-overlap variables and is not penalized.
+
+If fixture coverage is missing or unverified for the club, the round is invalid for H001 policy decisions.
+
+### Required MILP Constraints
+
+For each target-round fixture `f` with home club `H` and away club `A`:
+
+```text
+home_count_f = sum(selected_i for candidate i where id_clube == H)
+away_count_f = sum(selected_i for candidate i where id_clube == A)
+home_present_f binary
+away_present_f binary
+both_sides_selected_f binary
+```
+
+Let `M` be the maximum possible selected assets from one club in a squad. V1 can use the squad size from the formation, including tecnico.
+
+Presence constraints:
+
+```text
+home_count_f >= home_present_f
+home_count_f <= M * home_present_f
+away_count_f >= away_present_f
+away_count_f <= M * away_present_f
+```
+
+These force `home_present_f` and `away_present_f` to be `1` exactly when at least one asset from that side is selected.
+
+Both-sides constraints:
+
+```text
+both_sides_selected_f <= home_present_f
+both_sides_selected_f <= away_present_f
+both_sides_selected_f >= home_present_f + away_present_f - 1
+```
+
+These force `both_sides_selected_f` to be `1` exactly when both fixture sides have selected assets.
+
+For each candidate `i` whose club is `H` or `A`, create:
+
+```text
+overlap_i_f binary
+```
+
+Overlap constraints:
+
+```text
+overlap_i_f <= selected_i
+overlap_i_f <= both_sides_selected_f
+overlap_i_f >= selected_i + both_sides_selected_f - 1
+```
+
+These force `overlap_i_f` to be `1` exactly when candidate `i` is selected and both sides of fixture `f` are selected.
+
+Then:
+
+```text
+opponent_overlap_asset_count = sum(overlap_i_f)
+opponent_overlap_match_count = sum(both_sides_selected_f)
+```
+
+The implementation must include a synthetic hard-cap test where the unconstrained optimum selects players from both fixture sides, `hard_max_overlap_2` forces a different selected set, and the solver cannot satisfy the cap by leaving overlap variables at zero.
 
 ## Moving-Budget Semantics
 
@@ -387,6 +507,11 @@ The tecnico cannot be captain.
 
 Missing or non-finite `pontuacao` in selected assets must follow the existing historical scoring semantics. If the artifact cannot distinguish DNP from corrupt missing values, mark the round invalid rather than silently dropping rows.
 
+V1 requires `entrou_em_campo` in `player_predictions.csv`. If a policy variant selects a row with missing `pontuacao`:
+
+- when `entrou_em_campo` explicitly indicates a true no-score DNP under the source scoring contract, score it as the contract defines;
+- when `entrou_em_campo` is missing or ambiguous, invalidate the round.
+
 ## Comparability
 
 Policy variants are comparable only when:
@@ -403,7 +528,17 @@ Policy variants are comparable only when:
 - candidate-pool signature matches for every replayed round;
 - prediction score column matches;
 - fixture signature matches;
+- fixture coverage is complete for replayed candidate and selected clubs;
 - `no_policy` reproduces the source run.
+
+`no_policy` reproduction means:
+
+- same selected `id_atleta` set;
+- same captain id;
+- same formation;
+- same budget used within tolerance;
+- same predicted captain-aware objective within tolerance;
+- same actual captain-aware points within tolerance.
 
 The policy simulation should write a fail-closed comparability report. Rankings should be suppressed when comparability fails.
 
@@ -647,13 +782,24 @@ The runner should compute a decision per policy variant:
 candidate_policy
 rejected
 needs_more_data
+diagnostic_only
 ineligible
 ```
+
+A policy simulation may emit `candidate_policy` or `rejected` only when the selected seasons exactly match H001 generation 1:
+
+```text
+2021,2022,2023,2024,2025
+```
+
+Any other season slice, including smoke tests, must emit `diagnostic_only` or `needs_more_data`.
 
 A variant is `ineligible` if:
 
 - comparability fails;
 - `no_policy` source reproduction fails;
+- fixture identity is unverified and the run is being evaluated for H001 acceptance;
+- fixture coverage is missing for replayed candidate or selected clubs;
 - required metrics are missing;
 - non-optimal rounds increase versus `no_policy`;
 - selected assets have missing `variacao` in optimal rounds.
@@ -687,6 +833,8 @@ Define "one or two rounds explain most lift" as:
 top_2_round_delta_sum / total_positive_delta > 0.50
 ```
 
+If `total_positive_delta <= 0`, the concentration metric is `NA` and the variant cannot be `candidate_policy` because the total lift criterion already fails.
+
 These thresholds are part of H001 generation 1. Changing them after results requires H001 generation 2.
 
 ## Testing Strategy
@@ -698,13 +846,16 @@ Unit tests:
 - soft penalty changes objective without changing feasibility constraints;
 - hard caps can make an otherwise feasible squad infeasible;
 - tecnico is included in overlap counting but excluded from captain eligibility;
-- missing fixture rows produce zero overlap penalty, not a crash;
+- verified no-fixture clubs produce zero overlap penalty without invalidating the round;
+- fixture-drift between source metadata and current fixture rows suppresses policy decisions;
+- missing fixture coverage invalidates H001 rounds rather than applying zero penalty;
 - missing required artifact columns fail before simulation;
 - fixed-budget source artifacts are rejected;
 - `no_policy` reproduction mismatch fails comparability;
 - missing selected `variacao` invalidates optimal rounds;
 - decision logic rejects variants that improve aggregate but fail 2025 threshold;
 - decision logic rejects variants whose lift is dominated by top two rounds.
+- non-H001 season slices emit `diagnostic_only` instead of `candidate_policy` or `rejected`.
 
 Integration smoke test:
 
@@ -751,4 +902,3 @@ If yes, the policy becomes a candidate policy for a fresh validation experiment.
 If no, H001 is rejected or marked needs-more-data.
 
 No live default changes as part of V1.
-
