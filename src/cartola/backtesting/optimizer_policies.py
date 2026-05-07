@@ -23,6 +23,12 @@ class OptimizerPolicySet:
     policies: tuple[OptimizerPolicy, ...]
 
 
+@dataclass(frozen=True)
+class OpponentOverlapCounts:
+    opponent_overlap_asset_count: int = 0
+    opponent_overlap_match_count: int = 0
+
+
 NO_POLICY = OptimizerPolicy(policy_variant="no_policy")
 
 _OPPONENT_OVERLAP_V1 = OptimizerPolicySet(
@@ -127,6 +133,41 @@ def normalize_policy_candidates(candidates: pd.DataFrame, *, score_column: str) 
         pd.DataFrame(kept_rows)
         .sort_values(["rodada", "id_atleta", "id_clube", "posicao"], kind="mergesort")
         .reset_index(drop=True)
+    )
+
+
+def count_opponent_overlap(selected: pd.DataFrame, fixtures_for_round: pd.DataFrame | None) -> OpponentOverlapCounts:
+    if fixtures_for_round is None or selected.empty or "id_clube" not in selected.columns:
+        return OpponentOverlapCounts()
+
+    missing = _missing_columns(fixtures_for_round, _FIXTURE_COLUMNS)
+    if missing:
+        raise FixtureCoverageError(f"Missing opponent-overlap fixture columns: {', '.join(missing)}")
+
+    selected_clubs = pd.to_numeric(selected["id_clube"], errors="coerce")
+    valid_selected_clubs = selected_clubs.loc[selected_clubs.notna() & selected_clubs.mod(1).eq(0)]
+    if valid_selected_clubs.empty:
+        return OpponentOverlapCounts()
+
+    selected_club_counts = valid_selected_clubs.astype(int).value_counts().to_dict()
+    fixture_columns = _coerce_fixture_integer_columns(
+        fixtures_for_round,
+        error_type=FixtureCoverageError,
+        context="Opponent-overlap fixture",
+    )
+
+    asset_count = 0
+    match_count = 0
+    for fixture in fixture_columns.to_dict("records"):
+        home_count = int(selected_club_counts.get(int(fixture["id_clube_home"]), 0))
+        away_count = int(selected_club_counts.get(int(fixture["id_clube_away"]), 0))
+        if home_count > 0 and away_count > 0:
+            asset_count += home_count + away_count
+            match_count += 1
+
+    return OpponentOverlapCounts(
+        opponent_overlap_asset_count=asset_count,
+        opponent_overlap_match_count=match_count,
     )
 
 

@@ -7,6 +7,7 @@ import pytest
 from cartola.backtesting.optimizer_policies import (
     DuplicateCandidateError,
     FixtureCoverageError,
+    count_opponent_overlap,
     fixture_signature,
     get_policy_set,
     normalize_policy_candidates,
@@ -284,3 +285,40 @@ def test_normalize_policy_candidates_rejects_conflicting_duplicate() -> None:
 
     with pytest.raises(DuplicateCandidateError, match="Conflicting duplicate candidate"):
         normalize_policy_candidates(rows, score_column="model_score")
+
+
+def test_count_opponent_overlap_counts_assets_and_matches_with_both_sides_selected() -> None:
+    selected = pd.DataFrame(
+        [
+            {"id_atleta": 1, "id_clube": 10, "posicao": "gol"},
+            {"id_atleta": 2, "id_clube": 10, "posicao": "tec"},
+            {"id_atleta": 3, "id_clube": 20, "posicao": "ata"},
+            {"id_atleta": 4, "id_clube": 30, "posicao": "mei"},
+        ]
+    )
+    fixtures = pd.DataFrame(
+        [
+            {"rodada": 5, "id_clube_home": 10, "id_clube_away": 20},
+            {"rodada": 5, "id_clube_home": 30, "id_clube_away": 40},
+        ]
+    )
+
+    counts = count_opponent_overlap(selected, fixtures)
+
+    assert counts.opponent_overlap_asset_count == 3
+    assert counts.opponent_overlap_match_count == 1
+
+
+def test_count_opponent_overlap_returns_zero_for_one_sided_fixture_selection() -> None:
+    selected = pd.DataFrame(
+        [
+            {"id_atleta": 1, "id_clube": 10, "posicao": "gol"},
+            {"id_atleta": 2, "id_clube": 10, "posicao": "tec"},
+        ]
+    )
+    fixtures = pd.DataFrame([{"rodada": 5, "id_clube_home": 10, "id_clube_away": 20}])
+
+    counts = count_opponent_overlap(selected, fixtures)
+
+    assert counts.opponent_overlap_asset_count == 0
+    assert counts.opponent_overlap_match_count == 0

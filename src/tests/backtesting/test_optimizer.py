@@ -7,6 +7,7 @@ import pytest
 import cartola.backtesting.optimizer as optimizer
 from cartola.backtesting.config import DEFAULT_FORMATIONS, BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
+from cartola.backtesting.optimizer_policies import NO_POLICY, OptimizerPolicy
 from cartola.backtesting.scoring_contract import CAPTAIN_MULTIPLIER, SCORING_CONTRACT_VERSION
 
 
@@ -39,6 +40,47 @@ def _candidates() -> pd.DataFrame:
             rows.append(_row(player_id, posicao, score))
             player_id += 1
     return pd.DataFrame(rows)
+
+
+def _policy_row(player_id: int, posicao: str, score: float, club_id: int) -> dict[str, object]:
+    row = _row(player_id, posicao, score=score, price=1.0)
+    row["id_clube"] = club_id
+    row["clube"] = f"club-{club_id}"
+    row["score"] = score
+    return row
+
+
+def _policy_candidates() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _policy_row(1, "gol", 12.0, 1),
+            _policy_row(2, "gol", 6.0, 10),
+            _policy_row(3, "lat", 11.0, 2),
+            _policy_row(4, "lat", 5.0, 11),
+            _policy_row(5, "lat", 4.5, 12),
+            _policy_row(6, "zag", 10.0, 1),
+            _policy_row(7, "zag", 9.8, 2),
+            _policy_row(8, "zag", 5.5, 13),
+            _policy_row(9, "zag", 5.4, 14),
+            _policy_row(10, "zag", 5.3, 15),
+            _policy_row(11, "mei", 9.6, 1),
+            _policy_row(12, "mei", 9.4, 2),
+            _policy_row(13, "mei", 5.2, 16),
+            _policy_row(14, "mei", 5.1, 17),
+            _policy_row(15, "mei", 5.0, 18),
+            _policy_row(16, "mei", 4.9, 19),
+            _policy_row(17, "ata", 9.2, 1),
+            _policy_row(18, "ata", 9.0, 2),
+            _policy_row(19, "ata", 4.8, 20),
+            _policy_row(20, "ata", 4.7, 21),
+            _policy_row(21, "tec", 8.8, 2),
+            _policy_row(22, "tec", 4.6, 22),
+        ]
+    )
+
+
+def _policy_fixtures() -> pd.DataFrame:
+    return pd.DataFrame([{"rodada": 5, "id_clube_home": 1, "id_clube_away": 2}])
 
 
 def test_optimizer_searches_all_formations_and_returns_captain_aware_scores() -> None:
@@ -78,6 +120,72 @@ def test_optimizer_searches_all_formations_and_returns_captain_aware_scores() ->
     assert chosen_score["solver_status"] == "Optimal"
     assert chosen_score["captain_id"] == result.captain_id
     assert result.captain_policy_diagnostics == []
+
+
+def test_hard_overlap_cap_forces_different_squad() -> None:
+    candidates = _policy_candidates()
+    fixtures = _policy_fixtures()
+    config = BacktestConfig(season=2025, start_round=5, budget=100)
+
+    no_policy = optimize_squad(candidates, "score", config, policy=None, fixtures_for_round=fixtures)
+    capped = optimize_squad(
+        candidates,
+        "score",
+        config,
+        policy=OptimizerPolicy("hard_test", max_overlap_assets=2),
+        fixtures_for_round=fixtures,
+    )
+
+    assert no_policy.status == "Optimal"
+    assert capped.status == "Optimal"
+    assert no_policy.opponent_overlap_asset_count > 2
+    assert capped.opponent_overlap_asset_count <= 2
+    assert no_policy.selected["id_atleta"].astype(int).tolist() != capped.selected["id_atleta"].astype(int).tolist()
+
+
+def test_no_policy_selection_is_unchanged_with_fixture_context() -> None:
+    candidates = _policy_candidates()
+    fixtures = _policy_fixtures()
+    config = BacktestConfig(season=2025, start_round=5, budget=100)
+
+    baseline = optimize_squad(candidates, "score", config)
+    with_none_policy = optimize_squad(candidates, "score", config, policy=None, fixtures_for_round=fixtures)
+    with_no_policy = optimize_squad(candidates, "score", config, policy=NO_POLICY, fixtures_for_round=fixtures)
+
+    assert with_none_policy.policy_variant == "no_policy"
+    assert with_no_policy.policy_variant == "no_policy"
+    assert baseline.selected["id_atleta"].astype(int).tolist() == with_none_policy.selected["id_atleta"].astype(int).tolist()
+    assert baseline.selected["id_atleta"].astype(int).tolist() == with_no_policy.selected["id_atleta"].astype(int).tolist()
+    assert baseline.captain_id == with_none_policy.captain_id == with_no_policy.captain_id
+    assert baseline.predicted_points_with_captain == pytest.approx(with_none_policy.predicted_points_with_captain)
+    assert baseline.predicted_points_with_captain == pytest.approx(with_no_policy.predicted_points_with_captain)
+
+
+def test_soft_overlap_penalty_changes_selection_only_when_large_enough() -> None:
+    candidates = _policy_candidates()
+    fixtures = _policy_fixtures()
+    config = BacktestConfig(season=2025, start_round=5, budget=100)
+
+    no_policy = optimize_squad(candidates, "score", config, fixtures_for_round=fixtures)
+    low_penalty = optimize_squad(
+        candidates,
+        "score",
+        config,
+        policy=OptimizerPolicy("soft_low_test", overlap_penalty=0.01),
+        fixtures_for_round=fixtures,
+    )
+    high_penalty = optimize_squad(
+        candidates,
+        "score",
+        config,
+        policy=OptimizerPolicy("soft_high_test", overlap_penalty=20.0),
+        fixtures_for_round=fixtures,
+    )
+
+    no_policy_ids = no_policy.selected["id_atleta"].astype(int).tolist()
+    assert low_penalty.selected["id_atleta"].astype(int).tolist() == no_policy_ids
+    assert high_penalty.selected["id_atleta"].astype(int).tolist() != no_policy_ids
+    assert high_penalty.opponent_overlap_asset_count < no_policy.opponent_overlap_asset_count
 
 
 def test_optimizer_never_captains_unselected_phantom_player_or_tecnico() -> None:
