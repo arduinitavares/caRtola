@@ -291,6 +291,30 @@ def test_policy_replay_allows_no_policy_without_fixture_artifacts(tmp_path: Path
     _assert_no_policy_replay_matches_source(child, result, expected_rounds=(5, 6))
 
 
+def test_policy_replay_loads_fixture_source_directory_when_child_artifact_missing(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    policy = get_policy_set("opponent-overlap-v1").policies[1]
+    fixtures = pd.read_csv(child / "fixtures_for_round.csv")
+    (child / "fixtures_for_round.csv").unlink()
+    fixture_source_directory = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_source_directory.mkdir(parents=True)
+    for round_number, round_fixtures in fixtures.groupby("rodada", sort=True):
+        round_fixtures.to_csv(
+            fixture_source_directory / f"partidas-{int(cast(int, round_number))}.csv",
+            index=False,
+        )
+
+    metadata = json.loads((child / "run_metadata.json").read_text(encoding="utf-8"))
+    metadata["fixture_source_directory"] = str(fixture_source_directory)
+    (child / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    result = run_policy_replay_for_child(child_path=child, policies=(policy,))
+
+    assert {row["policy_variant"] for row in result.round_rows} == {policy.policy_variant}
+    assert {cast(int, row["rodada"]) for row in result.round_rows} == {5, 6}
+    assert result.invalid_rows == []
+
+
 def test_policy_replay_output_schemas_match_policy_contract(tmp_path: Path) -> None:
     child = _write_two_round_policy_child(tmp_path)
 

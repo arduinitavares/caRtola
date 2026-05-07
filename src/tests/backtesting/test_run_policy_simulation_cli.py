@@ -10,6 +10,7 @@ import pytest
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.optimizer_policies import NO_POLICY
+from cartola.backtesting.policy_simulation import PolicySimulationError
 from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION, actual_scores_with_captain
 
 SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "run_policy_simulation.py"
@@ -104,6 +105,7 @@ def test_main_writes_artifacts_and_progress_for_synthetic_experiment(
         "policy_per_season_summary.csv",
         "policy_round_results.csv",
         "policy_selected_players.csv",
+        "policy_invalid_rows.csv",
         "policy_profile_summary.csv",
         "policy_comparability_report.json",
         "policy_simulation_report.html",
@@ -130,6 +132,98 @@ def test_main_writes_artifacts_and_progress_for_synthetic_experiment(
     ranked_summary = pd.read_csv(output_path / "policy_ranked_summary.csv")
     assert "diagnostic_only" in set(ranked_summary["decision_status"].astype(str))
     assert "no_policy" in set(pd.read_csv(output_path / "policy_round_results.csv")["policy_variant"].astype(str))
+
+
+def test_main_allows_incomplete_report_and_writes_invalid_rows(tmp_path: Path) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "policy_simulations"
+    child = (
+        experiment_path
+        / "runs"
+        / "season=2025"
+        / "model=test_model"
+        / "feature_pack=synthetic_pack"
+    )
+    _write_policy_child(child)
+    (child / "fixtures_for_round.csv").unlink()
+
+    exit_code = main(
+        [
+            "--experiment-path",
+            str(experiment_path),
+            "--hypothesis-id",
+            "H001-smoke",
+            "--policy-set",
+            "opponent-overlap-v1",
+            "--models",
+            "test_model",
+            "--feature-packs",
+            "synthetic_pack",
+            "--seasons",
+            "2025",
+            "--current-year",
+            "2026",
+            "--output-root",
+            str(output_root),
+            "--allow-incomplete-report",
+        ]
+    )
+
+    assert exit_code == 0
+    output_path = next(output_root.glob("policy_simulation_started_at=*"))
+    for artifact_name in (
+        "policy_simulation_manifest.json",
+        "policy_ranked_summary.csv",
+        "policy_per_season_summary.csv",
+        "policy_round_results.csv",
+        "policy_selected_players.csv",
+        "policy_invalid_rows.csv",
+        "policy_profile_summary.csv",
+        "policy_comparability_report.json",
+        "policy_simulation_report.html",
+    ):
+        assert (output_path / artifact_name).exists()
+
+    manifest = json.loads((output_path / "policy_simulation_manifest.json").read_text(encoding="utf-8"))
+    invalid_rows = pd.read_csv(output_path / "policy_invalid_rows.csv")
+    assert manifest["invalid_row_count"] > 0
+    assert not invalid_rows.empty
+    assert invalid_rows.loc[0, "season"] == 2025
+    assert invalid_rows.loc[0, "model_id"] == "test_model"
+    assert invalid_rows.loc[0, "feature_pack"] == "synthetic_pack"
+    assert "fixture coverage" in str(invalid_rows.loc[0, "error_message"])
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "message"),
+    [
+        ("--models", "test_model,test_model", "Duplicate models"),
+        ("--seasons", "2025,2025", "Duplicate seasons"),
+        ("--feature-packs", "synthetic_pack,synthetic_pack", "Duplicate feature_packs"),
+    ],
+)
+def test_main_rejects_duplicate_selectors(tmp_path: Path, flag: str, value: str, message: str) -> None:
+    args = [
+        "--experiment-path",
+        str(tmp_path / "experiment"),
+        "--hypothesis-id",
+        "H001-smoke",
+        "--policy-set",
+        "opponent-overlap-v1",
+        "--models",
+        "test_model",
+        "--feature-packs",
+        "synthetic_pack",
+        "--seasons",
+        "2025",
+        "--current-year",
+        "2026",
+    ]
+    flag_index = args.index(flag) + 1
+    args[flag_index] = value
+
+    with pytest.raises(PolicySimulationError, match=message):
+        main(args)
 
 
 def _write_policy_child(child: Path) -> None:

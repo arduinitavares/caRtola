@@ -32,6 +32,14 @@ from cartola.backtesting.scoring_contract import (
 _SOURCE_ARTIFACTS: tuple[str, ...] = ("player_predictions.csv", "round_results.csv", "selected_players.csv")
 _DIRECT_FIXTURE_ARTIFACTS: tuple[str, ...] = ("fixtures_for_round.csv", "fixtures.csv", "round_fixtures.csv")
 _FIXTURE_COLUMNS: tuple[str, ...] = ("rodada", "id_clube_home", "id_clube_away")
+POLICY_INVALID_ROW_COLUMNS: tuple[str, ...] = (
+    "season",
+    "model_id",
+    "feature_pack",
+    "child_path",
+    "error_type",
+    "error_message",
+)
 _TOLERANCE = 1e-6
 
 _PLAYER_PREDICTION_COLUMNS: tuple[str, ...] = (
@@ -215,6 +223,7 @@ class PolicySourceContext:
     scoring_contract_version: str
     score_column: str
     strategy: str
+    fixture_source_directory: Path | None
 
 
 @dataclass(frozen=True)
@@ -311,6 +320,7 @@ def load_policy_source_context(child_path: Path) -> PolicySourceContext:
         scoring_contract_version=SCORING_CONTRACT_VERSION,
         score_column=score_column,
         strategy=strategy,
+        fixture_source_directory=_metadata_directory(metadata, "fixture_source_directory", child_path=resolved_child_path),
     )
 
 
@@ -754,9 +764,15 @@ def write_policy_simulation_report(
     per_season_summary: pd.DataFrame,
     profile_summary: pd.DataFrame,
     comparability_report: dict[str, object],
+    invalid_rows: pd.DataFrame | None = None,
 ) -> None:
     report_path = _policy_report_path(output_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
+    invalid_row_table = (
+        pd.DataFrame(columns=pd.Index(POLICY_INVALID_ROW_COLUMNS))
+        if invalid_rows is None
+        else invalid_rows
+    )
     sections = [
         "<h1>Policy Simulation V1</h1>",
         "<p>H001 generation: 2021-2025. This report is research evidence only.</p>",
@@ -765,6 +781,7 @@ def write_policy_simulation_report(
         _json_section("Comparability Report", comparability_report),
         _table_section("Ranked Summary", ranked_summary),
         _table_section("Per-Season Summary", per_season_summary),
+        _table_section("Invalid Rows", invalid_row_table),
         _table_section("Profile Summary", profile_summary),
     ]
     body = "\n".join(sections)
@@ -803,6 +820,7 @@ def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicyS
         child_specs=child_specs,
         policies=policies,
         console=console,
+        allow_incomplete_report=bool(getattr(args, "allow_incomplete_report", False)),
     )
     if invalid_rows and not bool(getattr(args, "allow_incomplete_report", False)):
         raise PolicySimulationError(
@@ -811,6 +829,7 @@ def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicyS
 
     round_results = pd.DataFrame(round_rows, columns=pd.Index(POLICY_ROUND_RESULT_COLUMNS))
     selected_players = pd.DataFrame(selected_player_rows, columns=pd.Index(POLICY_SELECTED_PLAYER_COLUMNS))
+    invalid_row_frame = pd.DataFrame(invalid_rows, columns=pd.Index(POLICY_INVALID_ROW_COLUMNS))
     ranked_summary = build_policy_ranked_summary(
         round_results,
         selected_seasons=selected_seasons,
@@ -847,6 +866,7 @@ def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicyS
         per_season_summary=per_season_summary,
         round_results=round_results,
         selected_players=selected_players,
+        invalid_rows=invalid_row_frame,
         profile_summary=profile_summary,
         comparability_report=comparability_report,
     )
@@ -859,6 +879,7 @@ def _replay_policy_children(
     child_specs: tuple[_PolicySimulationChildSpec, ...],
     policies: tuple[OptimizerPolicy, ...],
     console: Console,
+    allow_incomplete_report: bool,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     total_children = len(child_specs)
     round_rows: list[dict[str, object]] = []
@@ -884,6 +905,7 @@ def _replay_policy_children(
                     child_index=child_index,
                     total_children=total_children,
                     console=progress.console,
+                    allow_incomplete_report=allow_incomplete_report,
                 )
                 round_rows.extend(child_result.round_rows)
                 selected_player_rows.extend(child_result.selected_player_rows)
@@ -898,6 +920,7 @@ def _replay_policy_children(
             child_index=child_index,
             total_children=total_children,
             console=console,
+            allow_incomplete_report=allow_incomplete_report,
         )
         round_rows.extend(child_result.round_rows)
         selected_player_rows.extend(child_result.selected_player_rows)
@@ -912,11 +935,22 @@ def _replay_policy_child(
     child_index: int,
     total_children: int,
     console: Console,
+    allow_incomplete_report: bool,
 ) -> PolicyReplayResult:
     label = _child_label(spec)
     console.print(f"START child {child_index}/{total_children} {label}")
-    result = run_policy_replay_for_child(child_path=spec.child_path, policies=policies)
-    _verify_no_policy_replay_coverage(spec.child_path, result)
+    try:
+        result = run_policy_replay_for_child(child_path=spec.child_path, policies=policies)
+        _verify_no_policy_replay_coverage(spec.child_path, result)
+    except PolicySimulationError as exc:
+        if not allow_incomplete_report:
+            raise
+        console.print(f"FAIL child {child_index}/{total_children} {label} error={exc}")
+        return PolicyReplayResult(
+            round_rows=[],
+            selected_player_rows=[],
+            invalid_rows=[_invalid_policy_replay_row(spec=spec, error=exc)],
+        )
     console.print(
         f"DONE child {child_index}/{total_children} {label} "
         f"round_rows={len(result.round_rows)} selected_player_rows={len(result.selected_player_rows)}"
@@ -974,6 +1008,9 @@ def _parse_season_csv(value: str) -> tuple[int, ...]:
             raise PolicySimulationError(f"Invalid season value: {stripped!r}") from exc
     if not parsed:
         raise PolicySimulationError("At least one season is required.")
+    duplicates = _duplicate_values(parsed)
+    if duplicates:
+        raise PolicySimulationError(f"Duplicate seasons values are not allowed: {_format_duplicate_values(duplicates)}")
     return tuple(parsed)
 
 
@@ -981,7 +1018,26 @@ def _parse_required_csv(value: str, *, field_name: str) -> tuple[str, ...]:
     parsed = tuple(part.strip() for part in value.split(",") if part.strip())
     if not parsed:
         raise PolicySimulationError(f"At least one {field_name} value is required.")
+    duplicates = _duplicate_values(parsed)
+    if duplicates:
+        raise PolicySimulationError(
+            f"Duplicate {field_name} values are not allowed: {_format_duplicate_values(duplicates)}"
+        )
     return parsed
+
+
+def _duplicate_values(values: list[int] | tuple[str, ...]) -> list[int | str]:
+    seen: set[int | str] = set()
+    duplicates: list[int | str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates
+
+
+def _format_duplicate_values(values: list[int | str]) -> str:
+    return ", ".join(str(value) for value in values)
 
 
 def _policies_with_no_policy(policies: tuple[OptimizerPolicy, ...]) -> tuple[OptimizerPolicy, ...]:
@@ -1083,6 +1139,7 @@ def _write_policy_simulation_artifacts(
     per_season_summary: pd.DataFrame,
     round_results: pd.DataFrame,
     selected_players: pd.DataFrame,
+    invalid_rows: pd.DataFrame,
     profile_summary: pd.DataFrame,
     comparability_report: dict[str, object],
 ) -> None:
@@ -1092,6 +1149,7 @@ def _write_policy_simulation_artifacts(
     per_season_summary.to_csv(output_path / "policy_per_season_summary.csv", index=False)
     round_results.to_csv(output_path / "policy_round_results.csv", index=False)
     selected_players.to_csv(output_path / "policy_selected_players.csv", index=False)
+    invalid_rows.to_csv(output_path / "policy_invalid_rows.csv", index=False)
     profile_summary.to_csv(output_path / "policy_profile_summary.csv", index=False)
     _write_json(output_path / "policy_comparability_report.json", comparability_report)
     write_policy_simulation_report(
@@ -1099,6 +1157,7 @@ def _write_policy_simulation_artifacts(
         manifest=manifest,
         ranked_summary=ranked_summary,
         per_season_summary=per_season_summary,
+        invalid_rows=invalid_rows,
         profile_summary=profile_summary,
         comparability_report=comparability_report,
     )
@@ -1110,6 +1169,17 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _child_label(spec: _PolicySimulationChildSpec) -> str:
     return f"season={spec.season} model={spec.model_id} feature_pack={spec.feature_pack}"
+
+
+def _invalid_policy_replay_row(*, spec: _PolicySimulationChildSpec, error: PolicySimulationError) -> dict[str, object]:
+    return {
+        "season": spec.season,
+        "model_id": spec.model_id,
+        "feature_pack": spec.feature_pack,
+        "child_path": str(spec.child_path),
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+    }
 
 
 def _timestamp_id() -> str:
@@ -1342,6 +1412,31 @@ def _direct_fixtures_for_round(child_path: Path, *, round_number: int) -> pd.Dat
     return None
 
 
+def _source_fixtures_for_round(context: PolicySourceContext, *, round_number: int) -> pd.DataFrame | None:
+    fixture_source_directory = context.fixture_source_directory
+    if fixture_source_directory is None:
+        return None
+    if not fixture_source_directory.exists():
+        raise PolicySimulationError(f"fixture_source_directory not found: {fixture_source_directory}")
+    if not fixture_source_directory.is_dir():
+        raise PolicySimulationError(f"fixture_source_directory is not a directory: {fixture_source_directory}")
+
+    fixture_files = sorted(fixture_source_directory.glob("partidas-*.csv"))
+    if not fixture_files:
+        raise PolicySimulationError(f"No partidas-*.csv fixture files found in {fixture_source_directory}")
+
+    round_frames: list[pd.DataFrame] = []
+    for fixture_path in fixture_files:
+        fixtures = _read_csv(fixture_path)
+        _validate_columns(fixture_path, set(fixtures.columns), _FIXTURE_COLUMNS)
+        round_values = _whole_number_column(fixtures, artifact_name=fixture_path.name, column="rodada")
+        round_frames.append(fixtures.loc[round_values.eq(int(round_number)), list(_FIXTURE_COLUMNS)].copy())
+
+    if not round_frames:
+        return pd.DataFrame(columns=pd.Index(_FIXTURE_COLUMNS))
+    return pd.concat(round_frames, ignore_index=True)
+
+
 def _fixtures_for_policy_round(
     *,
     context: PolicySourceContext,
@@ -1354,6 +1449,8 @@ def _fixtures_for_policy_round(
 
     try:
         fixtures_for_round = _direct_fixtures_for_round(context.child_path, round_number=round_number)
+        if fixtures_for_round is None:
+            fixtures_for_round = _source_fixtures_for_round(context, round_number=round_number)
     except PolicySimulationError as exc:
         raise PolicySimulationError(
             _fixture_coverage_error_message(
@@ -1368,7 +1465,7 @@ def _fixtures_for_policy_round(
             _fixture_coverage_error_message(
                 policy_variant=policy.policy_variant,
                 round_number=round_number,
-                detail="no fixture artifact found",
+                detail="no fixture artifact or fixture_source_directory found",
             )
         )
     if fixtures_for_round.empty:
@@ -1662,6 +1759,22 @@ def _metadata_text(metadata: dict[str, object], key: str) -> str | None:
     if not text:
         return None
     return text
+
+
+def _metadata_directory(metadata: dict[str, object], key: str, *, child_path: Path) -> Path | None:
+    value = _metadata_text(metadata, key)
+    if value is None:
+        return None
+    directory = Path(value).expanduser()
+    if directory.is_absolute():
+        return directory
+
+    relative_bases = (Path.cwd(), child_path, *child_path.parents)
+    for base in relative_bases:
+        candidate = base / directory
+        if candidate.exists():
+            return candidate
+    return directory
 
 
 def _required_metadata_text(metadata: dict[str, object], key: str) -> str:
