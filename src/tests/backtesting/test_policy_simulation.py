@@ -61,6 +61,52 @@ def test_policy_source_maps_actual_path_metadata_shape(tmp_path: Path) -> None:
     assert context.score_column == "xgboost_depth2_slow_score"
 
 
+def test_policy_source_rejects_duplicate_model_path_segments(tmp_path: Path) -> None:
+    child = _write_policy_child(
+        tmp_path,
+        child_path=tmp_path
+        / "model=outer_model"
+        / "runs"
+        / "season=2021"
+        / "model=xgboost_depth2_slow"
+        / "feature_pack=ppg_xg_matchup",
+        metadata_overrides={
+            "season": 2021,
+            "model_id": None,
+            "primary_model_id": None,
+            "feature_pack": None,
+            "strategy_roles": None,
+        },
+        score_column="xgboost_depth2_slow_score",
+    )
+
+    with pytest.raises(PolicySimulationError, match="ambiguous"):
+        load_policy_source_context(child)
+
+
+def test_policy_source_rejects_non_adjacent_model_and_feature_pack_path_segments(tmp_path: Path) -> None:
+    child = _write_policy_child(
+        tmp_path,
+        child_path=tmp_path
+        / "runs"
+        / "season=2021"
+        / "model=xgboost_depth2_slow"
+        / "extra"
+        / "feature_pack=ppg_xg_matchup",
+        metadata_overrides={
+            "season": 2021,
+            "model_id": None,
+            "primary_model_id": None,
+            "feature_pack": None,
+            "strategy_roles": None,
+        },
+        score_column="xgboost_depth2_slow_score",
+    )
+
+    with pytest.raises(PolicySimulationError, match="canonical child path"):
+        load_policy_source_context(child)
+
+
 def test_policy_source_maps_strategy_roles_primary_model(tmp_path: Path) -> None:
     child = _write_policy_child(
         tmp_path,

@@ -90,17 +90,23 @@ def load_policy_source_context(child_path: Path) -> PolicySourceContext:
     _validate_metadata(metadata)
     _validate_artifact_files(resolved_child_path)
 
+    season = _metadata_int(metadata, "season")
     model_id = _metadata_text(metadata, "primary_model_id") or _metadata_text(metadata, "model_id")
-    if model_id is None:
-        model_id = _path_value(resolved_child_path, "model")
-    if model_id is None:
-        raise PolicySimulationError("Cannot determine model_id from source metadata or child path.")
-
     feature_pack = _metadata_text(metadata, "feature_pack")
+    path_model_id: str | None = None
+    path_feature_pack: str | None = None
+    if model_id is None or feature_pack is None:
+        path_model_id, path_feature_pack = _canonical_child_path_context(resolved_child_path, season=season)
+
+    if model_id is None:
+        model_id = path_model_id
+    if model_id is None:
+        raise PolicySimulationError("Cannot determine model_id from source metadata or canonical child path.")
+
     if feature_pack is None:
-        feature_pack = _path_value(resolved_child_path, "feature_pack")
+        feature_pack = path_feature_pack
     if feature_pack is None:
-        raise PolicySimulationError("Cannot determine feature_pack from source metadata or child path.")
+        raise PolicySimulationError("Cannot determine feature_pack from source metadata or canonical child path.")
 
     strategy = _primary_strategy_from_metadata(metadata, model_id=model_id)
     score_column = _score_column_from_metadata(metadata, model_id=model_id, strategy=strategy)
@@ -124,7 +130,7 @@ def load_policy_source_context(child_path: Path) -> PolicySourceContext:
 
     return PolicySourceContext(
         child_path=resolved_child_path,
-        season=_metadata_int(metadata, "season"),
+        season=season,
         model_id=model_id,
         feature_pack=feature_pack,
         fixture_mode=_required_metadata_text(metadata, "fixture_mode"),
@@ -254,13 +260,39 @@ def _metadata_int(metadata: dict[str, object], key: str) -> int:
         raise PolicySimulationError(f"Source metadata field must be an integer: {key}") from exc
 
 
-def _path_value(path: Path, key: str) -> str | None:
+def _canonical_child_path_context(path: Path, *, season: int) -> tuple[str, str]:
+    parts = path.parts
+    model_segments = [part for part in parts if part.startswith("model=")]
+    feature_pack_segments = [part for part in parts if part.startswith("feature_pack=")]
+    if len(model_segments) > 1 or len(feature_pack_segments) > 1:
+        raise PolicySimulationError(
+            "Source child path has ambiguous model= or feature_pack= segments; expected canonical child path."
+        )
+
+    expected_season = f"season={season}"
+    matches: list[tuple[str, str]] = []
+    for index in range(len(parts) - 3):
+        if parts[index] != "runs" or parts[index + 1] != expected_season:
+            continue
+        model_id = _path_segment_value(parts[index + 2], "model")
+        feature_pack = _path_segment_value(parts[index + 3], "feature_pack")
+        if model_id is not None and feature_pack is not None:
+            matches.append((model_id, feature_pack))
+
+    if len(matches) != 1:
+        raise PolicySimulationError(
+            "Source child path must include canonical child path segments: "
+            "runs/season=<year>/model=<model_id>/feature_pack=<feature_pack>."
+        )
+    return matches[0]
+
+
+def _path_segment_value(part: str, key: str) -> str | None:
     prefix = f"{key}="
-    for part in reversed(path.parts):
-        if part.startswith(prefix):
-            value = part[len(prefix) :].strip()
-            return value or None
-    return None
+    if not part.startswith(prefix):
+        return None
+    value = part[len(prefix) :].strip()
+    return value or None
 
 
 def _primary_strategy_from_metadata(metadata: dict[str, object], *, model_id: str) -> str:
