@@ -10,7 +10,13 @@ import pandas as pd
 
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
-from cartola.backtesting.optimizer_policies import NO_POLICY, OptimizerPolicy, normalize_policy_candidates
+from cartola.backtesting.optimizer_policies import (
+    NO_POLICY,
+    FixtureCoverageError,
+    OptimizerPolicy,
+    normalize_policy_candidates,
+    validate_fixture_coverage,
+)
 from cartola.backtesting.scoring_contract import (
     CAPTAIN_MULTIPLIER,
     SCORING_CONTRACT_VERSION,
@@ -171,7 +177,12 @@ def run_policy_replay_for_child(*, child_path: Path, policies: tuple[OptimizerPo
             budget_before_round = float(current_budget)
             candidates = _round_candidates(player_predictions, context=context, round_number=round_number)
             normalized_candidates = normalize_policy_candidates(candidates, score_column=context.score_column)
-            fixtures_for_round = _direct_fixtures_for_round(context.child_path, round_number=round_number)
+            fixtures_for_round = _fixtures_for_policy_round(
+                context=context,
+                candidates=normalized_candidates,
+                policy=policy,
+                round_number=round_number,
+            )
             replay_config = BacktestConfig(
                 season=context.season,
                 start_round=round_number,
@@ -340,6 +351,74 @@ def _direct_fixtures_for_round(child_path: Path, *, round_number: int) -> pd.Dat
         round_values = _whole_number_column(fixtures, artifact_name=artifact_name, column="rodada")
         return fixtures.loc[round_values.eq(int(round_number)), list(_FIXTURE_COLUMNS)].copy()
     return None
+
+
+def _fixtures_for_policy_round(
+    *,
+    context: PolicySourceContext,
+    candidates: pd.DataFrame,
+    policy: OptimizerPolicy,
+    round_number: int,
+) -> pd.DataFrame | None:
+    if not _policy_requires_fixture_coverage(policy):
+        return None
+
+    try:
+        fixtures_for_round = _direct_fixtures_for_round(context.child_path, round_number=round_number)
+    except PolicySimulationError as exc:
+        raise PolicySimulationError(
+            _fixture_coverage_error_message(
+                policy_variant=policy.policy_variant,
+                round_number=round_number,
+                detail=str(exc),
+            )
+        ) from exc
+
+    if fixtures_for_round is None:
+        raise PolicySimulationError(
+            _fixture_coverage_error_message(
+                policy_variant=policy.policy_variant,
+                round_number=round_number,
+                detail="no fixture artifact found",
+            )
+        )
+    if fixtures_for_round.empty:
+        raise PolicySimulationError(
+            _fixture_coverage_error_message(
+                policy_variant=policy.policy_variant,
+                round_number=round_number,
+                detail="no fixture rows found for target round",
+            )
+        )
+
+    candidate_club_ids = _whole_number_column(
+        candidates,
+        artifact_name="player_predictions.csv",
+        column="id_clube",
+    ).astype(int).unique().tolist()
+    try:
+        validate_fixture_coverage(
+            fixtures_for_round,
+            candidate_club_ids=candidate_club_ids,
+            round_number=round_number,
+        )
+    except FixtureCoverageError as exc:
+        raise PolicySimulationError(
+            _fixture_coverage_error_message(
+                policy_variant=policy.policy_variant,
+                round_number=round_number,
+                detail=str(exc),
+            )
+        ) from exc
+    return fixtures_for_round
+
+
+def _policy_requires_fixture_coverage(policy: OptimizerPolicy) -> bool:
+    return policy.overlap_penalty > 0.0 or policy.max_overlap_assets is not None
+
+
+def _fixture_coverage_error_message(*, policy_variant: str, round_number: int, detail: str) -> str:
+    return f"Invalid fixture coverage for policy_variant={policy_variant!r} round={round_number}: {detail}"
 
 
 def _selected_for_policy_scoring(
