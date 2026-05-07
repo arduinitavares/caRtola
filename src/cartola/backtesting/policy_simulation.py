@@ -70,6 +70,18 @@ _H001_SELECTED_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024, 2025)
 _POLICY_CONTEXT_COLUMNS: tuple[str, ...] = ("model_id", "feature_pack", "strategy")
 _POLICY_GROUP_COLUMNS: tuple[str, ...] = (*_POLICY_CONTEXT_COLUMNS, "policy_variant")
 _POLICY_SEASON_GROUP_COLUMNS: tuple[str, ...] = ("season", *_POLICY_GROUP_COLUMNS)
+_RANKED_BENCHMARK_EVIDENCE_COLUMNS: tuple[str, ...] = (
+    "benchmark_total_actual_points",
+    "benchmark_final_budget",
+    "benchmark_min_budget",
+    "benchmark_max_budget_drawdown",
+    "benchmark_non_optimal_rounds",
+    "total_delta",
+    "final_budget_delta",
+    "min_budget_delta",
+    "max_drawdown_delta",
+    "non_optimal_delta",
+)
 
 POLICY_ROUND_RESULT_COLUMNS: tuple[str, ...] = (
     "season",
@@ -499,31 +511,66 @@ def build_policy_ranked_summary(
     selected_seasons_label = ",".join(str(season) for season in selected_seasons)
     for group_key, group in per_season_summary.groupby(list(_POLICY_GROUP_COLUMNS), sort=True):
         model_id, feature_pack, strategy, policy_variant = cast(tuple[object, object, object, object], group_key)
-        total_delta = _finite_number_or_zero(group["total_delta"].sum())
-        season_2025_delta = _season_delta(group, season=2025)
-        non_optimal_delta = int(_finite_number_or_zero(group["non_optimal_delta"].sum()))
-        final_budget_delta = _finite_number_or_zero(group["final_budget_delta"].sum())
-        min_budget_delta = _finite_number_or_zero(group["min_budget_delta"].min())
-        max_drawdown_delta = _finite_number_or_zero(group["max_drawdown_delta"].max())
-        top_two_concentration = _top_two_positive_delta_concentration(
-            round_results,
-            model_id=str(model_id),
-            feature_pack=str(feature_pack),
-            strategy=str(strategy),
-            policy_variant=str(policy_variant),
-        )
-        decision = decide_policy_variant(
-            selected_seasons=selected_seasons,
-            fixture_identity_status=fixture_identity_status,
-            total_delta=total_delta,
-            improved_seasons=int(group["total_delta"].astype(float).gt(0.0).sum()),
-            season_2025_delta=season_2025_delta,
-            non_optimal_delta=non_optimal_delta,
-            final_budget_delta=final_budget_delta,
-            min_budget_delta=min_budget_delta,
-            max_drawdown_delta=max_drawdown_delta,
-            top_two_concentration=top_two_concentration,
-        )
+        benchmark_evidence_complete = _has_valid_ranked_benchmark_evidence(group)
+        improved_seasons = int(pd.to_numeric(group["total_delta"], errors="coerce").gt(0.0).sum())
+        total_delta: object = float("nan")
+        benchmark_total_actual_points: object = float("nan")
+        final_budget: object = _finite_number_or_zero(group["final_budget"].min())
+        benchmark_final_budget: object = float("nan")
+        final_budget_delta: object = float("nan")
+        benchmark_min_budget: object = float("nan")
+        min_budget_delta: object = float("nan")
+        benchmark_max_budget_drawdown: object = float("nan")
+        max_drawdown_delta: object = float("nan")
+        non_optimal_delta: object = float("nan")
+        benchmark_non_optimal_rounds: object = float("nan")
+        top_two_concentration = None
+        season_2025_delta = _season_delta(group, season=2025) if benchmark_evidence_complete else None
+        if benchmark_evidence_complete:
+            final_budget_float, benchmark_final_budget_float, final_budget_delta_float = (
+                _worst_final_budget_values(group)
+            )
+            total_delta_float = _finite_number_or_zero(group["total_delta"].sum())
+            non_optimal_delta_int = int(_finite_number_or_zero(group["non_optimal_delta"].sum()))
+            min_budget_delta_float = _finite_number_or_zero(group["min_budget_delta"].min())
+            max_drawdown_delta_float = _finite_number_or_zero(group["max_drawdown_delta"].max())
+            final_budget = final_budget_float
+            benchmark_final_budget = benchmark_final_budget_float
+            final_budget_delta = final_budget_delta_float
+            total_delta = total_delta_float
+            benchmark_total_actual_points = _finite_number_or_zero(group["benchmark_total_actual_points"].sum())
+            non_optimal_delta = non_optimal_delta_int
+            benchmark_min_budget = _finite_number_or_zero(group["benchmark_min_budget"].min())
+            min_budget_delta = min_budget_delta_float
+            benchmark_max_budget_drawdown = _finite_number_or_zero(
+                group["benchmark_max_budget_drawdown"].max()
+            )
+            max_drawdown_delta = max_drawdown_delta_float
+            benchmark_non_optimal_rounds = int(group["benchmark_non_optimal_rounds"].sum())
+            top_two_concentration = _top_two_positive_delta_concentration(
+                round_results,
+                model_id=str(model_id),
+                feature_pack=str(feature_pack),
+                strategy=str(strategy),
+                policy_variant=str(policy_variant),
+            )
+            decision = decide_policy_variant(
+                selected_seasons=selected_seasons,
+                fixture_identity_status=fixture_identity_status,
+                total_delta=total_delta_float,
+                improved_seasons=improved_seasons,
+                season_2025_delta=season_2025_delta,
+                non_optimal_delta=non_optimal_delta_int,
+                final_budget_delta=final_budget_delta_float,
+                min_budget_delta=min_budget_delta_float,
+                max_drawdown_delta=max_drawdown_delta_float,
+                top_two_concentration=top_two_concentration,
+            )
+        else:
+            decision = PolicyDecision(
+                status="ineligible",
+                reason="missing no_policy benchmark evidence for one or more policy seasons.",
+            )
         rows.append(
             {
                 "rank": 0,
@@ -535,28 +582,24 @@ def build_policy_ranked_summary(
                 "fixture_identity_status": fixture_identity_status,
                 "rounds": int(group["rounds"].sum()),
                 "total_actual_points": _finite_number_or_zero(group["total_actual_points"].sum()),
-                "benchmark_total_actual_points": _finite_number_or_zero(
-                    group["benchmark_total_actual_points"].sum()
-                ),
+                "benchmark_total_actual_points": benchmark_total_actual_points,
                 "total_delta": total_delta,
-                "improved_seasons": int(group["total_delta"].astype(float).gt(0.0).sum()),
+                "improved_seasons": improved_seasons,
                 "season_2025_delta": pd.NA if season_2025_delta is None else season_2025_delta,
                 "top_two_positive_delta_concentration": (
                     pd.NA if top_two_concentration is None else top_two_concentration
                 ),
-                "final_budget": _finite_number_or_zero(group["final_budget"].sum()),
-                "benchmark_final_budget": _finite_number_or_zero(group["benchmark_final_budget"].sum()),
+                "final_budget": final_budget,
+                "benchmark_final_budget": benchmark_final_budget,
                 "final_budget_delta": final_budget_delta,
                 "min_budget": _finite_number_or_zero(group["min_budget"].min()),
-                "benchmark_min_budget": _finite_number_or_zero(group["benchmark_min_budget"].min()),
+                "benchmark_min_budget": benchmark_min_budget,
                 "min_budget_delta": min_budget_delta,
                 "max_budget_drawdown": _finite_number_or_zero(group["max_budget_drawdown"].max()),
-                "benchmark_max_budget_drawdown": _finite_number_or_zero(
-                    group["benchmark_max_budget_drawdown"].max()
-                ),
+                "benchmark_max_budget_drawdown": benchmark_max_budget_drawdown,
                 "max_drawdown_delta": max_drawdown_delta,
                 "non_optimal_rounds": int(group["non_optimal_rounds"].sum()),
-                "benchmark_non_optimal_rounds": int(group["benchmark_non_optimal_rounds"].sum()),
+                "benchmark_non_optimal_rounds": benchmark_non_optimal_rounds,
                 "non_optimal_delta": non_optimal_delta,
                 "decision_status": decision.status,
                 "decision_reason": decision.reason,
@@ -768,6 +811,33 @@ def _policy_budget_drawdown_from_path(after: pd.Series, *, initial_budget: float
         peak = max(peak, float(budget_after_round))
         drawdowns.append(peak - float(budget_after_round))
     return pd.Series(drawdowns, index=after.index, dtype=float)
+
+
+def _has_valid_ranked_benchmark_evidence(group: pd.DataFrame) -> bool:
+    for column in _RANKED_BENCHMARK_EVIDENCE_COLUMNS:
+        values = pd.to_numeric(group[column], errors="coerce")
+        if values.isna().any():
+            return False
+        if not np.isfinite(values.to_numpy(dtype=float)).all():
+            return False
+    return True
+
+
+def _worst_final_budget_values(group: pd.DataFrame) -> tuple[float, float, float]:
+    metrics = group.loc[:, ["season", "final_budget", "benchmark_final_budget", "final_budget_delta"]].copy()
+    for column in metrics.columns:
+        metrics[column] = pd.to_numeric(metrics[column], errors="coerce")
+    metrics = metrics.sort_values(
+        ["final_budget_delta", "season"],
+        ascending=[True, True],
+        kind="mergesort",
+    )
+    worst = metrics.iloc[0]
+    return (
+        float(worst["final_budget"]),
+        float(worst["benchmark_final_budget"]),
+        float(worst["final_budget_delta"]),
+    )
 
 
 def _season_delta(group: pd.DataFrame, *, season: int) -> float | None:

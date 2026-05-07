@@ -416,6 +416,77 @@ def test_policy_decision_rejects_2025_regression() -> None:
     assert "2025" in decision.reason
 
 
+def test_policy_ranked_summary_marks_policy_ineligible_when_benchmark_season_missing() -> None:
+    round_results = _policy_summary_round_results()
+    round_results = round_results.loc[
+        ~(
+            round_results["season"].eq(2024)
+            & round_results["policy_variant"].eq("no_policy")
+        )
+    ].reset_index(drop=True)
+
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    policy_row = ranked_summary.loc[
+        ranked_summary["policy_variant"].eq("soft_overlap_penalty_low")
+    ].iloc[0]
+
+    assert policy_row["decision_status"] == "ineligible"
+    assert "no_policy" in str(policy_row["decision_reason"])
+    assert "benchmark" in str(policy_row["decision_reason"])
+    assert pd.isna(policy_row["benchmark_total_actual_points"])
+    assert pd.isna(policy_row["total_delta"])
+
+
+def test_policy_ranked_summary_uses_worst_case_final_budget_delta_for_budget_guardrail() -> None:
+    round_results = _policy_summary_round_results()
+    for season in (2021, 2022, 2023, 2024, 2025):
+        if season == 2023:
+            _set_summary_budget_path(
+                round_results,
+                season=season,
+                policy_variant="no_policy",
+                budgets=(100.0, 110.0, 120.0),
+            )
+            _set_summary_budget_path(
+                round_results,
+                season=season,
+                policy_variant="soft_overlap_penalty_low",
+                budgets=(100.0, 105.0, 110.0),
+            )
+        else:
+            _set_summary_budget_path(
+                round_results,
+                season=season,
+                policy_variant="no_policy",
+                budgets=(100.0, 101.0, 102.0),
+            )
+            _set_summary_budget_path(
+                round_results,
+                season=season,
+                policy_variant="soft_overlap_penalty_low",
+                budgets=(100.0, 106.0, 112.0),
+            )
+
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    policy_row = ranked_summary.loc[
+        ranked_summary["policy_variant"].eq("soft_overlap_penalty_low")
+    ].iloc[0]
+
+    assert policy_row["final_budget"] == pytest.approx(110.0)
+    assert policy_row["benchmark_final_budget"] == pytest.approx(120.0)
+    assert policy_row["final_budget_delta"] == pytest.approx(-10.0)
+    assert policy_row["decision_status"] == "rejected"
+    assert "budget path" in str(policy_row["decision_reason"])
+
+
 def test_policy_summary_output_schemas_are_stable() -> None:
     round_results = _policy_summary_round_results()
     selected_players = _policy_summary_selected_players()
@@ -760,6 +831,26 @@ def _policy_summary_round_results() -> pd.DataFrame:
                 )
                 current_budget = budget_after_round
     return pd.DataFrame(rows, columns=pd.Index(POLICY_ROUND_RESULT_COLUMNS))
+
+
+def _set_summary_budget_path(
+    round_results: pd.DataFrame,
+    *,
+    season: int,
+    policy_variant: str,
+    budgets: tuple[float, float, float],
+) -> None:
+    mask = round_results["season"].eq(season) & round_results["policy_variant"].eq(policy_variant)
+    indexes = round_results.loc[mask].sort_values("rodada", kind="mergesort").index.to_list()
+    assert len(indexes) == 2
+    budget_used = float(round_results.loc[indexes[0], "budget_used"])
+    for offset, index in enumerate(indexes):
+        budget_before_round = budgets[offset]
+        budget_after_round = budgets[offset + 1]
+        round_results.loc[index, "budget_before_round"] = budget_before_round
+        round_results.loc[index, "budget_after_round"] = budget_after_round
+        round_results.loc[index, "budget_delta"] = budget_after_round - budget_before_round
+        round_results.loc[index, "budget_remaining"] = budget_before_round - budget_used
 
 
 def _policy_summary_selected_players() -> pd.DataFrame:
