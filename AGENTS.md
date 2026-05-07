@@ -80,6 +80,13 @@ Steps:
 - Normal backtests do not expose `--model-id`; model selection for backtest research stays private to experiment and tuning runners.
 - XGBoost is lazy-loaded and may require the native OpenMP runtime on macOS (`brew install libomp`) before XGBoost children can run.
 
+## Oracle Discovery Workflow
+
+- Artifact-backed oracle knowledge discovery for completed experiment runs:
+  `uv run --frozen python scripts/run_oracle_knowledge_discovery.py --experiment-path data/08_reporting/experiments/model_feature/<experiment_id> --current-year 2026`
+- Oracle discovery outputs are written under `data/08_reporting/oracle_discovery/oracle_discovery_started_at=.../` and include `oracle_round_results.csv`, `oracle_selected_players.csv`, `oracle_captain_profiles.csv`, `model_vs_oracle_recall.csv`, `profile_gap_summary.csv`, `invalid_oracle_rows.csv`, `oracle_discovery_metadata.json`, and `oracle_knowledge_discovery.html`.
+- Treat oracle discovery as hindsight research only: it reads persisted source experiment artifacts, does not make promotion decisions, and must not change live defaults, experiment rankings, or experiment index promotion fields.
+
 ## Ridge Tuning Workflow
 
 - Constrained Ridge alpha tuning:
@@ -107,6 +114,7 @@ Steps:
   `uv run --frozen python scripts/recommend_squad.py --season 2026 --target-round 10 --mode replay --budget 100 --footystats-mode ppg --current-year 2026`
 - Recommendation outputs are written under `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/`.
 - `recommended_squad.csv` keeps per-player `predicted_points` raw; use `predicted_points_with_captain` and `actual_points_with_captain` for captain-adjusted totals when present.
+- Replay recommendation summaries include oracle comparison fields when candidate `pontuacao` is complete: `oracle_actual_points`, `oracle_gap`, `oracle_capture_rate`, and `oracle_optimizer_status`; live recommendations leave these fields null.
 
 ## Strict Fixture Capture
 
