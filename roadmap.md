@@ -160,6 +160,14 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - includes `ridge` and `xgboost_conservative` controls in the same matrix,
   - adds local variants for depth-1 stumps, slower/faster depth-2 learning, more trees, heavier `min_child_weight`, stronger subsampling, stronger L2, L1/gamma pruning, and a regularized depth-3 check,
   - keeps Optuna deferred until this fixed generation proves the local XGBoost region is season-stable.
+- Oracle knowledge discovery:
+  - `scripts/run_oracle_knowledge_discovery.py` analyzes completed experiment artifacts without rerunning backtests or changing promotion fields,
+  - reads persisted `round_results.csv`, `selected_players.csv`, `player_predictions.csv`, child metadata, and parent experiment metadata as source of truth,
+  - builds model-candidate oracle comparisons using the same selected candidate universe and moving-budget path recorded by the source run,
+  - normalizes equivalent duplicate candidate rows before oracle optimization and fails loudly on conflicting duplicate rows,
+  - writes `oracle_round_results.csv`, `oracle_selected_players.csv`, `model_vs_oracle_recall.csv`, `oracle_player_profiles.csv`, `profile_gap_summary.csv`, `invalid_oracle_rows.csv`, metadata, and `oracle_knowledge_discovery.html`,
+  - reports deterministic profile gaps for home share, opponent-overlap concentration, same-club concentration, favorite proxy, predicted-rank position, and top-5 predicted-rank share,
+  - treats all oracle outputs as hindsight research only; oracle-derived findings must not change live defaults or promotion decisions without a frozen validation rerun.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -436,6 +444,14 @@ uv run --frozen python scripts/run_model_experiments.py \
   --profile-runtime
 ```
 
+Oracle knowledge discovery for a completed experiment:
+
+```bash
+uv run --frozen python scripts/run_oracle_knowledge_discovery.py \
+  --experiment-path data/08_reporting/experiments/model_feature/<experiment_id> \
+  --current-year 2026
+```
+
 Fast implementation smoke for the tuning runner:
 
 ```bash
@@ -657,6 +673,11 @@ uv run --frozen scripts/pyrepo-check --all
     - Possible later candidates: CatBoost or LightGBM, one family at a time.
     - Optuna remains a future search engine, not v1 implementation scope.
     - Do not start broad grid search over external libraries before fixed candidates, strict/live matchup integration, and live reliability guardrails are understood.
+13. Use oracle knowledge discovery as a diagnostic surface, not a model-selection surface.
+    - Start with `oracle_knowledge_discovery.html`, `profile_gap_summary.csv`, and `model_vs_oracle_recall.csv`.
+    - Useful questions: whether oracle squads and model squads differ in home/away exposure, opponent-overlap exposure, same-club concentration, favorite proxy, and predicted-rank recall.
+    - Do not treat a single profile gap as a validated policy. Convert it into a frozen hypothesis, then validate through the normal walk-forward experiment workflow.
+    - If oracle discovery becomes a regular workflow, optimize runtime by reducing repeated solver calls, streaming artifact writes, or caching per-round oracle inputs.
 
 **Backfill / Robustness Track**
 These items are useful, but they are no longer the next prediction-quality bottleneck:
@@ -668,5 +689,5 @@ These items are useful, but they are no longer the next prediction-quality bottl
 2. Re-evaluate model/feature experiments with 2021 and 2022 included as frozen generations:
    - start with no-fixture `production-parity` over `2021,2022,2023,2024,2025`,
    - treat this as a new experiment generation, not a replacement for the original `2023-2025` evidence,
-   - inspect 2022-specific duplicate `(rodada, id_atleta)` rows before making promotion claims,
+   - oracle discovery now normalizes equivalent duplicate `(rodada, id_atleta)` candidate rows and fails on conflicting duplicates; inspect `invalid_oracle_rows.csv` before using oracle diagnostics,
    - compare 2021/2022 calibration against 2023-2025 before making live/default promotion claims.
