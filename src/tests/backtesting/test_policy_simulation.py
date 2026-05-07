@@ -441,6 +441,25 @@ def test_policy_ranked_summary_marks_policy_ineligible_when_benchmark_season_mis
     assert pd.isna(policy_row["total_delta"])
 
 
+def test_policy_ranked_summary_marks_policy_ineligible_when_selected_season_missing() -> None:
+    round_results = _policy_summary_round_results()
+    round_results = round_results.loc[~round_results["season"].eq(2024)].reset_index(drop=True)
+
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    policy_row = ranked_summary.loc[
+        ranked_summary["policy_variant"].eq("soft_overlap_penalty_low")
+    ].iloc[0]
+
+    assert policy_row["decision_status"] == "ineligible"
+    assert "missing selected season" in str(policy_row["decision_reason"])
+    assert "evidence" in str(policy_row["decision_reason"])
+    assert ranked_summary["decision_status"].ne("candidate_policy").all()
+
+
 def test_policy_ranked_summary_uses_worst_case_final_budget_delta_for_budget_guardrail() -> None:
     round_results = _policy_summary_round_results()
     for season in (2021, 2022, 2023, 2024, 2025):

@@ -511,7 +511,8 @@ def build_policy_ranked_summary(
     selected_seasons_label = ",".join(str(season) for season in selected_seasons)
     for group_key, group in per_season_summary.groupby(list(_POLICY_GROUP_COLUMNS), sort=True):
         model_id, feature_pack, strategy, policy_variant = cast(tuple[object, object, object, object], group_key)
-        benchmark_evidence_complete = _has_valid_ranked_benchmark_evidence(group)
+        missing_selected_seasons = _missing_selected_policy_seasons(group, selected_seasons)
+        benchmark_evidence_complete = not missing_selected_seasons and _has_valid_ranked_benchmark_evidence(group)
         improved_seasons = int(pd.to_numeric(group["total_delta"], errors="coerce").gt(0.0).sum())
         total_delta: object = float("nan")
         benchmark_total_actual_points: object = float("nan")
@@ -565,6 +566,14 @@ def build_policy_ranked_summary(
                 min_budget_delta=min_budget_delta_float,
                 max_drawdown_delta=max_drawdown_delta_float,
                 top_two_concentration=top_two_concentration,
+            )
+        elif missing_selected_seasons:
+            decision = PolicyDecision(
+                status="ineligible",
+                reason=(
+                    "missing selected season evidence for "
+                    f"{','.join(str(season) for season in missing_selected_seasons)}."
+                ),
             )
         else:
             decision = PolicyDecision(
@@ -821,6 +830,16 @@ def _has_valid_ranked_benchmark_evidence(group: pd.DataFrame) -> bool:
         if not np.isfinite(values.to_numpy(dtype=float)).all():
             return False
     return True
+
+
+def _missing_selected_policy_seasons(
+    group: pd.DataFrame,
+    selected_seasons: tuple[int, ...],
+) -> tuple[int, ...]:
+    if selected_seasons != _H001_SELECTED_SEASONS:
+        return ()
+    observed_seasons = set(group["season"].astype(int).tolist())
+    return tuple(season for season in selected_seasons if season not in observed_seasons)
 
 
 def _worst_final_budget_values(group: pd.DataFrame) -> tuple[float, float, float]:
