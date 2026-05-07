@@ -291,6 +291,15 @@ def test_policy_replay_allows_no_policy_without_fixture_artifacts(tmp_path: Path
     _assert_no_policy_replay_matches_source(child, result, expected_rounds=(5, 6))
 
 
+def test_policy_replay_output_schemas_match_policy_contract(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+
+    result = run_policy_replay_for_child(child_path=child, policies=(NO_POLICY,))
+
+    assert list(pd.DataFrame(result.round_rows).columns) == list(POLICY_ROUND_RESULT_COLUMNS)
+    assert list(pd.DataFrame(result.selected_player_rows).columns) == list(POLICY_SELECTED_PLAYER_COLUMNS)
+
+
 @pytest.mark.parametrize("policy_index", [1, 3])
 def test_policy_replay_requires_fixture_file_for_fixture_dependent_policy(
     tmp_path: Path,
