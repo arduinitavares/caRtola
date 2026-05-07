@@ -1471,7 +1471,8 @@ def _selected_with_prediction_ranks(
 ) -> pd.DataFrame:
     if selected.empty:
         return selected.copy()
-    ranks = _prediction_ranks(candidates, score_column=score_column)
+    rank_candidates = _deduplicate_model_candidates(candidates, score_column=score_column)
+    ranks = _prediction_ranks(rank_candidates, score_column=score_column)
     rank_columns = ["model_predicted_rank_overall", "model_predicted_rank_position"]
     selected_without_old_ranks = selected.drop(columns=[column for column in rank_columns if column in selected.columns])
     return selected_without_old_ranks.merge(

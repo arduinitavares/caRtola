@@ -1008,6 +1008,45 @@ def test_build_oracle_discovery_report_writes_profile_metrics(tmp_path: Path) ->
     assert pd.notna(top5_gap["baseline_value"])
 
 
+def test_build_oracle_discovery_report_ranks_model_selected_profiles_after_candidate_dedupe(tmp_path: Path) -> None:
+    predictions = _report_builder_predictions()
+    duplicate = predictions.iloc[[0]].copy()
+    duplicate["slug"] = None
+    duplicate["minimo_para_valorizar"] = 3.42
+    predictions = pd.concat([predictions, duplicate], ignore_index=True)
+    selected_players = predictions.drop_duplicates(subset=["rodada", "id_atleta"]).head(12).copy()
+    selected_players["strategy"] = "xgboost_depth2_l2_heavy"
+    selected_players["is_captain"] = selected_players["id_atleta"].eq(10)
+    round_results = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "strategy": "xgboost_depth2_l2_heavy",
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 100.0,
+                "budget_delta": 0.0,
+                "budget_used": 12.0,
+                "actual_points_with_captain": 83.5,
+                "captain_id": 10,
+            }
+        ]
+    )
+    experiment = _write_report_builder_experiment(
+        tmp_path,
+        predictions=predictions,
+        round_results=round_results,
+        selected_players=selected_players,
+    )
+    output = tmp_path / "oracle_out"
+
+    _run_build_oracle_discovery_report(experiment_path=experiment, output_path=output)
+
+    gap_summary = pd.read_csv(output / "profile_gap_summary.csv")
+    rank_gap = gap_summary.loc[gap_summary["profile_metric"].eq("median_model_predicted_rank_position")].iloc[0]
+    assert pd.notna(rank_gap["baseline_value"])
+
+
 def test_build_oracle_discovery_report_skips_profile_metrics_for_non_optimal_oracle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
