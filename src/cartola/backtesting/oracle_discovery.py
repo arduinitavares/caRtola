@@ -1040,7 +1040,13 @@ def _write_outputs(
         "disclaimer": "Discovery-only hindsight analysis. Not promotion evidence.",
     }
     (output_path / "oracle_discovery_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    _write_html(output_path, round_rows=round_rows, captain_rows=captain_rows, recall_rows=recall_rows)
+    _write_html(
+        output_path,
+        round_rows=round_rows,
+        captain_rows=captain_rows,
+        recall_rows=recall_rows,
+        profile_gap_rows=profile_gap_rows,
+    )
 
 
 def _unique_values(rows: list[dict[str, object]], field: str) -> list[object]:
@@ -1054,6 +1060,7 @@ def _write_html(
     round_rows: list[dict[str, object]],
     captain_rows: list[dict[str, object]],
     recall_rows: list[dict[str, object]],
+    profile_gap_rows: list[dict[str, object]],
 ) -> None:
     round_count = len(round_rows)
     captain_regret = pd.DataFrame(captain_rows)
@@ -1094,10 +1101,69 @@ def _write_html(
   <li>Model-candidate recall: {_html_text(model_candidate_recall)}</li>
   <li>Model-candidate missed: {_html_text(model_candidate_missed)}</li>
 </ul>
+<h2>Profile Gap Summary</h2>
+<p>Oracle rows are hindsight-selected from the model candidate pool. Baseline rows are the model-selected squad from the same round and strategy.</p>
+{_profile_gap_html(profile_gap_rows)}
 </body>
 </html>
 """
     (output_path / "oracle_knowledge_discovery.html").write_text(html, encoding="utf-8")
+
+
+def _profile_gap_html(profile_gap_rows: list[dict[str, object]]) -> str:
+    frame = pd.DataFrame(profile_gap_rows)
+    required_columns = ("profile_metric", "oracle_value", "baseline_value", "absolute_gap", "sample_size")
+    if frame.empty or not set(required_columns).issubset(frame.columns):
+        return "<p>No profile gap metrics were available for this run.</p>"
+
+    frame = frame.loc[frame["profile_metric"].notna(), list(required_columns)].copy()
+    if frame.empty:
+        return "<p>No profile gap metrics were available for this run.</p>"
+
+    for column in ("oracle_value", "baseline_value", "absolute_gap", "sample_size"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+
+    summary = (
+        frame.groupby("profile_metric", as_index=False)
+        .agg(
+            oracle_value=("oracle_value", "mean"),
+            baseline_value=("baseline_value", "mean"),
+            absolute_gap=("absolute_gap", "mean"),
+            sample_size=("sample_size", lambda values: values.sum(min_count=1)),
+        )
+        .sort_values("profile_metric")
+    )
+    rows = []
+    for _, row in summary.iterrows():
+        rows.append(
+            "<tr>"
+            f"<td>{_html_text(row['profile_metric'])}</td>"
+            f"<td>{_html_text(_format_number(row['oracle_value']))}</td>"
+            f"<td>{_html_text(_format_number(row['baseline_value']))}</td>"
+            f"<td>{_html_text(_format_number(row['absolute_gap']))}</td>"
+            f"<td>{_html_text(_format_sample_size(row['sample_size']))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>metric</th><th>oracle avg</th><th>model-selected avg</th>"
+        "<th>gap</th><th>sample size</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+
+def _format_number(value: object) -> str:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric):
+        return "NA"
+    return f"{float(numeric):.3f}"
+
+
+def _format_sample_size(value: object) -> str:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric):
+        return "NA"
+    return str(int(numeric))
 
 
 def _html_text(value: object) -> str:

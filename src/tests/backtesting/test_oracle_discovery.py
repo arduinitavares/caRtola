@@ -1090,9 +1090,11 @@ def test_build_oracle_discovery_report_skips_profile_metrics_for_non_optimal_ora
     round_output = pd.read_csv(output / "oracle_round_results.csv")
     player_profiles = pd.read_csv(output / "oracle_player_profiles.csv")
     gap_summary = pd.read_csv(output / "profile_gap_summary.csv")
+    html = (output / "oracle_knowledge_discovery.html").read_text(encoding="utf-8")
     assert round_output.loc[0, "optimizer_status"] == "Infeasible"
     assert player_profiles.empty
     assert gap_summary.empty
+    assert "No profile gap metrics were available for this run." in html
 
 
 def test_build_oracle_discovery_report_emits_progress_events(tmp_path: Path) -> None:
@@ -1333,6 +1335,70 @@ def test_build_oracle_discovery_report_writes_html_disclaimer(tmp_path: Path) ->
     assert "not-visible" not in lower_html
     assert "eligible" not in lower_html
     assert "candidate-generation failure" not in lower_html
+
+
+def test_build_oracle_discovery_report_html_includes_profile_metrics(tmp_path: Path) -> None:
+    predictions = _report_builder_predictions()
+    predictions["matchup_is_home"] = True
+    predictions["footystats_ppg_diff"] = 0.25
+    selected_players = predictions.head(12).copy()
+    selected_players["strategy"] = "xgboost_depth2_l2_heavy"
+    selected_players["is_captain"] = selected_players["id_atleta"].eq(10)
+    round_results = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "strategy": "xgboost_depth2_l2_heavy",
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 100.0,
+                "budget_delta": 0.0,
+                "budget_used": 12.0,
+                "actual_points_with_captain": 83.5,
+                "captain_id": 10,
+            }
+        ]
+    )
+    experiment = _write_report_builder_experiment(
+        tmp_path,
+        predictions=predictions,
+        round_results=round_results,
+        selected_players=selected_players,
+    )
+    output = tmp_path / "oracle_out"
+
+    _run_build_oracle_discovery_report(experiment_path=experiment, output_path=output)
+
+    html = (output / "oracle_knowledge_discovery.html").read_text(encoding="utf-8")
+    assert "Profile Gap Summary" in html
+    assert "home_player_share" in html
+    assert "top5_position_rank_share" in html
+
+
+def test_profile_gap_html_preserves_all_missing_sample_size() -> None:
+    html = oracle_discovery._profile_gap_html(
+        [
+            {
+                "profile_metric": "missing_sample_size_metric",
+                "oracle_value": 1.0,
+                "baseline_value": 0.5,
+                "absolute_gap": 0.5,
+                "sample_size": None,
+            },
+            {
+                "profile_metric": "missing_sample_size_metric",
+                "oracle_value": 0.5,
+                "baseline_value": 0.25,
+                "absolute_gap": 0.25,
+                "sample_size": None,
+            },
+        ]
+    )
+
+    assert (
+        "<td>missing_sample_size_metric</td><td>0.750</td><td>0.375</td><td>0.375</td><td>NA</td>"
+        in html
+    )
 
 
 def test_build_oracle_discovery_report_records_invalid_rows_and_continues(tmp_path: Path) -> None:
