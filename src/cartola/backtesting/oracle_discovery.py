@@ -603,11 +603,16 @@ def build_oracle_discovery_report(
                 recall_rows.extend(_recall_rows(identity, oracle_selected, selected))
                 if oracle_round.get("optimizer_status") == "Optimal" and not oracle_selected.empty:
                     round_fixtures = _fixtures_for_round(fixtures, round_number=round_number)
+                    ranked_selected = _selected_with_prediction_ranks(
+                        selected,
+                        candidates=candidates,
+                        score_column=score_column,
+                    )
                     player_profile_rows.extend(
                         build_oracle_player_profile_rows(
                             identity=identity,
                             oracle_selected=oracle_selected,
-                            model_selected=selected,
+                            model_selected=ranked_selected,
                             fixtures=round_fixtures,
                         )
                     )
@@ -615,7 +620,7 @@ def build_oracle_discovery_report(
                         build_profile_gap_summary_rows(
                             identity=identity,
                             oracle_selected=oracle_selected,
-                            model_selected=selected,
+                            model_selected=ranked_selected,
                             fixtures=round_fixtures,
                         )
                     )
@@ -1451,6 +1456,25 @@ def _oracle_selected_players(
     output["model_score"] = output[score_column]
     ranks = _prediction_ranks(scored_candidates, score_column=score_column)
     return output.merge(
+        ranks,
+        on=["rodada", "id_atleta"],
+        how="left",
+        validate="many_to_one",
+    )
+
+
+def _selected_with_prediction_ranks(
+    selected: pd.DataFrame,
+    *,
+    candidates: pd.DataFrame,
+    score_column: str,
+) -> pd.DataFrame:
+    if selected.empty:
+        return selected.copy()
+    ranks = _prediction_ranks(candidates, score_column=score_column)
+    rank_columns = ["model_predicted_rank_overall", "model_predicted_rank_position"]
+    selected_without_old_ranks = selected.drop(columns=[column for column in rank_columns if column in selected.columns])
+    return selected_without_old_ranks.merge(
         ranks,
         on=["rodada", "id_atleta"],
         how="left",

@@ -1002,6 +1002,10 @@ def test_build_oracle_discovery_report_writes_profile_metrics(tmp_path: Path) ->
         gap_summary["profile_metric"].eq("opponent_overlap_round_rate"),
         "oracle_value",
     ].iloc[0] == pytest.approx(1.0)
+    rank_gap = gap_summary.loc[gap_summary["profile_metric"].eq("median_model_predicted_rank_position")].iloc[0]
+    top5_gap = gap_summary.loc[gap_summary["profile_metric"].eq("top5_position_rank_share")].iloc[0]
+    assert pd.notna(rank_gap["baseline_value"])
+    assert pd.notna(top5_gap["baseline_value"])
 
 
 def test_build_oracle_discovery_report_skips_profile_metrics_for_non_optimal_oracle(
