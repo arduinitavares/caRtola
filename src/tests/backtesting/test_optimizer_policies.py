@@ -55,6 +55,13 @@ def test_fixture_signature_rejects_missing_required_columns() -> None:
         fixture_signature(fixtures)
 
 
+def test_fixture_signature_rejects_non_integral_fixture_values() -> None:
+    fixtures = pd.DataFrame([{"rodada": 5.9, "id_clube_home": 1, "id_clube_away": 2}])
+
+    with pytest.raises(ValueError, match="whole-number"):
+        fixture_signature(fixtures)
+
+
 def test_fixture_signature_uses_canonical_json_sha256_with_integer_values() -> None:
     fixtures = pd.DataFrame(
         [
@@ -77,6 +84,13 @@ def test_fixture_coverage_rejects_missing_fixture_columns() -> None:
 
     with pytest.raises(FixtureCoverageError, match="Missing fixture coverage columns"):
         validate_fixture_coverage(fixtures, candidate_club_ids={1}, round_number=5)
+
+
+def test_fixture_coverage_rejects_non_integral_fixture_values() -> None:
+    fixtures = pd.DataFrame([{"rodada": 5, "id_clube_home": 1.8, "id_clube_away": 2}])
+
+    with pytest.raises(FixtureCoverageError, match="whole-number"):
+        validate_fixture_coverage(fixtures, candidate_club_ids={1, 2}, round_number=5)
 
 
 def test_fixture_coverage_rejects_duplicate_club_in_round() -> None:
@@ -159,6 +173,37 @@ def test_normalize_policy_candidates_keeps_richest_equivalent_duplicate() -> Non
                 "apelido": "A10",
             },
         ]
+    )
+
+    normalized = normalize_policy_candidates(rows, score_column="model_score")
+
+    assert len(normalized) == 1
+    assert normalized.iloc[0]["apelido"] == "A10"
+
+
+def test_normalize_policy_candidates_uses_positional_richest_row_with_duplicate_indexes() -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "id_atleta": 10,
+                "id_clube": 1,
+                "posicao": "ata",
+                "preco_pre_rodada": 8.0,
+                "model_score": 4.0,
+                "apelido": None,
+            },
+            {
+                "rodada": 5,
+                "id_atleta": 10,
+                "id_clube": 1,
+                "posicao": "ata",
+                "preco_pre_rodada": 8.0,
+                "model_score": 4.0,
+                "apelido": "A10",
+            },
+        ],
+        index=[0, 0],
     )
 
     normalized = normalize_policy_candidates(rows, score_column="model_score")

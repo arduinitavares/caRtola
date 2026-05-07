@@ -56,9 +56,13 @@ def fixture_signature(fixtures: pd.DataFrame) -> str:
     if missing:
         raise ValueError(f"Missing fixture signature columns: {', '.join(missing)}")
 
+    fixture_columns = _coerce_fixture_integer_columns(
+        fixtures,
+        error_type=ValueError,
+        context="Fixture signature",
+    )
     records = (
-        fixtures.loc[:, list(_FIXTURE_COLUMNS)]
-        .astype({column: int for column in _FIXTURE_COLUMNS})
+        fixture_columns
         .sort_values(list(_FIXTURE_COLUMNS), kind="mergesort")
         .to_dict("records")
     )
@@ -76,7 +80,12 @@ def validate_fixture_coverage(
     if missing:
         raise FixtureCoverageError(f"Missing fixture coverage columns: {', '.join(missing)}")
 
-    round_fixtures = fixtures.loc[fixtures["rodada"].astype(int).eq(int(round_number)), list(_FIXTURE_COLUMNS)]
+    fixture_columns = _coerce_fixture_integer_columns(
+        fixtures,
+        error_type=FixtureCoverageError,
+        context="Fixture coverage",
+    )
+    round_fixtures = fixture_columns.loc[fixture_columns["rodada"].eq(int(round_number)), list(_FIXTURE_COLUMNS)]
     club_counts: dict[int, int] = {}
     for row in round_fixtures.to_dict("records"):
         for column in ("id_clube_home", "id_clube_away"):
@@ -111,8 +120,8 @@ def normalize_policy_candidates(candidates: pd.DataFrame, *, score_column: str) 
         if len(critical_values) > 1:
             raise DuplicateCandidateError(f"Conflicting duplicate candidate rows for {key}")
 
-        richest_index = group.notna().sum(axis=1).sort_values(ascending=False, kind="mergesort").index[0]
-        kept_rows.append(group.loc[richest_index])
+        richest_position = int(group.notna().sum(axis=1).to_numpy().argmax())
+        kept_rows.append(group.iloc[richest_position])
 
     return (
         pd.DataFrame(kept_rows)
@@ -123,3 +132,22 @@ def normalize_policy_candidates(candidates: pd.DataFrame, *, score_column: str) 
 
 def _missing_columns(frame: pd.DataFrame, required_columns: tuple[str, ...]) -> list[str]:
     return [column for column in required_columns if column not in frame.columns]
+
+
+def _coerce_fixture_integer_columns(
+    fixtures: pd.DataFrame,
+    *,
+    error_type: type[ValueError],
+    context: str,
+) -> pd.DataFrame:
+    integer_columns = fixtures.loc[:, list(_FIXTURE_COLUMNS)].copy()
+    for column in _FIXTURE_COLUMNS:
+        numeric_values = pd.to_numeric(integer_columns[column], errors="coerce")
+        valid_values = numeric_values.notna() & numeric_values.mod(1).eq(0)
+        if not bool(valid_values.all()):
+            invalid_values = integer_columns.loc[~valid_values, column].tolist()
+            raise error_type(
+                f"{context} column {column} must contain non-null whole-number values: {invalid_values}"
+            )
+        integer_columns[column] = numeric_values.astype(int)
+    return integer_columns
