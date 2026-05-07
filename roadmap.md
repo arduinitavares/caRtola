@@ -168,6 +168,13 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - writes `oracle_round_results.csv`, `oracle_selected_players.csv`, `model_vs_oracle_recall.csv`, `oracle_player_profiles.csv`, `profile_gap_summary.csv`, `invalid_oracle_rows.csv`, metadata, and `oracle_knowledge_discovery.html`,
   - reports deterministic profile gaps for home share, opponent-overlap concentration, same-club concentration, favorite proxy, predicted-rank position, and top-5 predicted-rank share,
   - treats all oracle outputs as hindsight research only; oracle-derived findings must not change live defaults or promotion decisions without a frozen validation rerun.
+- Policy Simulation V1:
+  - `scripts/run_policy_simulation.py` replays H001 opponent-overlap policy variants from persisted experiment artifacts,
+  - keeps model predictions and candidate pools fixed while varying only optimizer policy constraints,
+  - uses independent moving-budget paths per policy variant,
+  - writes policy summaries, selected players, round results, comparability metadata, invalid-row diagnostics, and an HTML report under `data/08_reporting/policy_simulations/`,
+  - treats fixture-dependent policies as fail-closed unless missing fixture clubs are verified no-fixture/no-scoring candidates in the source artifact,
+  - treats unverified fixture identity as `diagnostic_only`; policy simulation remains research evidence only and must not change live defaults without frozen validation.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
