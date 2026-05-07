@@ -186,6 +186,13 @@ rodada, id_atleta, id_clube, posicao, preco_pre_rodada, primary_score_column
 
 If parent experiment metadata already stores candidate-pool signatures, the computed signatures must match those stored values. If stored signatures are missing, the simulation may compute signatures for internal policy comparability, but the manifest must record `source_candidate_signature_status=computed_from_artifact`.
 
+Duplicate normalization before candidate-pool hashing must use the same semantics as oracle discovery:
+
+- group by `rodada`, `id_atleta`, and strategy score-column context;
+- if critical replay columns disagree inside a duplicate group, fail the child as conflicting duplicate candidates;
+- if critical columns agree, keep the row with the most non-null optional fields;
+- sort normalized rows by `rodada`, `id_atleta`, `id_clube`, and `posicao` before hashing.
+
 If any required artifact or column is missing, fail before running simulations.
 
 Old fixed-budget artifacts are ineligible.
@@ -201,6 +208,8 @@ cartola.backtesting.data.load_fixtures(season, project_root)
 ```
 
 For strict fixture runs, load strict fixtures from the strict fixture artifact path and validate strict manifests before replay. The implementation should use the existing strict fixture loading/validation boundary rather than `load_fixtures`.
+
+The strict fixture artifact path must be resolved from source metadata. It must not be inferred only from season defaults.
 
 Required fixture columns:
 
@@ -228,7 +237,13 @@ The manifest and comparability report must store:
 
 For strict fixture runs, the source strict manifest hash must match the current strict manifest hash. If not, fail.
 
-For exploratory fixture runs, the source experiment should contain fixture source path/hash metadata. If the source experiment has enough fixture hashes, current fixture signatures must match the stored source signatures.
+For exploratory fixture runs, the source experiment should contain fixture source path/hash metadata. Accepted source fixture identity fields are:
+
+- per-round fixture row signatures stored by the source experiment;
+- fixture source file paths plus SHA-256 hashes stored by the source experiment;
+- strict manifest hashes when fixture mode is `strict`.
+
+If the source experiment has enough fixture hashes, current fixture signatures must match the stored source signatures.
 
 If the source experiment lacks fixture hashes, mark:
 
@@ -648,6 +663,11 @@ Required fields:
 - `fixture_mode`;
 - `matchup_context_mode`;
 - `source_hashes`;
+- `source_candidate_signature_status`;
+- `fixture_identity_status`;
+- `computed_fixture_signatures`;
+- `source_fixture_signatures`;
+- `fixture_coverage_status`;
 - `policy_definitions`;
 - `created_at`.
 
@@ -697,6 +717,7 @@ Required columns:
 - `preco_pre_rodada`;
 - `pontuacao`;
 - `variacao`;
+- `entrou_em_campo`;
 - `is_captain`;
 - `predicted_points`;
 - `actual_points_with_captain`;
@@ -768,6 +789,9 @@ Required fields:
 - `candidate_pool_signatures`;
 - `prediction_score_column_signatures`;
 - `fixture_signatures`;
+- `fixture_identity_status`;
+- `fixture_coverage_status`;
+- `source_candidate_signature_status`;
 - `source_reproduction_status`;
 - `solver_status_signatures`;
 - `budget_policy`;
@@ -825,6 +849,16 @@ A variant is `ineligible` if:
 - selected assets have missing `variacao` in optimal rounds.
 
 When `fixture_identity_status=unverified` but all other validation checks pass, variants are `diagnostic_only`, not `ineligible`.
+
+For this rule, "all other validation checks pass" means:
+
+- `no_policy` reproduction passes;
+- fixture coverage is complete for replayed candidate and selected clubs;
+- source artifacts use `budget_policy=moving`;
+- scoring contract is `cartola_standard_2026_v1`;
+- required source columns are present;
+- selected assets have finite `variacao` in optimal rounds;
+- non-optimal rounds do not increase versus `no_policy`.
 
 A variant is `candidate_policy` only if it satisfies all H001 acceptance criteria:
 
