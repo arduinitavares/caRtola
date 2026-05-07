@@ -97,12 +97,13 @@ def validate_fixture_coverage(
 
 
 def normalize_policy_candidates(candidates: pd.DataFrame, *, score_column: str) -> pd.DataFrame:
+    if candidates.empty:
+        return candidates.iloc[0:0].copy()
+
     critical_columns = ("rodada", "id_atleta", "id_clube", "posicao", "preco_pre_rodada", score_column)
     missing = _missing_columns(candidates, critical_columns)
     if missing:
         raise DuplicateCandidateError(f"Missing duplicate-normalization columns: {', '.join(missing)}")
-    if candidates.empty:
-        return candidates.iloc[0:0].copy()
 
     kept_rows: list[pd.Series] = []
     for key, group in candidates.groupby(["rodada", "id_atleta"], dropna=False, sort=False):
