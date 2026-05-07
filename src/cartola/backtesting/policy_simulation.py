@@ -5,14 +5,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import numpy as np
 import pandas as pd
 
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
-from cartola.backtesting.optimizer_policies import NO_POLICY, normalize_policy_candidates
-from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION, actual_scores_with_captain
+from cartola.backtesting.optimizer_policies import NO_POLICY, OptimizerPolicy, normalize_policy_candidates
+from cartola.backtesting.scoring_contract import (
+    CAPTAIN_MULTIPLIER,
+    SCORING_CONTRACT_VERSION,
+    actual_scores_with_captain,
+)
 
 _SOURCE_ARTIFACTS: tuple[str, ...] = ("player_predictions.csv", "round_results.csv", "selected_players.csv")
+_DIRECT_FIXTURE_ARTIFACTS: tuple[str, ...] = ("fixtures_for_round.csv", "fixtures.csv", "round_fixtures.csv")
+_FIXTURE_COLUMNS: tuple[str, ...] = ("rodada", "id_clube_home", "id_clube_away")
 _TOLERANCE = 1e-6
 
 _PLAYER_PREDICTION_COLUMNS: tuple[str, ...] = (
@@ -84,6 +91,13 @@ class NoPolicyReproductionResult:
     failure_reason: str | None
 
 
+@dataclass(frozen=True)
+class PolicyReplayResult:
+    round_rows: list[dict[str, object]]
+    selected_player_rows: list[dict[str, object]]
+    invalid_rows: list[dict[str, object]]
+
+
 def load_policy_source_context(child_path: Path) -> PolicySourceContext:
     resolved_child_path = Path(child_path)
     metadata = _read_metadata(resolved_child_path)
@@ -142,6 +156,103 @@ def load_policy_source_context(child_path: Path) -> PolicySourceContext:
     )
 
 
+def run_policy_replay_for_child(*, child_path: Path, policies: tuple[OptimizerPolicy, ...]) -> PolicyReplayResult:
+    context = load_policy_source_context(child_path)
+    player_predictions = _read_csv(context.child_path / "player_predictions.csv")
+    round_results = _read_csv(context.child_path / "round_results.csv")
+    target_rounds = _target_rounds_from_predictions(player_predictions)
+    initial_budget = _initial_budget_for_policy_replay(context=context, round_results=round_results)
+
+    round_rows: list[dict[str, object]] = []
+    selected_player_rows: list[dict[str, object]] = []
+    for policy in policies:
+        current_budget = initial_budget
+        for round_number in target_rounds:
+            budget_before_round = float(current_budget)
+            candidates = _round_candidates(player_predictions, context=context, round_number=round_number)
+            normalized_candidates = normalize_policy_candidates(candidates, score_column=context.score_column)
+            fixtures_for_round = _direct_fixtures_for_round(context.child_path, round_number=round_number)
+            replay_config = BacktestConfig(
+                season=context.season,
+                start_round=round_number,
+                budget=budget_before_round,
+                fixture_mode="none",
+                matchup_context_mode="none",
+            )
+            result = optimize_squad(
+                normalized_candidates,
+                score_column=context.score_column,
+                config=replay_config,
+                budget=budget_before_round,
+                policy=policy,
+                fixtures_for_round=fixtures_for_round,
+            )
+
+            if result.status != "Optimal" or result.selected.empty:
+                budget_used = 0.0
+                budget_remaining = budget_before_round
+                budget_delta = 0.0
+                budget_after_round = budget_before_round
+                actual_points_with_captain = 0.0
+                predicted_points_with_captain = 0.0
+            else:
+                selected = _selected_for_policy_scoring(
+                    result.selected,
+                    round_number=round_number,
+                    policy_variant=policy.policy_variant,
+                )
+                budget_used = float(
+                    _finite_selected_numeric(
+                        selected,
+                        column="preco_pre_rodada",
+                        round_number=round_number,
+                        policy_variant=policy.policy_variant,
+                    ).sum()
+                )
+                budget_remaining = budget_before_round - budget_used
+                budget_delta = float(selected["variacao"].sum())
+                budget_after_round = budget_before_round + budget_delta
+                actual_points_with_captain = _actual_points_with_captain_from_scored_selection(
+                    selected,
+                    round_number=round_number,
+                    policy_variant=policy.policy_variant,
+                )
+                predicted_points_with_captain = float(result.predicted_points_with_captain)
+                selected_player_rows.extend(
+                    _selected_player_output_rows(
+                        selected,
+                        context=context,
+                        policy_variant=policy.policy_variant,
+                        round_number=round_number,
+                    )
+                )
+
+            round_rows.append(
+                _policy_replay_round_row(
+                    context=context,
+                    policy_variant=policy.policy_variant,
+                    round_number=round_number,
+                    solver_status=result.status,
+                    formation=result.formation_name,
+                    captain_id=result.captain_id,
+                    budget_before_round=budget_before_round,
+                    budget_used=budget_used,
+                    budget_remaining=budget_remaining,
+                    budget_delta=budget_delta,
+                    budget_after_round=budget_after_round,
+                    predicted_points_with_captain=predicted_points_with_captain,
+                    actual_points_with_captain=actual_points_with_captain,
+                )
+            )
+            current_budget = budget_after_round
+
+    return PolicyReplayResult(
+        round_rows=round_rows,
+        selected_player_rows=selected_player_rows,
+        invalid_rows=[],
+    )
+
+
 def reproduce_no_policy_round(child_path: Path, round_number: int) -> NoPolicyReproductionResult:
     context = load_policy_source_context(child_path)
     player_predictions = _read_csv(context.child_path / "player_predictions.csv")
@@ -195,6 +306,241 @@ def reproduce_no_policy_round(child_path: Path, round_number: int) -> NoPolicyRe
         actual_points_delta=actual_points_delta,
         failure_reason=None if not mismatch_reasons else ", ".join(mismatch_reasons),
     )
+
+
+def _target_rounds_from_predictions(player_predictions: pd.DataFrame) -> list[int]:
+    round_values = _whole_number_column(player_predictions, artifact_name="player_predictions.csv", column="rodada")
+    return sorted(round_values.astype(int).unique().tolist())
+
+
+def _initial_budget_for_policy_replay(*, context: PolicySourceContext, round_results: pd.DataFrame) -> float:
+    metadata = _read_metadata(context.child_path)
+    metadata_budget = _optional_finite_float(metadata.get("initial_budget"), "source metadata field initial_budget")
+    if metadata_budget is not None:
+        return metadata_budget
+
+    round_values = _whole_number_column(round_results, artifact_name="round_results.csv", column="rodada")
+    source_rows = round_results.loc[round_results["strategy"].astype(str).eq(context.strategy)]
+    if source_rows.empty:
+        raise PolicySimulationError(
+            f"Cannot infer replay initial budget: no round_results rows for strategy={context.strategy!r}."
+        )
+    ordered_indexes = round_values.loc[source_rows.index].sort_values(kind="mergesort").index
+    first_budget = source_rows.loc[ordered_indexes[0], "budget_before_round"]
+    return _required_finite_float(first_budget, "first source round_results budget_before_round")
+
+
+def _direct_fixtures_for_round(child_path: Path, *, round_number: int) -> pd.DataFrame | None:
+    for artifact_name in _DIRECT_FIXTURE_ARTIFACTS:
+        artifact_path = child_path / artifact_name
+        if not artifact_path.exists():
+            continue
+        fixtures = _read_csv(artifact_path)
+        _validate_columns(artifact_path, set(fixtures.columns), _FIXTURE_COLUMNS)
+        round_values = _whole_number_column(fixtures, artifact_name=artifact_name, column="rodada")
+        return fixtures.loc[round_values.eq(int(round_number)), list(_FIXTURE_COLUMNS)].copy()
+    return None
+
+
+def _selected_for_policy_scoring(
+    selected: pd.DataFrame,
+    *,
+    round_number: int,
+    policy_variant: str,
+) -> pd.DataFrame:
+    scored = selected.copy()
+    scored["variacao"] = _finite_selected_numeric(
+        scored,
+        column="variacao",
+        round_number=round_number,
+        policy_variant=policy_variant,
+    )
+    scored["pontuacao"] = _selected_actual_score_values(
+        scored,
+        round_number=round_number,
+        policy_variant=policy_variant,
+    )
+    return scored
+
+
+def _selected_actual_score_values(
+    selected: pd.DataFrame,
+    *,
+    round_number: int,
+    policy_variant: str,
+) -> pd.Series:
+    if "pontuacao" not in selected.columns:
+        raise PolicySimulationError(
+            f"Missing selected pontuacao for round={round_number} policy_variant={policy_variant!r}."
+        )
+    if "entrou_em_campo" not in selected.columns:
+        raise PolicySimulationError(
+            f"Missing selected entrou_em_campo for round={round_number} policy_variant={policy_variant!r}."
+        )
+
+    raw_scores = selected["pontuacao"]
+    numeric_scores = pd.to_numeric(raw_scores, errors="coerce")
+    dnp_mask = _explicit_false_mask(selected["entrou_em_campo"])
+    corrupt_scores = numeric_scores.isna() & raw_scores.notna()
+    null_entered_scores = numeric_scores.isna() & ~dnp_mask
+    finite_scores = pd.Series(np.isfinite(numeric_scores.to_numpy(dtype=float)), index=selected.index)
+    invalid_scores = corrupt_scores | null_entered_scores | (~numeric_scores.isna() & ~finite_scores)
+    if bool(invalid_scores.any()):
+        invalid_values = raw_scores.loc[invalid_scores].tolist()
+        raise PolicySimulationError(
+            "Selected pontuacao must be numeric, and null is allowed only for explicit DNP rows "
+            f"for round={round_number} policy_variant={policy_variant!r}: {invalid_values}"
+        )
+
+    scored = numeric_scores.fillna(0.0).astype(float)
+    scored.loc[dnp_mask] = 0.0
+    return scored
+
+
+def _finite_selected_numeric(
+    selected: pd.DataFrame,
+    *,
+    column: str,
+    round_number: int,
+    policy_variant: str,
+) -> pd.Series:
+    if column not in selected.columns:
+        raise PolicySimulationError(
+            f"Missing selected {column} for round={round_number} policy_variant={policy_variant!r}."
+        )
+    numeric_values = pd.to_numeric(selected[column], errors="coerce")
+    finite_values = pd.Series(np.isfinite(numeric_values.to_numpy(dtype=float)), index=selected.index)
+    valid_values = numeric_values.notna() & finite_values
+    if not bool(valid_values.all()):
+        invalid_values = selected.loc[~valid_values, column].tolist()
+        raise PolicySimulationError(
+            f"Selected {column} must contain finite numeric values for "
+            f"round={round_number} policy_variant={policy_variant!r}: {invalid_values}"
+        )
+    return numeric_values.astype(float)
+
+
+def _actual_points_with_captain_from_scored_selection(
+    selected: pd.DataFrame,
+    *,
+    round_number: int,
+    policy_variant: str,
+) -> float:
+    captain_mask = _boolean_mask(selected["is_captain"])
+    captain_count = int(captain_mask.sum())
+    if captain_count != 1:
+        raise PolicySimulationError(
+            f"Selected squad must contain exactly one captain for round={round_number} "
+            f"policy_variant={policy_variant!r}; got {captain_count}."
+        )
+    actual_scores = _finite_selected_numeric(
+        selected,
+        column="pontuacao",
+        round_number=round_number,
+        policy_variant=policy_variant,
+    )
+    captain_score = float(actual_scores.loc[captain_mask].iloc[0])
+    return float(actual_scores.sum()) + (CAPTAIN_MULTIPLIER - 1.0) * captain_score
+
+
+def _selected_player_output_rows(
+    selected: pd.DataFrame,
+    *,
+    context: PolicySourceContext,
+    policy_variant: str,
+    round_number: int,
+) -> list[dict[str, object]]:
+    output = selected.copy()
+    output["season"] = context.season
+    output["model_id"] = context.model_id
+    output["feature_pack"] = context.feature_pack
+    output["strategy"] = context.strategy
+    output["policy_variant"] = policy_variant
+    output["rodada"] = int(round_number)
+    output["id_atleta"] = _whole_number_column(output, artifact_name="policy replay selected", column="id_atleta")
+    output["id_clube"] = _whole_number_column(output, artifact_name="policy replay selected", column="id_clube")
+    output["posicao"] = output["posicao"].astype(str)
+    output["preco_pre_rodada"] = _finite_selected_numeric(
+        output,
+        column="preco_pre_rodada",
+        round_number=round_number,
+        policy_variant=policy_variant,
+    )
+    output["pontuacao"] = _finite_selected_numeric(
+        output,
+        column="pontuacao",
+        round_number=round_number,
+        policy_variant=policy_variant,
+    )
+    output["variacao"] = _finite_selected_numeric(
+        output,
+        column="variacao",
+        round_number=round_number,
+        policy_variant=policy_variant,
+    )
+    output["is_captain"] = _boolean_mask(output["is_captain"])
+    return cast(list[dict[str, object]], output.to_dict("records"))
+
+
+def _policy_replay_round_row(
+    *,
+    context: PolicySourceContext,
+    policy_variant: str,
+    round_number: int,
+    solver_status: str,
+    formation: str,
+    captain_id: int | None,
+    budget_before_round: float,
+    budget_used: float,
+    budget_remaining: float,
+    budget_delta: float,
+    budget_after_round: float,
+    predicted_points_with_captain: float,
+    actual_points_with_captain: float,
+) -> dict[str, object]:
+    return {
+        "season": context.season,
+        "model_id": context.model_id,
+        "feature_pack": context.feature_pack,
+        "strategy": context.strategy,
+        "policy_variant": policy_variant,
+        "rodada": int(round_number),
+        "solver_status": solver_status,
+        "formation": formation,
+        "captain_id": captain_id,
+        "budget_before_round": float(budget_before_round),
+        "budget_used": float(budget_used),
+        "budget_remaining": float(budget_remaining),
+        "budget_delta": float(budget_delta),
+        "budget_after_round": float(budget_after_round),
+        "predicted_points_with_captain": float(predicted_points_with_captain),
+        "actual_points_with_captain": float(actual_points_with_captain),
+    }
+
+
+def _optional_finite_float(value: object, context: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return _required_finite_float(value, context)
+
+
+def _required_finite_float(value: object, context: str) -> float:
+    try:
+        number = float(cast(Any, value))
+    except (TypeError, ValueError) as exc:
+        raise PolicySimulationError(f"{context} must be a finite numeric value.") from exc
+    if not np.isfinite(number):
+        raise PolicySimulationError(f"{context} must be a finite numeric value.")
+    return number
+
+
+def _explicit_false_mask(values: pd.Series) -> pd.Series:
+    if pd.api.types.is_bool_dtype(values):
+        return values.eq(False).fillna(False).astype(bool)
+    normalized = values.astype(str).str.strip().str.lower()
+    return normalized.isin({"false", "0", "no"})
 
 
 def _read_metadata(child_path: Path) -> dict[str, object]:

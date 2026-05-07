@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pytest
 
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
-from cartola.backtesting.optimizer_policies import NO_POLICY
+from cartola.backtesting.optimizer_policies import NO_POLICY, get_policy_set
 from cartola.backtesting.policy_simulation import (
     PolicySimulationError,
     load_policy_source_context,
     reproduce_no_policy_round,
+    run_policy_replay_for_child,
 )
 from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION, actual_scores_with_captain
 
@@ -233,6 +235,72 @@ def test_no_policy_reproduction_rejects_non_integral_source_round(synthetic_poli
         reproduce_no_policy_round(synthetic_policy_child, round_number=5)
 
 
+def test_policy_replay_tracks_independent_moving_budget_paths(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    no_policy, soft_overlap_penalty_low = get_policy_set("opponent-overlap-v1").policies[:2]
+
+    result = run_policy_replay_for_child(
+        child_path=child,
+        policies=(no_policy, soft_overlap_penalty_low),
+    )
+
+    round_rows = {
+        (str(row["policy_variant"]), cast(int, row["rodada"])): row
+        for row in result.round_rows
+    }
+    assert round_rows[("no_policy", 5)]["budget_after_round"] == pytest.approx(105.0)
+    assert round_rows[("soft_overlap_penalty_low", 5)]["budget_after_round"] == pytest.approx(97.0)
+    assert round_rows[("no_policy", 6)]["budget_before_round"] == pytest.approx(105.0)
+    assert round_rows[("soft_overlap_penalty_low", 6)]["budget_before_round"] == pytest.approx(97.0)
+
+    selected = pd.DataFrame(result.selected_player_rows)
+    round_one_selected_ids = {
+        policy_variant: set(
+            selected.loc[
+                selected["policy_variant"].eq(policy_variant) & selected["rodada"].eq(5),
+                "id_atleta",
+            ].astype(int)
+        )
+        for policy_variant in ("no_policy", "soft_overlap_penalty_low")
+    }
+    assert 20 in round_one_selected_ids["no_policy"]
+    assert 21 in round_one_selected_ids["soft_overlap_penalty_low"]
+    assert round_one_selected_ids["no_policy"] != round_one_selected_ids["soft_overlap_penalty_low"]
+    assert result.invalid_rows == []
+
+
+def test_policy_replay_requires_selected_finite_variacao(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    predictions_path = child / "player_predictions.csv"
+    predictions = pd.read_csv(predictions_path)
+    predictions.loc[predictions["id_atleta"].eq(20) & predictions["rodada"].eq(5), "variacao"] = float("nan")
+    predictions.to_csv(predictions_path, index=False)
+
+    with pytest.raises(PolicySimulationError, match="variacao"):
+        run_policy_replay_for_child(child_path=child, policies=(NO_POLICY,))
+
+
+def test_policy_replay_scores_explicit_dnp_null_pontuacao_as_zero(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    predictions_path = child / "player_predictions.csv"
+    predictions = pd.read_csv(predictions_path)
+    predictions.loc[predictions["id_atleta"].eq(20) & predictions["rodada"].eq(5), "entrou_em_campo"] = False
+    predictions.loc[predictions["id_atleta"].eq(20) & predictions["rodada"].eq(5), "pontuacao"] = float("nan")
+    predictions.to_csv(predictions_path, index=False)
+
+    result = run_policy_replay_for_child(child_path=child, policies=(NO_POLICY,))
+
+    round_one = next(row for row in result.round_rows if cast(int, row["rodada"]) == 5)
+    selected = pd.DataFrame(result.selected_player_rows)
+    selected_round_one = selected.loc[selected["rodada"].eq(5)].copy()
+    captain_score = float(selected_round_one.loc[selected_round_one["is_captain"].eq(True), "pontuacao"].iloc[0])
+    expected_actual = float(selected_round_one["pontuacao"].sum()) + 0.5 * captain_score
+    dnp_row = selected_round_one.loc[selected_round_one["id_atleta"].eq(20)].iloc[0]
+
+    assert dnp_row["pontuacao"] == pytest.approx(0.0)
+    assert round_one["actual_points_with_captain"] == pytest.approx(expected_actual)
+
+
 @pytest.fixture
 def synthetic_policy_child(tmp_path: Path) -> Path:
     return _write_policy_child(tmp_path)
@@ -268,6 +336,98 @@ def _write_policy_child(
     candidates.to_csv(child / "player_predictions.csv", index=False)
     _write_matching_source_outputs(child, candidates=candidates, score_column=score_column, model_id=model_id)
     return child
+
+
+def _write_two_round_policy_child(tmp_path: Path, *, score_column: str = "test_model_score") -> Path:
+    child = tmp_path / "two_round_child"
+    child.mkdir()
+    model_id = _model_id_from_score_column(score_column)
+    metadata: dict[str, object] = {
+        "season": 2025,
+        "model_id": model_id,
+        "feature_pack": "synthetic_pack",
+        "budget_policy": "moving",
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        "fixture_mode": "exploratory",
+        "matchup_context_mode": "cartola_matchup_v1",
+        "start_round": 5,
+        "initial_budget": 100.0,
+    }
+    (child / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    round_five = _synthetic_candidates(score_column=score_column)
+    round_five["rodada"] = 5
+    round_five.loc[round_five["id_atleta"].eq(16), "id_clube"] = 1002
+    round_five.loc[round_five["id_atleta"].eq(20), ["id_clube", score_column, "pontuacao", "variacao"]] = [
+        1001,
+        5.0,
+        2.5,
+        5.0,
+    ]
+    round_five.loc[round_five["id_atleta"].eq(21), ["id_clube", score_column, "pontuacao", "variacao"]] = [
+        1003,
+        4.8,
+        2.4,
+        -3.0,
+    ]
+
+    round_six = _synthetic_candidates(score_column=score_column)
+    round_six["rodada"] = 6
+    round_six.loc[:, "variacao"] = 0.0
+    round_six.loc[round_six["id_atleta"].eq(20), score_column] = 5.0
+    round_six.loc[round_six["id_atleta"].eq(21), score_column] = 4.8
+
+    candidates = pd.concat([round_five, round_six], ignore_index=True)
+    candidates.to_csv(child / "player_predictions.csv", index=False)
+    _write_minimal_source_outputs(child, model_id=model_id)
+    pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "id_clube_home": 1001,
+                "id_clube_away": 1002,
+            }
+        ]
+    ).to_csv(child / "fixtures_for_round.csv", index=False)
+    return child
+
+
+def _write_minimal_source_outputs(child: Path, *, model_id: str) -> None:
+    round_results = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "strategy": model_id,
+                "solver_status": "Optimal",
+                "formation": "4-3-3",
+                "budget_before_round": 100.0,
+                "budget_after_round": 100.0,
+                "budget_delta": 0.0,
+                "budget_used": 12.0,
+                "actual_points_with_captain": 0.0,
+                "predicted_points_with_captain": 0.0,
+                "captain_id": 16,
+            }
+        ]
+    )
+    selected_players = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "strategy": model_id,
+                "id_atleta": 16,
+                "id_clube": 1002,
+                "posicao": "ata",
+                "preco_pre_rodada": 1.0,
+                "pontuacao": 9.0,
+                "entrou_em_campo": True,
+                "variacao": 0.0,
+                "is_captain": True,
+            }
+        ]
+    )
+    round_results.to_csv(child / "round_results.csv", index=False)
+    selected_players.to_csv(child / "selected_players.csv", index=False)
 
 
 def _write_matching_source_outputs(
