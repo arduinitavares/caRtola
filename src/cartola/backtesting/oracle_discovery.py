@@ -14,7 +14,9 @@ import pandas as pd
 from pandas.errors import EmptyDataError, ParserError
 
 from cartola.backtesting.config import BacktestConfig, FixtureMode, FootyStatsMode, MatchupContextMode
+from cartola.backtesting.data import load_fixtures
 from cartola.backtesting.optimizer import SquadOptimizationResult, optimize_squad
+from cartola.backtesting.oracle_profiles import build_oracle_player_profile_rows, build_profile_gap_summary_rows
 
 
 class ArtifactValidationError(ValueError):
@@ -427,10 +429,12 @@ def build_oracle_discovery_report(
     round_rows: list[dict[str, object]] = []
     selected_frames: list[pd.DataFrame] = []
     captain_rows: list[dict[str, object]] = []
+    player_profile_rows: list[dict[str, object]] = []
     recall_rows: list[dict[str, object]] = []
+    profile_gap_rows: list[dict[str, object]] = []
     invalid_rows: list[dict[str, object]] = []
     source_provenance: list[dict[str, object]] = []
-    planned_children: list[tuple[SourceRunContext, ChildArtifacts, BacktestConfig]] = []
+    planned_children: list[tuple[SourceRunContext, ChildArtifacts, BacktestConfig, pd.DataFrame | None]] = []
     total_rounds = 0
 
     for child_index, context in enumerate(contexts, start=1):
@@ -449,8 +453,9 @@ def build_oracle_discovery_report(
         )
         artifacts = validate_child_artifacts(context)
         config = _config_from_context(context, artifacts.metadata)
+        fixtures = _load_profile_fixtures(context, config)
         source_provenance.append(_source_provenance_row(context, artifacts.metadata, config=config))
-        planned_children.append((context, artifacts, config))
+        planned_children.append((context, artifacts, config, fixtures))
         total_rounds += _count_optimal_strategy_rounds(context, artifacts)
 
     _emit_progress(
@@ -466,7 +471,7 @@ def build_oracle_discovery_report(
     )
 
     completed_rounds = 0
-    for child_index, (context, artifacts, config) in enumerate(planned_children, start=1):
+    for child_index, (context, artifacts, config, fixtures) in enumerate(planned_children, start=1):
         for strategy in context.analyzed_strategies:
             score_column = context.strategy_score_columns[strategy]
             strategy_rounds = artifacts.round_results.loc[
@@ -596,6 +601,24 @@ def build_oracle_discovery_report(
                     )
                 )
                 recall_rows.extend(_recall_rows(identity, oracle_selected, selected))
+                if oracle_round.get("optimizer_status") == "Optimal" and not oracle_selected.empty:
+                    round_fixtures = _fixtures_for_round(fixtures, round_number=round_number)
+                    player_profile_rows.extend(
+                        build_oracle_player_profile_rows(
+                            identity=identity,
+                            oracle_selected=oracle_selected,
+                            model_selected=selected,
+                            fixtures=round_fixtures,
+                        )
+                    )
+                    profile_gap_rows.extend(
+                        build_profile_gap_summary_rows(
+                            identity=identity,
+                            oracle_selected=oracle_selected,
+                            model_selected=selected,
+                            fixtures=round_fixtures,
+                        )
+                    )
                 completed_rounds += 1
                 _emit_progress(
                     progress_callback,
@@ -647,7 +670,9 @@ def build_oracle_discovery_report(
         round_rows=round_rows,
         selected_frames=selected_frames,
         captain_rows=captain_rows,
+        player_profile_rows=player_profile_rows,
         recall_rows=recall_rows,
+        profile_gap_rows=profile_gap_rows,
         invalid_rows=invalid_rows,
         experiment_path=experiment_path,
         source_context_count=len(contexts),
@@ -856,6 +881,13 @@ def _rows_for_round(frame: pd.DataFrame, *, round_number: int) -> pd.DataFrame:
     return frame.loc[round_values.eq(round_number)].copy()
 
 
+def _fixtures_for_round(fixtures: pd.DataFrame | None, *, round_number: int) -> pd.DataFrame | None:
+    if fixtures is None or fixtures.empty:
+        return None
+    round_values = pd.to_numeric(fixtures["rodada"], errors="coerce")
+    return fixtures.loc[round_values.eq(round_number)].copy()
+
+
 def _selected_rows_for_round_and_strategy(
     frame: pd.DataFrame,
     *,
@@ -936,13 +968,24 @@ def _source_provenance_row(
     }
 
 
+def _load_profile_fixtures(context: SourceRunContext, config: BacktestConfig) -> pd.DataFrame | None:
+    if str(context.fixture_mode).lower() == "none":
+        return None
+    try:
+        return load_fixtures(context.season, project_root=config.project_root)
+    except (EmptyDataError, FileNotFoundError, NotADirectoryError, ParserError, ValueError):
+        return None
+
+
 def _write_outputs(
     *,
     output_path: Path,
     round_rows: list[dict[str, object]],
     selected_frames: list[pd.DataFrame],
     captain_rows: list[dict[str, object]],
+    player_profile_rows: list[dict[str, object]],
     recall_rows: list[dict[str, object]],
+    profile_gap_rows: list[dict[str, object]],
     invalid_rows: list[dict[str, object]],
     experiment_path: Path,
     source_context_count: int,
@@ -957,12 +1000,18 @@ def _write_outputs(
         output_path / "oracle_captain_profiles.csv",
         index=False,
     )
-    _empty_frame(ORACLE_PLAYER_PROFILE_COLUMNS).to_csv(output_path / "oracle_player_profiles.csv", index=False)
+    _rows_frame(player_profile_rows, ORACLE_PLAYER_PROFILE_COLUMNS).to_csv(
+        output_path / "oracle_player_profiles.csv",
+        index=False,
+    )
     _rows_frame(recall_rows, MODEL_VS_ORACLE_RECALL_COLUMNS).to_csv(
         output_path / "model_vs_oracle_recall.csv",
         index=False,
     )
-    _empty_frame(PROFILE_GAP_SUMMARY_COLUMNS).to_csv(output_path / "profile_gap_summary.csv", index=False)
+    _rows_frame(profile_gap_rows, PROFILE_GAP_SUMMARY_COLUMNS).to_csv(
+        output_path / "profile_gap_summary.csv",
+        index=False,
+    )
     _rows_frame(invalid_rows, INVALID_ORACLE_ROW_COLUMNS).to_csv(output_path / "invalid_oracle_rows.csv", index=False)
     metadata = {
         "generated_at_utc": datetime.now(UTC).isoformat(),

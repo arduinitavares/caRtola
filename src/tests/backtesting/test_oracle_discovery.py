@@ -917,6 +917,184 @@ def test_build_oracle_discovery_report_writes_expected_artifacts(tmp_path: Path)
     assert metadata["source_experiment_path"] == str(experiment)
 
 
+def test_build_oracle_discovery_report_writes_profile_metrics(tmp_path: Path) -> None:
+    predictions = _report_builder_predictions()
+    predictions["matchup_is_home"] = [
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+    ]
+    predictions["footystats_ppg_diff"] = [
+        0.5,
+        -0.5,
+        0.2,
+        -0.2,
+        0.1,
+        -0.1,
+        0.3,
+        -0.3,
+        0.4,
+        -0.4,
+        0.6,
+        -0.6,
+    ]
+    selected_players = predictions.head(12).copy()
+    selected_players["strategy"] = "xgboost_depth2_l2_heavy"
+    selected_players["is_captain"] = selected_players["id_atleta"].eq(10)
+    round_results = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "strategy": "xgboost_depth2_l2_heavy",
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 100.0,
+                "budget_delta": 0.0,
+                "budget_used": 12.0,
+                "actual_points_with_captain": 83.5,
+                "captain_id": 10,
+            }
+        ]
+    )
+    project = tmp_path
+    experiment = _write_report_builder_experiment(
+        project / "data" / "08_reporting" / "experiments" / "exp-1",
+        predictions=predictions,
+        round_results=round_results,
+        selected_players=selected_players,
+    )
+    fixture_dir = project / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "id_clube_home": 101,
+                "id_clube_away": 102,
+                "data": "2025-05-01",
+            }
+        ]
+    ).to_csv(fixture_dir / "partidas-5.csv", index=False)
+    output = project / "oracle_out"
+
+    _run_build_oracle_discovery_report(experiment_path=experiment, output_path=output)
+
+    player_profiles = pd.read_csv(output / "oracle_player_profiles.csv")
+    gap_summary = pd.read_csv(output / "profile_gap_summary.csv")
+    assert not player_profiles.empty
+    assert not gap_summary.empty
+    assert {"is_home", "opponent_overlap_in_lineup", "model_predicted_rank_position"}.issubset(
+        set(player_profiles["profile_metric"])
+    )
+    assert {"opponent_overlap_round_rate", "home_player_share", "top5_position_rank_share"}.issubset(
+        set(gap_summary["profile_metric"])
+    )
+    assert gap_summary.loc[
+        gap_summary["profile_metric"].eq("opponent_overlap_round_rate"),
+        "oracle_value",
+    ].iloc[0] == pytest.approx(1.0)
+
+
+def test_build_oracle_discovery_report_skips_profile_metrics_for_non_optimal_oracle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    predictions = _report_builder_predictions()
+    predictions["matchup_is_home"] = [
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+    ]
+    predictions["footystats_ppg_diff"] = [
+        0.5,
+        -0.5,
+        0.2,
+        -0.2,
+        0.1,
+        -0.1,
+        0.3,
+        -0.3,
+        0.4,
+        -0.4,
+        0.6,
+        -0.6,
+    ]
+    selected_players = predictions.head(12).copy()
+    selected_players["strategy"] = "xgboost_depth2_l2_heavy"
+    selected_players["is_captain"] = selected_players["id_atleta"].eq(10)
+    round_results = pd.DataFrame(
+        [
+            {
+                "rodada": 5,
+                "strategy": "xgboost_depth2_l2_heavy",
+                "solver_status": "Optimal",
+                "budget_before_round": 100.0,
+                "budget_after_round": 100.0,
+                "budget_delta": 0.0,
+                "budget_used": 12.0,
+                "actual_points_with_captain": 83.5,
+                "captain_id": 10,
+            }
+        ]
+    )
+    experiment = _write_report_builder_experiment(
+        tmp_path,
+        predictions=predictions,
+        round_results=round_results,
+        selected_players=selected_players,
+    )
+    output = tmp_path / "oracle_out"
+
+    def non_optimal_oracle(
+        _candidates: pd.DataFrame,
+        *,
+        config: BacktestConfig,
+        budget_before_round: float,
+        score_column: str,
+    ) -> tuple[dict[str, object], pd.DataFrame]:
+        _ = (config, budget_before_round, score_column)
+        return {
+            "optimizer_status": "Infeasible",
+            "optimizer_formation": None,
+            "optimizer_budget_used": 0.0,
+            "budget_before_round": 100.0,
+            "oracle_actual_points_base": 0.0,
+            "oracle_captain_bonus_actual": 0.0,
+            "oracle_actual_points_with_captain": 0.0,
+            "optimizer_captain_id": None,
+            "optimizer_selected_count": 0,
+        }, pd.DataFrame()
+
+    monkeypatch.setattr(oracle_discovery, "run_model_candidate_oracle", non_optimal_oracle)
+
+    _run_build_oracle_discovery_report(experiment_path=experiment, output_path=output)
+
+    round_output = pd.read_csv(output / "oracle_round_results.csv")
+    player_profiles = pd.read_csv(output / "oracle_player_profiles.csv")
+    gap_summary = pd.read_csv(output / "profile_gap_summary.csv")
+    assert round_output.loc[0, "optimizer_status"] == "Infeasible"
+    assert player_profiles.empty
+    assert gap_summary.empty
+
+
 def test_build_oracle_discovery_report_emits_progress_events(tmp_path: Path) -> None:
     predictions = _report_builder_predictions()
     selected_players = predictions.head(12).copy()
