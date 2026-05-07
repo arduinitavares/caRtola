@@ -150,6 +150,7 @@ Required `selected_players.csv` columns:
 - `posicao`;
 - `preco_pre_rodada`;
 - `pontuacao`;
+- `entrou_em_campo`;
 - `variacao`;
 - `is_captain`.
 
@@ -193,11 +194,13 @@ Old fixed-budget artifacts are ineligible.
 
 Opponent overlap must be computed from fixture rows proven to match the source experiment fixture identity.
 
-For V1, load fixtures with the existing historical fixture loader:
+For exploratory fixture runs, load fixtures with the existing historical fixture loader:
 
 ```text
 cartola.backtesting.data.load_fixtures(season, project_root)
 ```
+
+For strict fixture runs, load strict fixtures from the strict fixture artifact path and validate strict manifests before replay. The implementation should use the existing strict fixture loading/validation boundary rather than `load_fixtures`.
 
 Required fixture columns:
 
@@ -214,6 +217,14 @@ rodada, id_clube_home, id_clube_away
 ```
 
 The hash algorithm is SHA-256 over canonical JSON records with integer club and round IDs.
+
+The manifest and comparability report must store:
+
+- `fixture_identity_status`;
+- computed fixture signatures by season and round;
+- source fixture signatures when available;
+- strict manifest hashes when fixture mode is `strict`;
+- fixture coverage status by season and round.
 
 For strict fixture runs, the source strict manifest hash must match the current strict manifest hash. If not, fail.
 
@@ -242,12 +253,14 @@ For H001, missing fixture coverage is not the same as a verified no-fixture stat
 
 A candidate club contributes zero overlap only when either:
 
-- the fixture file explicitly proves the club has no fixture in that round; or
+- the validated round fixture source is marked complete and the club is absent from both `id_clube_home` and `id_clube_away`; or
 - the source run used an explicitly declared neutral/no-fixture policy for that round and the report is marked non-decision evidence.
 
 If fixture coverage is missing for any candidate or selected club in a replayed round, mark the round invalid for H001.
 
 The policy simulation must write missing fixture coverage into `policy_comparability_report.json` and suppress policy decisions for affected child runs.
+
+Fixture coverage validation must also fail when a club appears in more than one fixture in the same round. H001 assumes at most one fixture per club per round.
 
 ## Opponent-Overlap Definition
 
@@ -311,7 +324,7 @@ The current optimizer behavior.
 
 Acceptance requirement:
 
-For every selected source child, `no_policy` should reproduce the original source selected squad and round result for optimal rounds, within deterministic tie-break expectations.
+For every selected source child, `no_policy` should reproduce the original source selected squad and round result for optimal rounds according to the reproduction contract in the Comparability section.
 
 If `no_policy` does not reproduce the source run, mark the child invalid and stop. This protects the simulation from source-context drift.
 
@@ -539,6 +552,14 @@ Policy variants are comparable only when:
 - same budget used within tolerance;
 - same predicted captain-aware objective within tolerance;
 - same actual captain-aware points within tolerance.
+
+Numeric tolerances:
+
+```text
+budget_used tolerance: 1e-6
+predicted captain-aware objective tolerance: 1e-6
+actual captain-aware points tolerance: 1e-6
+```
 
 The policy simulation should write a fail-closed comparability report. Rankings should be suppressed when comparability fails.
 
@@ -798,11 +819,12 @@ A variant is `ineligible` if:
 
 - comparability fails;
 - `no_policy` source reproduction fails;
-- fixture identity is unverified and the run is being evaluated for H001 acceptance;
 - fixture coverage is missing for replayed candidate or selected clubs;
 - required metrics are missing;
 - non-optimal rounds increase versus `no_policy`;
 - selected assets have missing `variacao` in optimal rounds.
+
+When `fixture_identity_status=unverified` but all other validation checks pass, variants are `diagnostic_only`, not `ineligible`.
 
 A variant is `candidate_policy` only if it satisfies all H001 acceptance criteria:
 
@@ -831,6 +853,15 @@ Define "one or two rounds explain most lift" as:
 
 ```text
 top_2_round_delta_sum / total_positive_delta > 0.50
+```
+
+Where:
+
+```text
+round_delta = policy actual_points_with_captain - no_policy actual_points_with_captain
+positive_round_delta = max(round_delta, 0)
+total_positive_delta = sum(positive_round_delta across all replayed seasons and rounds)
+top_2_round_delta_sum = sum(two largest positive_round_delta values across all replayed seasons and rounds)
 ```
 
 If `total_positive_delta <= 0`, the concentration metric is `NA` and the variant cannot be `candidate_policy` because the total lift criterion already fails.
