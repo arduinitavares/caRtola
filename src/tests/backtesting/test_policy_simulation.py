@@ -33,6 +33,14 @@ def test_policy_source_rejects_missing_required_player_prediction_columns(tmp_pa
         load_policy_source_context(child)
 
 
+def test_policy_source_wraps_empty_csv_header_errors(tmp_path: Path) -> None:
+    child = _write_policy_child(tmp_path)
+    (child / "player_predictions.csv").write_text("", encoding="utf-8")
+
+    with pytest.raises(PolicySimulationError, match="player_predictions.csv"):
+        load_policy_source_context(child)
+
+
 def test_policy_source_maps_actual_path_metadata_shape(tmp_path: Path) -> None:
     child = _write_policy_child(
         tmp_path,
@@ -140,6 +148,19 @@ def test_no_policy_reproduces_selected_ids_and_captain(synthetic_policy_child: P
     assert result.failure_reason is None
 
 
+def test_no_policy_reproduction_detects_solver_status_mismatch(synthetic_policy_child: Path) -> None:
+    round_results_path = synthetic_policy_child / "round_results.csv"
+    round_results = pd.read_csv(round_results_path)
+    round_results.loc[0, "solver_status"] = "Infeasible"
+    round_results.to_csv(round_results_path, index=False)
+
+    result = reproduce_no_policy_round(synthetic_policy_child, round_number=5)
+
+    assert result.status == "mismatch"
+    assert result.failure_reason is not None
+    assert "solver_status" in result.failure_reason
+
+
 def test_no_policy_reproduction_detects_selected_id_mismatch(synthetic_policy_child: Path) -> None:
     selected_players_path = synthetic_policy_child / "selected_players.csv"
     selected_players = pd.read_csv(selected_players_path)
@@ -170,6 +191,48 @@ def test_no_policy_reproduction_detects_captain_mismatch(synthetic_policy_child:
     assert "captain_id" in result.failure_reason
 
 
+def test_no_policy_reproduction_rejects_duplicate_source_selected_ids(synthetic_policy_child: Path) -> None:
+    selected_players_path = synthetic_policy_child / "selected_players.csv"
+    selected_players = pd.read_csv(selected_players_path)
+    duplicate = selected_players.iloc[[0]]
+    selected_players = pd.concat([selected_players, duplicate], ignore_index=True)
+    selected_players.to_csv(selected_players_path, index=False)
+
+    with pytest.raises(PolicySimulationError, match="duplicate.*id_atleta"):
+        reproduce_no_policy_round(synthetic_policy_child, round_number=5)
+
+
+def test_no_policy_reproduction_rejects_missing_source_captain(synthetic_policy_child: Path) -> None:
+    selected_players_path = synthetic_policy_child / "selected_players.csv"
+    selected_players = pd.read_csv(selected_players_path)
+    selected_players["is_captain"] = False
+    selected_players.to_csv(selected_players_path, index=False)
+
+    with pytest.raises(PolicySimulationError, match="exactly one source captain"):
+        reproduce_no_policy_round(synthetic_policy_child, round_number=5)
+
+
+def test_no_policy_reproduction_rejects_multiple_source_captains(synthetic_policy_child: Path) -> None:
+    selected_players_path = synthetic_policy_child / "selected_players.csv"
+    selected_players = pd.read_csv(selected_players_path)
+    selected_players.loc[selected_players.index[:2], "is_captain"] = True
+    selected_players.to_csv(selected_players_path, index=False)
+
+    with pytest.raises(PolicySimulationError, match="exactly one source captain"):
+        reproduce_no_policy_round(synthetic_policy_child, round_number=5)
+
+
+def test_no_policy_reproduction_rejects_non_integral_source_round(synthetic_policy_child: Path) -> None:
+    round_results_path = synthetic_policy_child / "round_results.csv"
+    round_results = pd.read_csv(round_results_path)
+    round_results["rodada"] = round_results["rodada"].astype(float)
+    round_results.loc[0, "rodada"] = 5.5
+    round_results.to_csv(round_results_path, index=False)
+
+    with pytest.raises(PolicySimulationError, match="round_results.csv.*rodada.*whole-number"):
+        reproduce_no_policy_round(synthetic_policy_child, round_number=5)
+
+
 @pytest.fixture
 def synthetic_policy_child(tmp_path: Path) -> Path:
     return _write_policy_child(tmp_path)
@@ -186,7 +249,7 @@ def _write_policy_child(
     child = child_path if child_path is not None else tmp_path / "child"
     child.mkdir(parents=True)
     model_id = _model_id_from_score_column(score_column)
-    metadata = {
+    metadata: dict[str, object] = {
         "season": 2025,
         "model_id": model_id,
         "feature_pack": "synthetic_pack",

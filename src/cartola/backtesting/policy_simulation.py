@@ -168,6 +168,7 @@ def reproduce_no_policy_round(child_path: Path, round_number: int) -> NoPolicyRe
     actual_scores = _actual_scores_for_selected(result.selected, round_number=round_number, strategy=context.strategy)
 
     selected_ids_match = _selected_ids(result.selected) == _selected_ids(source_selected)
+    solver_status_match = str(source_round["solver_status"]) == result.status
     captain_id_match = _optional_int(source_round["captain_id"]) == result.captain_id
     formation_match = str(source_round["formation"]) == result.formation_name
     budget_used_delta = result.budget_used - float(source_round["budget_used"])
@@ -175,6 +176,7 @@ def reproduce_no_policy_round(child_path: Path, round_number: int) -> NoPolicyRe
     actual_points_delta = actual_scores["actual_points_with_captain"] - float(source_round["actual_points_with_captain"])
 
     mismatch_reasons = _mismatch_reasons(
+        solver_status_match=solver_status_match,
         selected_ids_match=selected_ids_match,
         captain_id_match=captain_id_match,
         formation_match=formation_match,
@@ -225,7 +227,10 @@ def _validate_artifact_files(child_path: Path) -> None:
 
 
 def _read_csv_columns(csv_path: Path) -> set[str]:
-    return set(pd.read_csv(csv_path, nrows=0).columns)
+    try:
+        return set(pd.read_csv(csv_path, nrows=0).columns)
+    except (OSError, UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise PolicySimulationError(f"Failed to read CSV header for source artifact {csv_path.name}: {csv_path}") from exc
 
 
 def _validate_columns(csv_path: Path, actual_columns: set[str], required_columns: tuple[str, ...]) -> None:
@@ -332,8 +337,8 @@ def _score_column_from_metadata(metadata: dict[str, object], *, model_id: str, s
 def _read_csv(csv_path: Path) -> pd.DataFrame:
     try:
         return pd.read_csv(csv_path)
-    except pd.errors.EmptyDataError as exc:
-        raise PolicySimulationError(f"Source artifact is empty: {csv_path}") from exc
+    except (OSError, UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise PolicySimulationError(f"Failed to read source artifact {csv_path.name}: {csv_path}") from exc
 
 
 def _source_round_result(
@@ -342,8 +347,9 @@ def _source_round_result(
     context: PolicySourceContext,
     round_number: int,
 ) -> pd.Series:
+    round_values = _whole_number_column(round_results, artifact_name="round_results.csv", column="rodada")
     rows = round_results.loc[
-        round_results["rodada"].astype(int).eq(int(round_number))
+        round_values.eq(int(round_number))
         & round_results["strategy"].astype(str).eq(context.strategy)
     ]
     if rows.empty:
@@ -363,10 +369,13 @@ def _source_selected_players(
     context: PolicySourceContext,
     round_number: int,
 ) -> pd.DataFrame:
-    return selected_players.loc[
-        selected_players["rodada"].astype(int).eq(int(round_number))
+    round_values = _whole_number_column(selected_players, artifact_name="selected_players.csv", column="rodada")
+    source_selected = selected_players.loc[
+        round_values.eq(int(round_number))
         & selected_players["strategy"].astype(str).eq(context.strategy)
     ].copy()
+    _validate_source_selected_players(source_selected, context=context, round_number=round_number)
+    return source_selected
 
 
 def _round_candidates(
@@ -375,12 +384,55 @@ def _round_candidates(
     context: PolicySourceContext,
     round_number: int,
 ) -> pd.DataFrame:
-    candidates = player_predictions.loc[player_predictions["rodada"].astype(int).eq(int(round_number))].copy()
+    round_values = _whole_number_column(player_predictions, artifact_name="player_predictions.csv", column="rodada")
+    candidates = player_predictions.loc[round_values.eq(int(round_number))].copy()
     if candidates.empty:
         raise PolicySimulationError(f"Missing player_predictions rows for round={round_number}.")
     if context.score_column not in candidates.columns:
         raise PolicySimulationError(f"Missing score column in player_predictions.csv: {context.score_column}")
     return candidates
+
+
+def _validate_source_selected_players(
+    source_selected: pd.DataFrame,
+    *,
+    context: PolicySourceContext,
+    round_number: int,
+) -> None:
+    selected_ids = _whole_number_column(source_selected, artifact_name="selected_players.csv", column="id_atleta")
+    duplicated_ids = sorted(selected_ids.loc[selected_ids.duplicated()].astype(int).unique().tolist())
+    if duplicated_ids:
+        raise PolicySimulationError(
+            "Source selected_players.csv has duplicate id_atleta rows for "
+            f"round={round_number} strategy={context.strategy!r}: {duplicated_ids}"
+        )
+
+    source_captain_count = int(_boolean_mask(source_selected["is_captain"]).sum())
+    if source_captain_count != 1:
+        raise PolicySimulationError(
+            "Source selected_players.csv must contain exactly one source captain for "
+            f"round={round_number} strategy={context.strategy!r}; got {source_captain_count}."
+        )
+
+
+def _whole_number_column(frame: pd.DataFrame, *, artifact_name: str, column: str) -> pd.Series:
+    if column not in frame.columns:
+        raise PolicySimulationError(f"Missing required column in {artifact_name}: {column}")
+    numeric = pd.to_numeric(frame[column], errors="coerce")
+    valid_values = numeric.notna() & numeric.mod(1).eq(0)
+    if not bool(valid_values.all()):
+        invalid_values = frame.loc[~valid_values, column].tolist()
+        raise PolicySimulationError(
+            f"{artifact_name} column {column} must contain non-null whole-number values: {invalid_values}"
+        )
+    return numeric.astype(int)
+
+
+def _boolean_mask(values: pd.Series) -> pd.Series:
+    if pd.api.types.is_bool_dtype(values):
+        return values.fillna(False).astype(bool)
+    normalized = values.astype(str).str.strip().str.lower()
+    return normalized.isin({"true", "1", "yes"})
 
 
 def _actual_scores_for_selected(
@@ -417,6 +469,7 @@ def _optional_int(value: object) -> int | None:
 
 def _mismatch_reasons(
     *,
+    solver_status_match: bool,
     selected_ids_match: bool,
     captain_id_match: bool,
     formation_match: bool,
@@ -425,6 +478,8 @@ def _mismatch_reasons(
     actual_points_delta: float,
 ) -> list[str]:
     reasons: list[str] = []
+    if not solver_status_match:
+        reasons.append("solver_status mismatch")
     if not selected_ids_match:
         reasons.append("selected_ids mismatch")
     if not captain_id_match:
