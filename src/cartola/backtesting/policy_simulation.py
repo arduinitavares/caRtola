@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,120 @@ _SELECTED_PLAYER_COLUMNS: tuple[str, ...] = (
     "variacao",
     "is_captain",
 )
+_H001_SELECTED_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024, 2025)
+_POLICY_CONTEXT_COLUMNS: tuple[str, ...] = ("model_id", "feature_pack", "strategy")
+_POLICY_GROUP_COLUMNS: tuple[str, ...] = (*_POLICY_CONTEXT_COLUMNS, "policy_variant")
+_POLICY_SEASON_GROUP_COLUMNS: tuple[str, ...] = ("season", *_POLICY_GROUP_COLUMNS)
+
+POLICY_ROUND_RESULT_COLUMNS: tuple[str, ...] = (
+    "season",
+    "model_id",
+    "feature_pack",
+    "strategy",
+    "policy_variant",
+    "rodada",
+    "solver_status",
+    "formation",
+    "captain_id",
+    "budget_before_round",
+    "budget_used",
+    "budget_remaining",
+    "budget_delta",
+    "budget_after_round",
+    "predicted_points_with_captain",
+    "actual_points_with_captain",
+)
+POLICY_SELECTED_PLAYER_COLUMNS: tuple[str, ...] = (
+    "season",
+    "model_id",
+    "feature_pack",
+    "strategy",
+    "policy_variant",
+    "rodada",
+    "id_atleta",
+    "apelido",
+    "posicao",
+    "id_clube",
+    "nome_clube",
+    "preco_pre_rodada",
+    "pontuacao",
+    "entrou_em_campo",
+    "variacao",
+    "is_captain",
+)
+POLICY_RANKED_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "rank",
+    "model_id",
+    "feature_pack",
+    "strategy",
+    "policy_variant",
+    "selected_seasons",
+    "fixture_identity_status",
+    "rounds",
+    "total_actual_points",
+    "benchmark_total_actual_points",
+    "total_delta",
+    "improved_seasons",
+    "season_2025_delta",
+    "top_two_positive_delta_concentration",
+    "final_budget",
+    "benchmark_final_budget",
+    "final_budget_delta",
+    "min_budget",
+    "benchmark_min_budget",
+    "min_budget_delta",
+    "max_budget_drawdown",
+    "benchmark_max_budget_drawdown",
+    "max_drawdown_delta",
+    "non_optimal_rounds",
+    "benchmark_non_optimal_rounds",
+    "non_optimal_delta",
+    "decision_status",
+    "decision_reason",
+)
+POLICY_PER_SEASON_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "season",
+    "model_id",
+    "feature_pack",
+    "strategy",
+    "policy_variant",
+    "rounds",
+    "total_actual_points",
+    "benchmark_total_actual_points",
+    "total_delta",
+    "final_budget",
+    "benchmark_final_budget",
+    "final_budget_delta",
+    "min_budget",
+    "benchmark_min_budget",
+    "min_budget_delta",
+    "max_budget_drawdown",
+    "benchmark_max_budget_drawdown",
+    "max_drawdown_delta",
+    "non_optimal_rounds",
+    "benchmark_non_optimal_rounds",
+    "non_optimal_delta",
+)
+POLICY_PROFILE_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "season",
+    "model_id",
+    "feature_pack",
+    "strategy",
+    "policy_variant",
+    "id_atleta",
+    "apelido",
+    "posicao",
+    "id_clube",
+    "nome_clube",
+    "selected_rounds",
+    "captain_rounds",
+    "total_pontuacao",
+    "average_pontuacao",
+    "total_variacao",
+    "average_preco_pre_rodada",
+    "first_round",
+    "last_round",
+)
 
 
 class PolicySimulationError(ValueError):
@@ -102,6 +217,12 @@ class PolicyReplayResult:
     round_rows: list[dict[str, object]]
     selected_player_rows: list[dict[str, object]]
     invalid_rows: list[dict[str, object]]
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    status: str
+    reason: str
 
 
 def load_policy_source_context(child_path: Path) -> PolicySourceContext:
@@ -317,6 +438,428 @@ def reproduce_no_policy_round(child_path: Path, round_number: int) -> NoPolicyRe
         actual_points_delta=actual_points_delta,
         failure_reason=None if not mismatch_reasons else ", ".join(mismatch_reasons),
     )
+
+
+def decide_policy_variant(
+    *,
+    selected_seasons: tuple[int, ...],
+    fixture_identity_status: str,
+    total_delta: float,
+    improved_seasons: int,
+    season_2025_delta: float | None,
+    non_optimal_delta: int,
+    final_budget_delta: float,
+    min_budget_delta: float,
+    max_drawdown_delta: float,
+    top_two_concentration: float | None,
+) -> PolicyDecision:
+    if selected_seasons != _H001_SELECTED_SEASONS:
+        return PolicyDecision(
+            status="diagnostic_only",
+            reason="generation 1 requires 2021-2025 selected seasons.",
+        )
+    if fixture_identity_status != "verified":
+        return PolicyDecision(
+            status="diagnostic_only",
+            reason="fixture identity unverified for policy simulation.",
+        )
+    if non_optimal_delta > 0:
+        return PolicyDecision(
+            status="ineligible",
+            reason="policy introduced non-optimal solver rounds versus no_policy.",
+        )
+    if total_delta <= 0:
+        return PolicyDecision(status="rejected", reason="total delta versus no_policy is not positive.")
+    if improved_seasons < 3:
+        return PolicyDecision(status="rejected", reason="policy improved fewer than three seasons.")
+    if season_2025_delta is None or season_2025_delta < -25.0:
+        return PolicyDecision(status="rejected", reason="2025 delta fails the regression guardrail.")
+    if final_budget_delta < -5.0 or min_budget_delta < -5.0 or max_drawdown_delta > 5.0:
+        return PolicyDecision(status="rejected", reason="budget path delta fails the guardrail.")
+    if top_two_concentration is not None and top_two_concentration > 0.50:
+        return PolicyDecision(
+            status="rejected",
+            reason="top two rounds concentration is above the guardrail.",
+        )
+    return PolicyDecision(status="candidate_policy", reason="policy clears generation 1 evidence guardrails.")
+
+
+def build_policy_ranked_summary(
+    round_results: pd.DataFrame,
+    *,
+    selected_seasons: tuple[int, ...] = (),
+    fixture_identity_status: str = "unverified",
+) -> pd.DataFrame:
+    if round_results.empty:
+        return pd.DataFrame(columns=pd.Index(POLICY_RANKED_SUMMARY_COLUMNS))
+
+    _validate_frame_columns("round_results", round_results, POLICY_ROUND_RESULT_COLUMNS)
+    per_season_summary = build_policy_per_season_summary(round_results)
+    rows: list[dict[str, object]] = []
+    selected_seasons_label = ",".join(str(season) for season in selected_seasons)
+    for group_key, group in per_season_summary.groupby(list(_POLICY_GROUP_COLUMNS), sort=True):
+        model_id, feature_pack, strategy, policy_variant = cast(tuple[object, object, object, object], group_key)
+        total_delta = _finite_number_or_zero(group["total_delta"].sum())
+        season_2025_delta = _season_delta(group, season=2025)
+        non_optimal_delta = int(_finite_number_or_zero(group["non_optimal_delta"].sum()))
+        final_budget_delta = _finite_number_or_zero(group["final_budget_delta"].sum())
+        min_budget_delta = _finite_number_or_zero(group["min_budget_delta"].min())
+        max_drawdown_delta = _finite_number_or_zero(group["max_drawdown_delta"].max())
+        top_two_concentration = _top_two_positive_delta_concentration(
+            round_results,
+            model_id=str(model_id),
+            feature_pack=str(feature_pack),
+            strategy=str(strategy),
+            policy_variant=str(policy_variant),
+        )
+        decision = decide_policy_variant(
+            selected_seasons=selected_seasons,
+            fixture_identity_status=fixture_identity_status,
+            total_delta=total_delta,
+            improved_seasons=int(group["total_delta"].astype(float).gt(0.0).sum()),
+            season_2025_delta=season_2025_delta,
+            non_optimal_delta=non_optimal_delta,
+            final_budget_delta=final_budget_delta,
+            min_budget_delta=min_budget_delta,
+            max_drawdown_delta=max_drawdown_delta,
+            top_two_concentration=top_two_concentration,
+        )
+        rows.append(
+            {
+                "rank": 0,
+                "model_id": str(model_id),
+                "feature_pack": str(feature_pack),
+                "strategy": str(strategy),
+                "policy_variant": str(policy_variant),
+                "selected_seasons": selected_seasons_label,
+                "fixture_identity_status": fixture_identity_status,
+                "rounds": int(group["rounds"].sum()),
+                "total_actual_points": _finite_number_or_zero(group["total_actual_points"].sum()),
+                "benchmark_total_actual_points": _finite_number_or_zero(
+                    group["benchmark_total_actual_points"].sum()
+                ),
+                "total_delta": total_delta,
+                "improved_seasons": int(group["total_delta"].astype(float).gt(0.0).sum()),
+                "season_2025_delta": pd.NA if season_2025_delta is None else season_2025_delta,
+                "top_two_positive_delta_concentration": (
+                    pd.NA if top_two_concentration is None else top_two_concentration
+                ),
+                "final_budget": _finite_number_or_zero(group["final_budget"].sum()),
+                "benchmark_final_budget": _finite_number_or_zero(group["benchmark_final_budget"].sum()),
+                "final_budget_delta": final_budget_delta,
+                "min_budget": _finite_number_or_zero(group["min_budget"].min()),
+                "benchmark_min_budget": _finite_number_or_zero(group["benchmark_min_budget"].min()),
+                "min_budget_delta": min_budget_delta,
+                "max_budget_drawdown": _finite_number_or_zero(group["max_budget_drawdown"].max()),
+                "benchmark_max_budget_drawdown": _finite_number_or_zero(
+                    group["benchmark_max_budget_drawdown"].max()
+                ),
+                "max_drawdown_delta": max_drawdown_delta,
+                "non_optimal_rounds": int(group["non_optimal_rounds"].sum()),
+                "benchmark_non_optimal_rounds": int(group["benchmark_non_optimal_rounds"].sum()),
+                "non_optimal_delta": non_optimal_delta,
+                "decision_status": decision.status,
+                "decision_reason": decision.reason,
+            }
+        )
+
+    summary = pd.DataFrame(rows, columns=pd.Index(POLICY_RANKED_SUMMARY_COLUMNS))
+    if summary.empty:
+        return summary
+    summary = summary.sort_values(
+        [*_POLICY_CONTEXT_COLUMNS, "total_delta", "policy_variant"],
+        ascending=[True, True, True, False, True],
+        kind="mergesort",
+        na_position="last",
+    ).reset_index(drop=True)
+    summary["rank"] = summary.groupby(list(_POLICY_CONTEXT_COLUMNS), sort=False).cumcount() + 1
+    return summary.loc[:, POLICY_RANKED_SUMMARY_COLUMNS]
+
+
+def build_policy_per_season_summary(round_results: pd.DataFrame) -> pd.DataFrame:
+    if round_results.empty:
+        return pd.DataFrame(columns=pd.Index(POLICY_PER_SEASON_SUMMARY_COLUMNS))
+
+    _validate_frame_columns("round_results", round_results, POLICY_ROUND_RESULT_COLUMNS)
+    variant_summaries = _policy_variant_season_summaries(round_results)
+    benchmark = variant_summaries.loc[variant_summaries["policy_variant"].eq("no_policy")].rename(
+        columns={
+            "total_actual_points": "benchmark_total_actual_points",
+            "final_budget": "benchmark_final_budget",
+            "min_budget": "benchmark_min_budget",
+            "max_budget_drawdown": "benchmark_max_budget_drawdown",
+            "non_optimal_rounds": "benchmark_non_optimal_rounds",
+        }
+    )
+    benchmark_columns = (
+        "season",
+        *_POLICY_CONTEXT_COLUMNS,
+        "benchmark_total_actual_points",
+        "benchmark_final_budget",
+        "benchmark_min_budget",
+        "benchmark_max_budget_drawdown",
+        "benchmark_non_optimal_rounds",
+    )
+    summary = variant_summaries.merge(
+        benchmark.loc[:, benchmark_columns],
+        on=["season", *_POLICY_CONTEXT_COLUMNS],
+        how="left",
+        sort=False,
+    )
+    summary["total_delta"] = summary["total_actual_points"] - summary["benchmark_total_actual_points"]
+    summary["final_budget_delta"] = summary["final_budget"] - summary["benchmark_final_budget"]
+    summary["min_budget_delta"] = summary["min_budget"] - summary["benchmark_min_budget"]
+    summary["max_drawdown_delta"] = summary["max_budget_drawdown"] - summary["benchmark_max_budget_drawdown"]
+    summary["non_optimal_delta"] = summary["non_optimal_rounds"] - summary["benchmark_non_optimal_rounds"]
+    summary = summary.sort_values(
+        ["season", *_POLICY_CONTEXT_COLUMNS, "total_delta", "policy_variant"],
+        ascending=[True, True, True, True, False, True],
+        kind="mergesort",
+        na_position="last",
+    )
+    return summary.loc[:, POLICY_PER_SEASON_SUMMARY_COLUMNS].reset_index(drop=True)
+
+
+def build_policy_profile_summary(round_results: pd.DataFrame, selected_players: pd.DataFrame) -> pd.DataFrame:
+    if selected_players.empty:
+        return pd.DataFrame(columns=pd.Index(POLICY_PROFILE_SUMMARY_COLUMNS))
+
+    if not round_results.empty:
+        _validate_frame_columns("round_results", round_results, POLICY_ROUND_RESULT_COLUMNS)
+    _validate_frame_columns("selected_players", selected_players, POLICY_SELECTED_PLAYER_COLUMNS)
+    selected = selected_players.copy()
+    selected["season"] = _whole_number_column(selected, artifact_name="selected_players", column="season")
+    selected["rodada"] = _whole_number_column(selected, artifact_name="selected_players", column="rodada")
+    selected["id_atleta"] = _whole_number_column(selected, artifact_name="selected_players", column="id_atleta")
+    selected["id_clube"] = _whole_number_column(selected, artifact_name="selected_players", column="id_clube")
+    selected["pontuacao"] = pd.to_numeric(selected["pontuacao"], errors="coerce").fillna(0.0).astype(float)
+    selected["variacao"] = pd.to_numeric(selected["variacao"], errors="coerce").fillna(0.0).astype(float)
+    selected["preco_pre_rodada"] = (
+        pd.to_numeric(selected["preco_pre_rodada"], errors="coerce").fillna(0.0).astype(float)
+    )
+    selected["is_captain"] = _boolean_mask(selected["is_captain"]).astype(int)
+    profile_group_columns = (
+        "season",
+        *_POLICY_GROUP_COLUMNS,
+        "id_atleta",
+        "apelido",
+        "posicao",
+        "id_clube",
+        "nome_clube",
+    )
+    summary = (
+        selected.groupby(list(profile_group_columns), sort=True, dropna=False)
+        .agg(
+            selected_rounds=("rodada", "nunique"),
+            captain_rounds=("is_captain", "sum"),
+            total_pontuacao=("pontuacao", "sum"),
+            average_pontuacao=("pontuacao", "mean"),
+            total_variacao=("variacao", "sum"),
+            average_preco_pre_rodada=("preco_pre_rodada", "mean"),
+            first_round=("rodada", "min"),
+            last_round=("rodada", "max"),
+        )
+        .reset_index()
+    )
+    summary = summary.sort_values(
+        [
+            "season",
+            *_POLICY_CONTEXT_COLUMNS,
+            "policy_variant",
+            "selected_rounds",
+            "captain_rounds",
+            "id_atleta",
+        ],
+        ascending=[True, True, True, True, True, False, False, True],
+        kind="mergesort",
+    )
+    return summary.loc[:, POLICY_PROFILE_SUMMARY_COLUMNS].reset_index(drop=True)
+
+
+def write_policy_simulation_report(
+    output_path: Path,
+    manifest: dict[str, object],
+    ranked_summary: pd.DataFrame,
+    per_season_summary: pd.DataFrame,
+    profile_summary: pd.DataFrame,
+    comparability_report: dict[str, object],
+) -> None:
+    report_path = _policy_report_path(output_path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    sections = [
+        "<h1>Policy Simulation V1</h1>",
+        "<p>H001 generation: 2021-2025. This report is research evidence only.</p>",
+        "<p>Decision status vocabulary includes diagnostic_only.</p>",
+        _json_section("Manifest", manifest),
+        _json_section("Comparability Report", comparability_report),
+        _table_section("Ranked Summary", ranked_summary),
+        _table_section("Per-Season Summary", per_season_summary),
+        _table_section("Profile Summary", profile_summary),
+    ]
+    body = "\n".join(sections)
+    report_path.write_text(
+        "<!doctype html>\n"
+        "<html lang=\"en\">\n"
+        "<head><meta charset=\"utf-8\"><title>Policy Simulation V1</title></head>\n"
+        f"<body>{body}</body>\n"
+        "</html>\n",
+        encoding="utf-8",
+    )
+
+
+def _policy_variant_season_summaries(round_results: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    normalized = round_results.copy()
+    normalized["season"] = _whole_number_column(normalized, artifact_name="round_results", column="season")
+    normalized["rodada"] = _whole_number_column(normalized, artifact_name="round_results", column="rodada")
+    for group_key, group in normalized.groupby(list(_POLICY_SEASON_GROUP_COLUMNS), sort=True):
+        season, model_id, feature_pack, strategy, policy_variant = cast(
+            tuple[object, object, object, object, object],
+            group_key,
+        )
+        budget_summary = _policy_budget_summary(group)
+        rows.append(
+            {
+                "season": int(cast(int, season)),
+                "model_id": str(model_id),
+                "feature_pack": str(feature_pack),
+                "strategy": str(strategy),
+                "policy_variant": str(policy_variant),
+                "rounds": int(group["rodada"].nunique()),
+                "total_actual_points": float(
+                    pd.to_numeric(group["actual_points_with_captain"], errors="coerce").fillna(0.0).sum()
+                ),
+                **budget_summary,
+                "non_optimal_rounds": int(group["solver_status"].astype(str).ne("Optimal").sum()),
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=pd.Index(
+            (
+                "season",
+                *_POLICY_GROUP_COLUMNS,
+                "rounds",
+                "total_actual_points",
+                "final_budget",
+                "min_budget",
+                "max_budget_drawdown",
+                "non_optimal_rounds",
+            )
+        ),
+    )
+
+
+def _policy_budget_summary(rounds: pd.DataFrame) -> dict[str, float]:
+    ordered = rounds.sort_values("rodada", kind="mergesort")
+    before = pd.to_numeric(ordered["budget_before_round"], errors="coerce").astype(float)
+    after = pd.to_numeric(ordered["budget_after_round"], errors="coerce").astype(float)
+    return {
+        "final_budget": float(after.iloc[-1]),
+        "min_budget": float(pd.concat([before, after], ignore_index=True).min()),
+        "max_budget_drawdown": float(_policy_budget_drawdown_from_path(after, initial_budget=float(before.iloc[0])).max()),
+    }
+
+
+def _policy_budget_drawdown_from_path(after: pd.Series, *, initial_budget: float) -> pd.Series:
+    peak = initial_budget
+    drawdowns: list[float] = []
+    for budget_after_round in after:
+        peak = max(peak, float(budget_after_round))
+        drawdowns.append(peak - float(budget_after_round))
+    return pd.Series(drawdowns, index=after.index, dtype=float)
+
+
+def _season_delta(group: pd.DataFrame, *, season: int) -> float | None:
+    rows = group.loc[group["season"].astype(int).eq(season), "total_delta"]
+    if rows.empty:
+        return None
+    value = rows.iloc[0]
+    if pd.isna(value):
+        return None
+    return float(value)
+
+
+def _top_two_positive_delta_concentration(
+    round_results: pd.DataFrame,
+    *,
+    model_id: str,
+    feature_pack: str,
+    strategy: str,
+    policy_variant: str,
+) -> float | None:
+    context_mask = (
+        round_results["model_id"].astype(str).eq(model_id)
+        & round_results["feature_pack"].astype(str).eq(feature_pack)
+        & round_results["strategy"].astype(str).eq(strategy)
+    )
+    policy_rounds = round_results.loc[context_mask & round_results["policy_variant"].astype(str).eq(policy_variant)]
+    benchmark_rounds = round_results.loc[context_mask & round_results["policy_variant"].astype(str).eq("no_policy")]
+    if policy_rounds.empty or benchmark_rounds.empty:
+        return None
+
+    join_columns = ["season", "rodada"]
+    policy_points = (
+        policy_rounds.groupby(join_columns, sort=True)["actual_points_with_captain"].sum().reset_index()
+    )
+    benchmark_points = (
+        benchmark_rounds.groupby(join_columns, sort=True)["actual_points_with_captain"].sum().reset_index()
+    )
+    merged = policy_points.merge(
+        benchmark_points,
+        on=join_columns,
+        how="inner",
+        suffixes=("_policy", "_benchmark"),
+    )
+    positive_deltas = sorted(
+        (
+            float(row["actual_points_with_captain_policy"])
+            - float(row["actual_points_with_captain_benchmark"])
+            for row in merged.to_dict("records")
+        ),
+        reverse=True,
+    )
+    positive_deltas = [delta for delta in positive_deltas if delta > 0.0]
+    if not positive_deltas:
+        return None
+    positive_total = sum(positive_deltas)
+    return float(sum(positive_deltas[:2]) / positive_total)
+
+
+def _finite_number_or_zero(value: object) -> float:
+    if pd.isna(value):
+        return 0.0
+    try:
+        number = float(cast(Any, value))
+    except (TypeError, ValueError):
+        return 0.0
+    if not np.isfinite(number):
+        return 0.0
+    return number
+
+
+def _validate_frame_columns(frame_name: str, frame: pd.DataFrame, required_columns: tuple[str, ...]) -> None:
+    missing = [column for column in required_columns if column not in frame.columns]
+    if missing:
+        raise PolicySimulationError(f"Missing required columns in {frame_name}: {', '.join(missing)}")
+
+
+def _policy_report_path(output_path: Path) -> Path:
+    if output_path.name == "policy_simulation_report.html":
+        return output_path
+    if output_path.suffix:
+        return output_path.parent / "policy_simulation_report.html"
+    return output_path / "policy_simulation_report.html"
+
+
+def _json_section(title: str, payload: dict[str, object]) -> str:
+    serialized = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    return f"<h2>{html.escape(title)}</h2><pre>{html.escape(serialized)}</pre>"
+
+
+def _table_section(title: str, frame: pd.DataFrame) -> str:
+    table = frame.to_html(index=False, escape=True)
+    return f"<h2>{html.escape(title)}</h2>{table}"
 
 
 def _target_rounds_from_predictions(player_predictions: pd.DataFrame) -> list[int]:
@@ -558,7 +1101,8 @@ def _selected_player_output_rows(
         policy_variant=policy_variant,
     )
     output["is_captain"] = _boolean_mask(output["is_captain"])
-    return cast(list[dict[str, object]], output.to_dict("records"))
+    output["entrou_em_campo"] = _boolean_mask(output["entrou_em_campo"])
+    return cast(list[dict[str, object]], output.loc[:, POLICY_SELECTED_PLAYER_COLUMNS].to_dict("records"))
 
 
 def _policy_replay_round_row(

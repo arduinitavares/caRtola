@@ -11,11 +11,21 @@ from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.optimizer_policies import NO_POLICY, get_policy_set
 from cartola.backtesting.policy_simulation import (
+    POLICY_PER_SEASON_SUMMARY_COLUMNS,
+    POLICY_PROFILE_SUMMARY_COLUMNS,
+    POLICY_RANKED_SUMMARY_COLUMNS,
+    POLICY_ROUND_RESULT_COLUMNS,
+    POLICY_SELECTED_PLAYER_COLUMNS,
     PolicyReplayResult,
     PolicySimulationError,
+    build_policy_per_season_summary,
+    build_policy_profile_summary,
+    build_policy_ranked_summary,
+    decide_policy_variant,
     load_policy_source_context,
     reproduce_no_policy_round,
     run_policy_replay_for_child,
+    write_policy_simulation_report,
 )
 from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION, actual_scores_with_captain
 
@@ -361,6 +371,196 @@ def test_policy_replay_scores_explicit_dnp_null_pontuacao_as_zero(tmp_path: Path
     assert round_one["actual_points_with_captain"] == pytest.approx(expected_actual)
 
 
+def test_policy_decision_marks_non_h001_generation_diagnostic_only() -> None:
+    decision = decide_policy_variant(
+        selected_seasons=(2023, 2024, 2025),
+        fixture_identity_status="verified",
+        total_delta=50.0,
+        improved_seasons=3,
+        season_2025_delta=5.0,
+        non_optimal_delta=0,
+        final_budget_delta=0.0,
+        min_budget_delta=0.0,
+        max_drawdown_delta=0.0,
+        top_two_concentration=0.25,
+    )
+
+    assert decision.status == "diagnostic_only"
+    assert "2021-2025" in decision.reason
+
+
+def test_policy_decision_rejects_2025_regression() -> None:
+    decision = decide_policy_variant(
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+        total_delta=50.0,
+        improved_seasons=4,
+        season_2025_delta=-25.1,
+        non_optimal_delta=0,
+        final_budget_delta=0.0,
+        min_budget_delta=0.0,
+        max_drawdown_delta=0.0,
+        top_two_concentration=0.25,
+    )
+
+    assert decision.status == "rejected"
+    assert "2025" in decision.reason
+
+
+def test_policy_summary_output_schemas_are_stable() -> None:
+    round_results = _policy_summary_round_results()
+    selected_players = _policy_summary_selected_players()
+
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    per_season_summary = build_policy_per_season_summary(round_results)
+    profile_summary = build_policy_profile_summary(round_results, selected_players)
+
+    assert POLICY_RANKED_SUMMARY_COLUMNS == (
+        "rank",
+        "model_id",
+        "feature_pack",
+        "strategy",
+        "policy_variant",
+        "selected_seasons",
+        "fixture_identity_status",
+        "rounds",
+        "total_actual_points",
+        "benchmark_total_actual_points",
+        "total_delta",
+        "improved_seasons",
+        "season_2025_delta",
+        "top_two_positive_delta_concentration",
+        "final_budget",
+        "benchmark_final_budget",
+        "final_budget_delta",
+        "min_budget",
+        "benchmark_min_budget",
+        "min_budget_delta",
+        "max_budget_drawdown",
+        "benchmark_max_budget_drawdown",
+        "max_drawdown_delta",
+        "non_optimal_rounds",
+        "benchmark_non_optimal_rounds",
+        "non_optimal_delta",
+        "decision_status",
+        "decision_reason",
+    )
+    assert POLICY_PER_SEASON_SUMMARY_COLUMNS == (
+        "season",
+        "model_id",
+        "feature_pack",
+        "strategy",
+        "policy_variant",
+        "rounds",
+        "total_actual_points",
+        "benchmark_total_actual_points",
+        "total_delta",
+        "final_budget",
+        "benchmark_final_budget",
+        "final_budget_delta",
+        "min_budget",
+        "benchmark_min_budget",
+        "min_budget_delta",
+        "max_budget_drawdown",
+        "benchmark_max_budget_drawdown",
+        "max_drawdown_delta",
+        "non_optimal_rounds",
+        "benchmark_non_optimal_rounds",
+        "non_optimal_delta",
+    )
+    assert POLICY_ROUND_RESULT_COLUMNS == (
+        "season",
+        "model_id",
+        "feature_pack",
+        "strategy",
+        "policy_variant",
+        "rodada",
+        "solver_status",
+        "formation",
+        "captain_id",
+        "budget_before_round",
+        "budget_used",
+        "budget_remaining",
+        "budget_delta",
+        "budget_after_round",
+        "predicted_points_with_captain",
+        "actual_points_with_captain",
+    )
+    assert POLICY_SELECTED_PLAYER_COLUMNS == (
+        "season",
+        "model_id",
+        "feature_pack",
+        "strategy",
+        "policy_variant",
+        "rodada",
+        "id_atleta",
+        "apelido",
+        "posicao",
+        "id_clube",
+        "nome_clube",
+        "preco_pre_rodada",
+        "pontuacao",
+        "entrou_em_campo",
+        "variacao",
+        "is_captain",
+    )
+    assert POLICY_PROFILE_SUMMARY_COLUMNS == (
+        "season",
+        "model_id",
+        "feature_pack",
+        "strategy",
+        "policy_variant",
+        "id_atleta",
+        "apelido",
+        "posicao",
+        "id_clube",
+        "nome_clube",
+        "selected_rounds",
+        "captain_rounds",
+        "total_pontuacao",
+        "average_pontuacao",
+        "total_variacao",
+        "average_preco_pre_rodada",
+        "first_round",
+        "last_round",
+    )
+    assert list(ranked_summary.columns) == list(POLICY_RANKED_SUMMARY_COLUMNS)
+    assert list(per_season_summary.columns) == list(POLICY_PER_SEASON_SUMMARY_COLUMNS)
+    assert list(round_results.columns) == list(POLICY_ROUND_RESULT_COLUMNS)
+    assert list(selected_players.columns) == list(POLICY_SELECTED_PLAYER_COLUMNS)
+    assert list(profile_summary.columns) == list(POLICY_PROFILE_SUMMARY_COLUMNS)
+
+
+def test_policy_report_contains_required_literals_and_table_rows(tmp_path: Path) -> None:
+    round_results = _policy_summary_round_results()
+    selected_players = _policy_summary_selected_players()
+    ranked_summary = build_policy_ranked_summary(round_results)
+    per_season_summary = build_policy_per_season_summary(round_results)
+    profile_summary = build_policy_profile_summary(round_results, selected_players)
+    output_dir = tmp_path / "policy_report"
+
+    write_policy_simulation_report(
+        output_dir,
+        manifest={"experiment_id": "H001-test"},
+        ranked_summary=ranked_summary,
+        per_season_summary=per_season_summary,
+        profile_summary=profile_summary,
+        comparability_report={"fixture_identity_status": "unverified"},
+    )
+
+    html = (output_dir / "policy_simulation_report.html").read_text(encoding="utf-8")
+    assert "Policy Simulation V1" in html
+    assert "H001" in html
+    assert "research evidence only" in html
+    assert "diagnostic_only" in html
+    assert "<table" in html
+    assert "soft_overlap_penalty_low" in html
+
+
 @pytest.fixture
 def synthetic_policy_child(tmp_path: Path) -> Path:
     return _write_policy_child(tmp_path)
@@ -508,6 +708,91 @@ def _complete_fixture_rows(candidates: pd.DataFrame) -> pd.DataFrame:
             )
             rows.append({"rodada": round_number, "id_clube_home": home_id, "id_clube_away": away_id})
     return pd.DataFrame(rows)
+
+
+def _policy_summary_round_results() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    policy_deltas = {
+        2021: (4.0, 3.0),
+        2022: (3.0, 2.0),
+        2023: (2.0, 2.0),
+        2024: (1.0, -1.0),
+        2025: (5.0, 4.0),
+    }
+    for season, deltas in policy_deltas.items():
+        for policy_variant in ("no_policy", "soft_overlap_penalty_low"):
+            current_budget = 100.0
+            for round_offset, round_number in enumerate((5, 6)):
+                actual_points = 40.0 + round_offset
+                budget_delta = 1.0
+                if policy_variant != "no_policy":
+                    actual_points += deltas[round_offset]
+                    budget_delta = 0.5
+                budget_after_round = current_budget + budget_delta
+                rows.append(
+                    {
+                        "season": season,
+                        "model_id": "test_model",
+                        "feature_pack": "synthetic_pack",
+                        "strategy": "test_model",
+                        "policy_variant": policy_variant,
+                        "rodada": round_number,
+                        "solver_status": "Optimal",
+                        "formation": "4-3-3",
+                        "captain_id": 1,
+                        "budget_before_round": current_budget,
+                        "budget_used": 90.0,
+                        "budget_remaining": current_budget - 90.0,
+                        "budget_delta": budget_delta,
+                        "budget_after_round": budget_after_round,
+                        "predicted_points_with_captain": actual_points + 1.0,
+                        "actual_points_with_captain": actual_points,
+                    }
+                )
+                current_budget = budget_after_round
+    return pd.DataFrame(rows, columns=pd.Index(POLICY_ROUND_RESULT_COLUMNS))
+
+
+def _policy_summary_selected_players() -> pd.DataFrame:
+    rows = [
+        {
+            "season": 2025,
+            "model_id": "test_model",
+            "feature_pack": "synthetic_pack",
+            "strategy": "test_model",
+            "policy_variant": "no_policy",
+            "rodada": 5,
+            "id_atleta": 1,
+            "apelido": "Player 1",
+            "posicao": "ata",
+            "id_clube": 1001,
+            "nome_clube": "Club 1",
+            "preco_pre_rodada": 10.0,
+            "pontuacao": 8.0,
+            "entrou_em_campo": True,
+            "variacao": 1.0,
+            "is_captain": True,
+        },
+        {
+            "season": 2025,
+            "model_id": "test_model",
+            "feature_pack": "synthetic_pack",
+            "strategy": "test_model",
+            "policy_variant": "soft_overlap_penalty_low",
+            "rodada": 5,
+            "id_atleta": 2,
+            "apelido": "Player 2",
+            "posicao": "mei",
+            "id_clube": 1002,
+            "nome_clube": "Club 2",
+            "preco_pre_rodada": 9.0,
+            "pontuacao": 7.0,
+            "entrou_em_campo": True,
+            "variacao": 0.5,
+            "is_captain": False,
+        },
+    ]
+    return pd.DataFrame(rows, columns=pd.Index(POLICY_SELECTED_PLAYER_COLUMNS))
 
 
 def _assert_no_policy_replay_matches_source(
