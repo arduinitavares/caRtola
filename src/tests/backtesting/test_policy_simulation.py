@@ -367,7 +367,77 @@ def test_policy_replay_requires_fixture_coverage_for_all_candidate_clubs(tmp_pat
 
     with pytest.raises(
         PolicySimulationError,
-        match=rf"fixture coverage.*policy_variant={policy.policy_variant!r}.*round=5",
+        match=rf"fixture coverage.*policy_variant={policy.policy_variant!r}.*round=5.*1001",
+    ):
+        run_policy_replay_for_child(child_path=child, policies=(policy,))
+
+
+def test_policy_replay_allows_verified_no_fixture_dnp_candidate_club(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    policy = get_policy_set("opponent-overlap-v1").policies[1]
+    predictions_path = child / "player_predictions.csv"
+    predictions = pd.read_csv(predictions_path)
+    predictions["entrou_em_campo"] = predictions["entrou_em_campo"].astype(object)
+    missing_club_mask = predictions["rodada"].eq(5) & predictions["id_clube"].eq(1001)
+    assert bool(missing_club_mask.any())
+    predictions.loc[missing_club_mask, "entrou_em_campo"] = False
+    predictions.loc[missing_club_mask, "pontuacao"] = 0.0
+    predictions.loc[missing_club_mask, "variacao"] = 0.0
+    predictions.to_csv(predictions_path, index=False)
+
+    fixtures_path = child / "fixtures_for_round.csv"
+    fixtures = pd.read_csv(fixtures_path)
+    missing_fixture_mask = fixtures["rodada"].eq(5) & fixtures["id_clube_home"].eq(1001)
+    assert int(missing_fixture_mask.sum()) == 1
+    fixtures.loc[missing_fixture_mask, "id_clube_home"] = 900001
+    fixtures.to_csv(fixtures_path, index=False)
+
+    result = run_policy_replay_for_child(child_path=child, policies=(policy,))
+    selected = pd.DataFrame(result.selected_player_rows)
+    selected_round_five = selected.loc[
+        selected["policy_variant"].eq(policy.policy_variant) & selected["rodada"].eq(5)
+    ]
+
+    assert result.invalid_rows == []
+    assert {row["policy_variant"] for row in result.round_rows} == {policy.policy_variant}
+    assert 20 in set(selected_round_five["id_atleta"].astype(int))
+
+
+@pytest.mark.parametrize(
+    ("entrou_em_campo", "pontuacao"),
+    [
+        (True, 0.0),
+        (False, 1.0),
+        (False, float("inf")),
+        (None, 0.0),
+    ],
+)
+def test_policy_replay_rejects_missing_fixture_candidate_club_without_verified_dnp(
+    tmp_path: Path,
+    entrou_em_campo: object,
+    pontuacao: float,
+) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    policy = get_policy_set("opponent-overlap-v1").policies[1]
+    predictions_path = child / "player_predictions.csv"
+    predictions = pd.read_csv(predictions_path)
+    predictions["entrou_em_campo"] = predictions["entrou_em_campo"].astype(object)
+    missing_club_mask = predictions["rodada"].eq(5) & predictions["id_clube"].eq(1001)
+    assert bool(missing_club_mask.any())
+    predictions.loc[missing_club_mask, "entrou_em_campo"] = entrou_em_campo
+    predictions.loc[missing_club_mask, "pontuacao"] = pontuacao
+    predictions.to_csv(predictions_path, index=False)
+
+    fixtures_path = child / "fixtures_for_round.csv"
+    fixtures = pd.read_csv(fixtures_path)
+    missing_fixture_mask = fixtures["rodada"].eq(5) & fixtures["id_clube_home"].eq(1001)
+    assert int(missing_fixture_mask.sum()) == 1
+    fixtures.loc[missing_fixture_mask, "id_clube_home"] = 900001
+    fixtures.to_csv(fixtures_path, index=False)
+
+    with pytest.raises(
+        PolicySimulationError,
+        match=rf"fixture coverage.*policy_variant={policy.policy_variant!r}.*round=5.*1001",
     ):
         run_policy_replay_for_child(child_path=child, policies=(policy,))
 

@@ -1481,11 +1481,17 @@ def _fixtures_for_policy_round(
         candidates,
         artifact_name="player_predictions.csv",
         column="id_clube",
-    ).astype(int).unique().tolist()
+    ).astype(int)
     try:
+        candidate_club_ids_for_coverage = _candidate_club_ids_requiring_fixture_coverage(
+            candidates,
+            candidate_club_ids=candidate_club_ids,
+            fixtures_for_round=fixtures_for_round,
+            round_number=round_number,
+        )
         validate_fixture_coverage(
             fixtures_for_round,
-            candidate_club_ids=candidate_club_ids,
+            candidate_club_ids=candidate_club_ids_for_coverage,
             round_number=round_number,
         )
     except FixtureCoverageError as exc:
@@ -1497,6 +1503,92 @@ def _fixtures_for_policy_round(
             )
         ) from exc
     return fixtures_for_round
+
+
+def _candidate_club_ids_requiring_fixture_coverage(
+    candidates: pd.DataFrame,
+    *,
+    candidate_club_ids: pd.Series,
+    fixtures_for_round: pd.DataFrame,
+    round_number: int,
+) -> list[int]:
+    unique_candidate_club_ids = sorted(candidate_club_ids.astype(int).unique().tolist())
+    fixture_club_ids = _fixture_club_ids_for_round(fixtures_for_round, round_number=round_number)
+    absent_club_ids = sorted(club_id for club_id in unique_candidate_club_ids if club_id not in fixture_club_ids)
+    if not absent_club_ids:
+        return unique_candidate_club_ids
+
+    verified_no_fixture_club_ids = {
+        club_id
+        for club_id in absent_club_ids
+        if _candidate_rows_are_verified_no_fixture_dnp(candidates.loc[candidate_club_ids.eq(club_id)])
+    }
+    suspicious_club_ids = sorted(set(absent_club_ids) - verified_no_fixture_club_ids)
+    if suspicious_club_ids:
+        raise FixtureCoverageError(
+            "Round "
+            f"{round_number} has missing fixture coverage for candidate clubs without verified no-fixture "
+            f"DNP rows: {suspicious_club_ids}"
+        )
+
+    return [club_id for club_id in unique_candidate_club_ids if club_id not in verified_no_fixture_club_ids]
+
+
+def _fixture_club_ids_for_round(fixtures_for_round: pd.DataFrame, *, round_number: int) -> set[int]:
+    missing = [column for column in _FIXTURE_COLUMNS if column not in fixtures_for_round.columns]
+    if missing:
+        raise FixtureCoverageError(f"Missing fixture coverage columns: {', '.join(missing)}")
+
+    round_values = _fixture_whole_number_column(
+        fixtures_for_round,
+        column="rodada",
+        round_number=round_number,
+    )
+    round_fixtures = fixtures_for_round.loc[round_values.eq(int(round_number))]
+    fixture_club_ids: set[int] = set()
+    for column in ("id_clube_home", "id_clube_away"):
+        fixture_club_ids.update(
+            _fixture_whole_number_column(round_fixtures, column=column, round_number=round_number)
+            .astype(int)
+            .tolist()
+        )
+    return fixture_club_ids
+
+
+def _fixture_whole_number_column(
+    frame: pd.DataFrame,
+    *,
+    column: str,
+    round_number: int,
+) -> pd.Series:
+    numeric_values = pd.to_numeric(frame[column], errors="coerce")
+    valid_values = numeric_values.notna() & numeric_values.mod(1).eq(0)
+    if not bool(valid_values.all()):
+        invalid_values = frame.loc[~valid_values, column].tolist()
+        raise FixtureCoverageError(
+            f"Fixture coverage column {column} must contain non-null whole-number values "
+            f"for round {round_number}: {invalid_values}"
+        )
+    return numeric_values.astype(int)
+
+
+def _candidate_rows_are_verified_no_fixture_dnp(candidate_rows: pd.DataFrame) -> bool:
+    if candidate_rows.empty:
+        return False
+    missing = [column for column in ("entrou_em_campo", "pontuacao") if column not in candidate_rows.columns]
+    if missing:
+        return False
+
+    explicit_dnp = _explicit_false_mask(candidate_rows["entrou_em_campo"])
+    if not bool(explicit_dnp.all()):
+        return False
+
+    raw_scores = candidate_rows["pontuacao"]
+    numeric_scores = pd.to_numeric(raw_scores, errors="coerce")
+    finite_scores = pd.Series(np.isfinite(numeric_scores.to_numpy(dtype=float)), index=candidate_rows.index)
+    null_scores = raw_scores.isna()
+    zero_scores = numeric_scores.notna() & finite_scores & numeric_scores.abs().le(_TOLERANCE)
+    return bool((null_scores | zero_scores).all())
 
 
 def _policy_requires_fixture_coverage(policy: OptimizerPolicy) -> bool:
