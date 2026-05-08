@@ -844,6 +844,7 @@ Add:
 ```python
 def build_h004_top_actual_recall(played: pd.DataFrame) -> pd.DataFrame:
     frame = played.copy()
+    frame["context_edge"] = _context_edge(frame)
     rows: list[pd.DataFrame] = []
     for _, group in frame.groupby(["season", "rodada", "posicao"], sort=True):
         played_count = len(group)
@@ -876,7 +877,6 @@ def build_h004_top_actual_recall(played: pd.DataFrame) -> pd.DataFrame:
             )
         )
     actual_top = pd.concat(rows, ignore_index=True)
-    actual_top["context_edge"] = _context_edge(actual_top)
     summary = (
         actual_top.groupby(["season", "posicao"], as_index=False)
         .agg(
