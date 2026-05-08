@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import cartola.backtesting.h004_residual_diagnostic as h004_diag
 from cartola.backtesting.h004_residual_diagnostic import (
     H004_CONTROL_FEATURE_PACK,
     H004_CONTROL_MODEL_ID,
@@ -209,6 +210,24 @@ def test_build_h004_residual_correlations_requires_minimum_rows_and_flags_signal
     assert row["row_count"] == 120
     assert row["spearman"] > 0.99
     assert bool(row["passes_signal"])
+
+
+def test_build_h004_residual_correlations_rejects_negative_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    played = _played_signal_rows()
+    played["prediction_residual"] = -played["prediction_residual"]
+    monkeypatch.setattr(h004_diag, "H004_MIN_QUINTILE_SPREAD", -10.0)
+
+    correlations = build_h004_residual_correlations(played)
+
+    row = correlations[
+        correlations["context_column"].eq("footystats_xg_diff")
+        & correlations["position"].eq("ata")
+        & correlations["season"].eq(2025)
+    ].iloc[0]
+    assert row["spearman"] < -0.99
+    assert not bool(row["passes_signal"])
 
 
 def test_build_h004_residual_quintiles_outputs_deterministic_quintile_rows() -> None:

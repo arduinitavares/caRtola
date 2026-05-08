@@ -202,7 +202,7 @@ def build_h004_residual_correlations(played: pd.DataFrame) -> pd.DataFrame:
             spread = _quintile_spread(group, column)
             passes_signal = bool(
                 pd.notna(spearman)
-                and abs(spearman) >= H004_MIN_ABS_SPEARMAN
+                and spearman >= H004_MIN_ABS_SPEARMAN
                 and pd.notna(spread)
                 and spread >= H004_MIN_QUINTILE_SPREAD
             )
