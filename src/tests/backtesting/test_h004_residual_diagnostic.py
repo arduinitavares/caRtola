@@ -274,6 +274,34 @@ def test_build_h004_top_actual_recall_detects_context_gap() -> None:
     assert recall["median_context_edge"].min() >= 0.25
 
 
+def test_build_h004_top_actual_recall_uses_full_played_context_baseline_before_actual_top() -> None:
+    rows = []
+    for index in range(12):
+        is_actual_top = index < 5
+        rows.append(
+            {
+                "season": 2025,
+                "rodada": 9,
+                "posicao": "ata",
+                "id_atleta": index + 1,
+                "actual_points": 30.0 - index if is_actual_top else 1.0,
+                "predicted_points": 1.0 + index,
+                "footystats_xg_diff": 10.0 if is_actual_top else 0.0,
+                "matchup_opponent_allowed_position_points_roll5": 20.0
+                if is_actual_top
+                else 0.0,
+            }
+        )
+    played = pd.DataFrame(rows)
+
+    recall = build_h004_top_actual_recall(played)
+
+    row = recall.iloc[0]
+    assert row["row_count"] == 5
+    assert row["median_context_edge"] > 2.0
+    assert bool(row["passes_signal"])
+
+
 def test_build_h004_diagnostic_decision_passes_when_one_family_clears_three_seasons() -> None:
     correlations = pd.DataFrame(
         {
