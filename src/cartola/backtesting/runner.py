@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from threading import Lock
 from time import perf_counter
 
@@ -44,7 +45,7 @@ from cartola.backtesting.scoring_contract import (
     apply_captain_policy_flags,
     captain_policy_diagnostics,
 )
-from cartola.backtesting.strict_fixtures import load_strict_fixtures
+from cartola.backtesting.strict_fixtures import load_strict_fixtures, sha256_file
 
 ROUND_RESULT_COLUMNS: list[str] = [
     "rodada",
@@ -148,6 +149,8 @@ class BacktestMetadata:
     runtime_profile_enabled: bool = False
     round_profiles: list[dict[str, object]] = field(default_factory=list)
     threadpool_info: list[dict[str, object]] = field(default_factory=list)
+    fixture_source_paths: list[str] = field(default_factory=list)
+    fixture_source_sha256: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -185,6 +188,8 @@ class FixtureLoadForRun:
     generator_versions: list[str]
     excluded_rounds: list[int]
     warnings: list[str]
+    source_paths: list[str] = field(default_factory=list)
+    source_sha256: dict[str, str] = field(default_factory=dict)
 
 
 class RoundFrameStore:
@@ -388,6 +393,8 @@ def _run_backtest(
         runtime_profile_enabled=config.profile_runtime,
         round_profiles=[],
         threadpool_info=_threadpool_info(),
+        fixture_source_paths=resolved_fixtures.source_paths,
+        fixture_source_sha256=resolved_fixtures.source_sha256,
     )
     round_results_for_targets = [
         *_run_rounds_with_moving_budget(
@@ -798,6 +805,24 @@ def _load_optional_fixtures(config: BacktestConfig) -> pd.DataFrame | None:
         return None
 
 
+def _exploratory_fixture_source_identity(config: BacktestConfig) -> tuple[list[str], dict[str, str]]:
+    fixture_dir = Path(config.project_root) / "data" / "01_raw" / "fixtures" / str(config.season)
+    fixture_paths = sorted(fixture_dir.glob("partidas-*.csv"), key=lambda path: path.name)
+    relative_paths = [_relative_project_path(path, project_root=Path(config.project_root)) for path in fixture_paths]
+    return relative_paths, {
+        relative_path: sha256_file(fixture_path)
+        for relative_path, fixture_path in zip(relative_paths, fixture_paths, strict=True)
+    }
+
+
+def _relative_project_path(path: Path, *, project_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(project_root.resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
 def _strict_required_rounds(season_df: pd.DataFrame) -> list[int]:
     if season_df.empty:
         return []
@@ -868,6 +893,7 @@ def _resolve_fixtures(
             warnings=[*warnings, "Exploratory fixture files were not found; running with neutral fixture defaults."],
         )
 
+    source_paths, source_sha256 = _exploratory_fixture_source_identity(config)
     return FixtureLoadForRun(
         fixtures=loaded_fixtures,
         source_directory=f"data/01_raw/fixtures/{config.season}",
@@ -876,6 +902,8 @@ def _resolve_fixtures(
         generator_versions=[],
         excluded_rounds=[],
         warnings=warnings,
+        source_paths=source_paths,
+        source_sha256=source_sha256,
     )
 
 
