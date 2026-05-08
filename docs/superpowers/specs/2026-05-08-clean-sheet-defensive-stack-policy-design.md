@@ -3,7 +3,7 @@
 ## Goal
 
 Build and test H003: a narrow optimizer policy that gives a small bonus for
-selecting a same-team defensive pair from a strong home clean-sheet context.
+selecting a same-team defensive pair from a strong home defensive-context proxy.
 
 The policy answers one question:
 
@@ -67,6 +67,22 @@ budget_policy=moving
 fixture_identity_status=verified
 ```
 
+The referenced source experiment is eligible only if every selected child
+`run_metadata.json` contains:
+
+```text
+fixture_source_directory
+fixture_source_paths
+fixture_source_sha256
+```
+
+For this source experiment, each selected child should have 38
+`fixture_source_sha256` entries, one per `partidas-*.csv` fixture source file.
+The policy simulation must recompute SHA-256 for those files and emit
+`fixture_identity_status=verified` before any `candidate_policy` decision is
+allowed. If hashes are missing or mismatched, H003 output is
+`diagnostic_only` or invalid, never `candidate_policy`.
+
 The policy simulation must remain artifact-backed: it reads the persisted
 `player_predictions.csv`, `round_results.csv`, `selected_players.csv`, and
 `run_metadata.json` files from each selected child run. It must not rebuild
@@ -91,7 +107,25 @@ H003 unless the caller explicitly allows incomplete reports. In incomplete mode,
 the affected rows must be written to `policy_invalid_rows.csv`; they must not be
 silently treated as neutral.
 
+H003-specific invalid rows use the existing `policy_invalid_rows.csv` schema:
+
+```text
+season
+model_id
+feature_pack
+child_path
+error_type
+error_message
+```
+
+Any incomplete-mode run with H003 invalid rows must suppress
+`candidate_policy`; affected variants are `ineligible` or the whole report is
+`diagnostic_only`, depending on the comparability failure.
+
 ## Eligibility Rule
+
+H003 is a home favorite defensive-pair proxy. It is not a direct clean-sheet
+probability model.
 
 A club-round is eligible for the H003 defensive-pair bonus when all are true:
 
@@ -113,6 +147,28 @@ Rationale:
 
 The thresholds must not be changed after seeing H003 simulation results. Any
 threshold change creates a new hypothesis generation.
+
+### Context Agreement
+
+For each `rodada, id_clube`, all candidate rows must agree on the context used
+for eligibility:
+
+```text
+matchup_is_home
+footystats_ppg_diff
+footystats_xg_diff
+```
+
+Agreement rules:
+
+- `matchup_is_home` must coerce to a finite whole number and have exactly one
+  unique value;
+- `footystats_ppg_diff` and `footystats_xg_diff` must coerce to finite numeric
+  values;
+- floating context values agree only when `max(value) - min(value) <= 1e-6`.
+
+Disagreement invalidates the affected child replay for H003. Do not choose one
+candidate row as canonical when club-round context conflicts.
 
 ## Policy Mechanic
 
@@ -203,6 +259,53 @@ fixture-backed matchup context.
 
 The original `no_policy` tie-breaking behavior must remain reproducible.
 
+### Pair Linearization
+
+For each eligible club `c`, define:
+
+```text
+gk_count_c = sum(selected_i for candidate i where id_clube == c and posicao == "gol")
+partner_count_c = sum(selected_i for candidate i where id_clube == c and posicao in {"lat", "zag"})
+gk_present_c binary
+partner_present_c binary
+clean_sheet_pair_c binary
+```
+
+Let `M_partner` be the maximum number of `LAT/ZAG` assets that can be selected
+in the current formation. Use `M_partner >= 1`.
+
+Presence constraints:
+
+```text
+gk_count_c >= gk_present_c
+gk_count_c <= gk_present_c
+partner_count_c >= partner_present_c
+partner_count_c <= M_partner * partner_present_c
+```
+
+Pair constraints:
+
+```text
+clean_sheet_pair_c <= gk_present_c
+clean_sheet_pair_c <= partner_present_c
+clean_sheet_pair_c >= gk_present_c + partner_present_c - 1
+```
+
+Global cap:
+
+```text
+sum(clean_sheet_pair_c for eligible clubs c) <= max_clean_sheet_pair_bonuses
+```
+
+Objective addition:
+
+```text
+maximize predicted_points_with_captain + clean_sheet_pair_bonus * sum(clean_sheet_pair_c)
+```
+
+This forces the bonus to apply exactly when an eligible club contributes both a
+selected goalkeeper and at least one selected fullback/center back.
+
 ## Reporting And Decision Metrics
 
 Add these columns to `policy_round_results.csv`:
@@ -248,12 +351,38 @@ H003 becomes a `candidate_policy` only if a policy variant:
 - does not regress 2025 by more than `-15` points;
 - does not regress any season by more than `-25` points;
 - does not increase non-optimal solver rounds;
-- does not materially worsen final budget, minimum budget, or max drawdown;
+- does not fail the budget guardrails defined below;
 - changes selections in at least `15` evaluated rounds;
 - changes selections in no more than `40%` of evaluated rounds;
-- does not win only through one or two extreme rounds.
+- does not fail the top-two-round concentration guardrail defined below.
 
 If several variants pass, choose the smallest passing bonus.
+
+Define budget guardrails exactly as:
+
+```text
+final_budget_delta_vs_no_policy >= -5
+min_budget_delta_vs_no_policy >= -5
+max_drawdown_delta_vs_no_policy <= 5
+```
+
+Define top-two-round concentration exactly as:
+
+```text
+round_delta = policy actual_points_with_captain - no_policy actual_points_with_captain
+positive_round_delta = max(round_delta, 0)
+total_positive_delta = sum(positive_round_delta across all replayed seasons and rounds)
+top_2_round_delta_sum = sum(two largest positive_round_delta values)
+top_two_positive_delta_concentration = top_2_round_delta_sum / total_positive_delta
+```
+
+If `total_positive_delta <= 0`, the concentration metric is `NA` and the
+variant cannot be `candidate_policy` because the total-lift criterion already
+fails. H003 fails the concentration gate when:
+
+```text
+top_two_positive_delta_concentration > 0.50
+```
 
 ## Rejection Criteria
 
@@ -264,8 +393,7 @@ Reject H003 if:
 - 2025 regresses beyond the frozen threshold;
 - one old season explains most of the gain;
 - the policy creates additional infeasible or non-optimal rounds;
-- the policy mainly forces low-prediction defenders over materially better
-  midfielders/attackers without stable season-level payoff;
+- selection changes do not meet the minimum or maximum changed-round gates;
 - any required pre-match context column is missing or silently neutralized.
 
 ## Tests

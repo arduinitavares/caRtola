@@ -310,11 +310,15 @@ Before implementation, an outside critique recommended testing clean-sheet
 defensive stacking first and avoiding broad strong-team boosts, attack stacking,
 captain favorite-team boosts, or any threshold tuning after seeing results.
 
+H003 is a clean-sheet proxy policy, not a direct clean-sheet probability model.
+It uses persisted pre-match PPG and xG differential columns because no direct
+clean-sheet probability source is currently part of the artifact contract.
+
 ### Hypothesis
 
-In fixtures with strong pre-match home clean-sheet context, a small optimizer
-bonus for selecting `GOL + LAT/ZAG` from the same team improves moving-budget
-historical squad performance versus `no_policy`.
+In fixtures with strong pre-match home defensive-context proxy values, a small
+optimizer bonus for selecting `GOL + LAT/ZAG` from the same team improves
+moving-budget historical squad performance versus `no_policy`.
 
 ### Eligibility Rule
 
@@ -368,6 +372,14 @@ Source experiment:
 data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d
 ```
 
+Fixture evidence precondition:
+
+```text
+each selected child run_metadata.json must contain fixture_source_sha256
+fixture_identity_status must be verified
+invalid_row_count must be 0
+```
+
 Command:
 
 ```text
@@ -392,10 +404,12 @@ H003 becomes a `candidate_policy` only if a policy variant:
 - does not regress 2025 by more than `-15` points;
 - does not regress any season by more than `-25` points;
 - does not increase infeasible or non-optimal solver rounds;
-- does not materially worsen final budget, minimum budget, or max drawdown;
+- satisfies budget guardrails:
+  `final_budget_delta >= -5`, `min_budget_delta >= -5`, and
+  `max_drawdown_delta <= 5`;
 - changes selections in at least `15` evaluated rounds;
 - changes selections in no more than `40%` of evaluated rounds;
-- does not win only through one or two extreme rounds.
+- has `top_two_positive_delta_concentration <= 0.50`.
 
 ### Rejection Criteria
 
@@ -406,6 +420,8 @@ Reject H003 if:
 - 2025 regresses beyond the frozen threshold;
 - one old season explains most of the gain;
 - the policy creates additional infeasible or non-optimal rounds;
+- fixture identity is unverified or any H003 rows are invalid;
+- changed-round or budget guardrails fail;
 - the result depends on post-hoc changes to thresholds or policy definitions.
 
 ### Decision
