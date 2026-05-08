@@ -132,8 +132,6 @@ class BacktestMetadata:
     strict_alignment_policy: str
     matchup_context_mode: str
     matchup_context_feature_columns: list[str]
-    feature_augmentation_mode: str
-    feature_augmentation_columns: list[str]
     fixture_source_directory: str | None
     fixture_manifest_paths: list[str]
     fixture_manifest_sha256: dict[str, str]
@@ -149,6 +147,8 @@ class BacktestMetadata:
     footystats_missing_join_keys_by_round: dict[str, list[dict[str, int]]]
     footystats_duplicate_join_keys_by_round: dict[str, list[dict[str, int]]]
     footystats_extra_club_rows_by_round: dict[str, list[dict[str, int]]]
+    feature_augmentation_mode: str = "none"
+    feature_augmentation_columns: list[str] = field(default_factory=list)
     runtime_profile_enabled: bool = False
     round_profiles: list[dict[str, object]] = field(default_factory=list)
     threadpool_info: list[dict[str, object]] = field(default_factory=list)
