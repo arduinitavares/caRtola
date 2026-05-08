@@ -11,14 +11,17 @@ from cartola.backtesting.h004_residual_diagnostic import (
     H004_CONTROL_FEATURE_PACK,
     H004_CONTROL_MODEL_ID,
     H004_PRIMARY_SCORE_COLUMN,
+    H004DiagnosticResult,
     H004PredictionBundle,
     H004SourceChild,
     build_h004_diagnostic_decision,
     build_h004_residual_correlations,
     build_h004_residual_quintiles,
+    build_h004_selected_residual_profile,
     build_h004_top_actual_recall,
     discover_h004_source_children,
     load_h004_prediction_bundle,
+    write_h004_diagnostic_artifacts,
 )
 
 
@@ -338,3 +341,54 @@ def test_build_h004_diagnostic_decision_passes_when_one_family_clears_three_seas
 
     assert decision["diagnostic_status"] == "passes"
     assert decision["passed_families"] == ["A"]
+
+
+def test_build_h004_selected_residual_profile_separates_all_candidates_and_selected() -> None:
+    played = pd.DataFrame(
+        {
+            "season": [2025, 2025],
+            "rodada": [5, 5],
+            "id_atleta": [1, 2],
+            "posicao": ["ata", "ata"],
+            "prediction_residual": [3.0, -2.0],
+            "predicted_points": [5.0, 4.0],
+            "actual_points": [8.0, 2.0],
+        }
+    )
+    selected_players = pd.DataFrame({"season": [2025], "rodada": [5], "id_atleta": [1]})
+
+    profile = build_h004_selected_residual_profile(played, selected_players)
+
+    all_row = profile.loc[profile["scope"].eq("all_candidates")].iloc[0]
+    selected_row = profile.loc[profile["scope"].eq("selected_players")].iloc[0]
+    assert all_row["row_count"] == 2
+    assert all_row["mean_residual"] == 0.5
+    assert selected_row["row_count"] == 1
+    assert selected_row["mean_residual"] == 3.0
+
+
+def test_write_h004_diagnostic_artifacts_creates_required_files(tmp_path: Path) -> None:
+    output_path = tmp_path / "h004"
+    result = H004DiagnosticResult(
+        output_path=output_path,
+        residual_correlations=pd.DataFrame({"season": [2025], "position": ["ata"]}),
+        residual_quintiles=pd.DataFrame({"season": [2025], "position": ["ata"]}),
+        top_actual_recall=pd.DataFrame({"season": [2025], "position": ["ata"]}),
+        selected_residual_profile=pd.DataFrame(
+            {"season": [2025], "position": ["ata"], "scope": ["selected"]}
+        ),
+        dnp_context_profile=pd.DataFrame({"season": [2025], "position": ["ata"]}),
+        decision={"diagnostic_status": "rejected", "passed_families": []},
+    )
+
+    write_h004_diagnostic_artifacts(result)
+
+    assert (output_path / "h004_residual_correlations.csv").is_file()
+    assert (output_path / "h004_residual_quintiles.csv").is_file()
+    assert (output_path / "h004_top_actual_recall.csv").is_file()
+    assert (output_path / "h004_selected_residual_profile.csv").is_file()
+    assert (output_path / "h004_dnp_context_profile.csv").is_file()
+    assert (output_path / "h004_diagnostic_decision.json").is_file()
+    html = (output_path / "h004_residual_diagnostic.html").read_text(encoding="utf-8")
+    assert "H004 Residual Diagnostic" in html
+    assert "diagnostic_status" in html

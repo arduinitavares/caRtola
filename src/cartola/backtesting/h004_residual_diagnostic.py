@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -73,6 +74,17 @@ class H004PredictionBundle:
     played: pd.DataFrame
     dnp: pd.DataFrame
     selected_players: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class H004DiagnosticResult:
+    output_path: Path
+    residual_correlations: pd.DataFrame
+    residual_quintiles: pd.DataFrame
+    top_actual_recall: pd.DataFrame
+    selected_residual_profile: pd.DataFrame
+    dnp_context_profile: pd.DataFrame
+    decision: dict[str, object]
 
 
 def discover_h004_source_children(
@@ -349,6 +361,88 @@ def build_h004_diagnostic_decision(
     }
 
 
+def build_h004_selected_residual_profile(
+    played: pd.DataFrame,
+    selected_players: pd.DataFrame,
+) -> pd.DataFrame:
+    selected_keys = selected_players[["season", "rodada", "id_atleta"]].drop_duplicates()
+    selected_played = played.merge(
+        selected_keys,
+        on=["season", "rodada", "id_atleta"],
+        how="inner",
+        validate="many_to_one",
+    )
+    profile = pd.concat(
+        [
+            _profile_frame(played, scope="all_candidates"),
+            _profile_frame(selected_played, scope="selected_players"),
+        ],
+        ignore_index=True,
+    )
+    if profile.empty:
+        return pd.DataFrame(columns=_selected_residual_profile_columns())
+    return (
+        profile.loc[:, _selected_residual_profile_columns()]
+        .sort_values(["season", "position", "scope"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+
+def build_h004_dnp_context_profile(all_candidates: pd.DataFrame) -> pd.DataFrame:
+    frame = all_candidates.copy()
+    frame["is_dnp"] = ~frame["entered_field"]
+    grouped = (
+        frame.groupby(["season", "posicao"], as_index=False)
+        .agg(
+            row_count=("id_atleta", "count"),
+            dnp_count=("is_dnp", "sum"),
+            mean_footystats_xg_diff=("footystats_xg_diff", "mean"),
+            mean_matchup_opponent_allowed_position_points_roll5=(
+                "matchup_opponent_allowed_position_points_roll5",
+                "mean",
+            ),
+        )
+        .rename(columns={"posicao": "position"})
+    )
+    if grouped.empty:
+        return pd.DataFrame(columns=_dnp_context_profile_columns())
+    grouped["dnp_rate"] = grouped["dnp_count"] / grouped["row_count"].clip(lower=1)
+    return (
+        grouped.loc[:, _dnp_context_profile_columns()]
+        .sort_values(["season", "position"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+
+def write_h004_diagnostic_artifacts(result: H004DiagnosticResult) -> None:
+    result.output_path.mkdir(parents=True, exist_ok=True)
+    result.residual_correlations.to_csv(
+        result.output_path / "h004_residual_correlations.csv",
+        index=False,
+    )
+    result.residual_quintiles.to_csv(
+        result.output_path / "h004_residual_quintiles.csv",
+        index=False,
+    )
+    result.top_actual_recall.to_csv(
+        result.output_path / "h004_top_actual_recall.csv",
+        index=False,
+    )
+    result.selected_residual_profile.to_csv(
+        result.output_path / "h004_selected_residual_profile.csv",
+        index=False,
+    )
+    result.dnp_context_profile.to_csv(
+        result.output_path / "h004_dnp_context_profile.csv",
+        index=False,
+    )
+    (result.output_path / "h004_diagnostic_decision.json").write_text(
+        json.dumps(result.decision, indent=2, sort_keys=True, default=str),
+        encoding="utf-8",
+    )
+    _write_h004_html_report(result)
+
+
 def _read_json(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -508,6 +602,95 @@ def _signal_family(*, position: str, column: str) -> str:
     return "descriptive"
 
 
+def _profile_frame(played: pd.DataFrame, *, scope: str) -> pd.DataFrame:
+    if played.empty:
+        return pd.DataFrame(columns=_selected_residual_profile_columns())
+    grouped = (
+        played.groupby(["season", "posicao"], as_index=False)
+        .agg(
+            row_count=("id_atleta", "count"),
+            mean_residual=("prediction_residual", "mean"),
+            median_residual=("prediction_residual", "median"),
+            mean_predicted_points=("predicted_points", "mean"),
+            mean_actual_points=("actual_points", "mean"),
+        )
+        .rename(columns={"posicao": "position"})
+    )
+    grouped["scope"] = scope
+    return grouped.loc[:, _selected_residual_profile_columns()]
+
+
+def _write_h004_html_report(result: H004DiagnosticResult) -> None:
+    sections = [
+        "<h1>H004 Residual Diagnostic</h1>",
+        _json_section("Decision", result.decision),
+        _table_section("Family Results", _family_results_frame(result.decision)),
+        _table_section("Residual Correlations", result.residual_correlations),
+        _table_section("Residual Quintiles", result.residual_quintiles),
+        _table_section("Top Actual Recall", result.top_actual_recall),
+        _table_section("Selected Residual Profile", result.selected_residual_profile),
+        _table_section("DNP Context Profile", result.dnp_context_profile),
+        _table_section("Source Children", _source_children_frame(result.decision)),
+    ]
+    body = "\n".join(sections)
+    html_document = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        "<title>H004 Residual Diagnostic</title>"
+        "<style>"
+        "body{font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;margin:2rem;}"
+        "table{border-collapse:collapse;margin-bottom:1.5rem;}"
+        "th,td{border:1px solid #d0d7de;padding:0.35rem 0.5rem;text-align:left;}"
+        "pre{background:#f6f8fa;padding:1rem;overflow:auto;}"
+        "</style></head><body>"
+        f"{body}</body></html>"
+    )
+    (result.output_path / "h004_residual_diagnostic.html").write_text(
+        html_document,
+        encoding="utf-8",
+    )
+
+
+def _json_section(title: str, payload: dict[str, object]) -> str:
+    serialized = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    return f"<h2>{html.escape(title)}</h2><pre>{html.escape(serialized)}</pre>"
+
+
+def _table_section(title: str, frame: pd.DataFrame) -> str:
+    return f"<h2>{html.escape(title)}</h2>{frame.to_html(index=False, escape=True)}"
+
+
+def _family_results_frame(decision: dict[str, object]) -> pd.DataFrame:
+    family_results = decision.get("family_results")
+    if not isinstance(family_results, dict):
+        return pd.DataFrame(columns=pd.Index(["family", "passed", "passed_seasons"]))
+    rows = []
+    for family, result in sorted(family_results.items()):
+        if not isinstance(result, dict):
+            continue
+        result_payload = cast("dict[str, object]", result)
+        passed_seasons = result_payload.get("passed_seasons")
+        if not isinstance(passed_seasons, list):
+            passed_seasons = []
+        rows.append(
+            {
+                "family": family,
+                "passed": bool(result_payload.get("passed", False)),
+                "passed_seasons": passed_seasons,
+            }
+        )
+    return pd.DataFrame(rows, columns=pd.Index(["family", "passed", "passed_seasons"]))
+
+
+def _source_children_frame(decision: dict[str, object]) -> pd.DataFrame:
+    source_children = decision.get("source_children")
+    if not isinstance(source_children, list):
+        return pd.DataFrame(columns=pd.Index(["season", "child_path"]))
+    rows = [row for row in source_children if isinstance(row, dict)]
+    if not rows:
+        return pd.DataFrame(columns=pd.Index(["season", "child_path"]))
+    return pd.DataFrame(rows)
+
+
 def _residual_correlation_columns() -> pd.Index:
     return pd.Index(
         [
@@ -548,5 +731,33 @@ def _top_actual_recall_columns() -> pd.Index:
             "median_predicted_rank_percentile",
             "median_context_edge",
             "passes_signal",
+        ]
+    )
+
+
+def _selected_residual_profile_columns() -> pd.Index:
+    return pd.Index(
+        [
+            "season",
+            "position",
+            "scope",
+            "row_count",
+            "mean_residual",
+            "median_residual",
+            "mean_predicted_points",
+            "mean_actual_points",
+        ]
+    )
+
+
+def _dnp_context_profile_columns() -> pd.Index:
+    return pd.Index(
+        [
+            "season",
+            "position",
+            "row_count",
+            "dnp_rate",
+            "mean_footystats_xg_diff",
+            "mean_matchup_opponent_allowed_position_points_roll5",
         ]
     )
