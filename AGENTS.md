@@ -83,10 +83,13 @@ Steps:
 ## Policy Simulation Workflow
 
 - Artifact-backed H001 opponent-overlap policy replay for a completed model-feature experiment:
-  `uv run --frozen python scripts/run_policy_simulation.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260505T211914592073Z__matrix=d95948374d75 --hypothesis-id H001 --policy-set opponent-overlap-v1 --models xgboost_depth2_slow --feature-packs ppg_xg_matchup --seasons 2021,2022,2023,2024,2025 --current-year 2026`
+  `uv run --frozen python scripts/run_policy_simulation.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --hypothesis-id H001 --policy-set opponent-overlap-v1 --models xgboost_depth2_slow --feature-packs ppg_xg_matchup --seasons 2021,2022,2023,2024,2025 --current-year 2026`
+- Artifact-backed H002 goalkeeper-conflict policy replay for a completed model-feature experiment:
+  `uv run --frozen python scripts/run_policy_simulation.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --hypothesis-id H002 --policy-set gk-conflict-v1 --models xgboost_depth2_slow --feature-packs ppg_xg_matchup --seasons 2021,2022,2023,2024,2025 --current-year 2026`
 - Policy simulation outputs are written under `data/08_reporting/policy_simulations/policy_simulation_started_at=.../` and include `policy_simulation_manifest.json`, policy summary CSVs, selected-player and round-result CSVs, `policy_comparability_report.json`, and `policy_simulation_report.html`.
 - Treat policy simulation as research-only: it replays policy variants from persisted experiment artifacts, keeps model predictions and candidate pools fixed, and gives each policy an independent moving-budget path.
-- Unverified fixture identity produces `diagnostic_only` comparability; do not treat those results as promotion evidence.
+- Exploratory fixture backtests record fixture source paths and SHA-256 hashes in `run_metadata.json`; policy simulation verifies those hashes when present.
+- Verified fixture identity produces `ok` comparability; unverified or mismatched fixture identity produces `diagnostic_only`, which is not promotion evidence.
 - Do not change live defaults from policy simulation output without a frozen validation run.
 
 ## Oracle Discovery Workflow

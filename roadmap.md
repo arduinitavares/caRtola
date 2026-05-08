@@ -169,10 +169,12 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - reports deterministic profile gaps for home share, opponent-overlap concentration, same-club concentration, favorite proxy, predicted-rank position, and top-5 predicted-rank share,
   - treats all oracle outputs as hindsight research only; oracle-derived findings must not change live defaults or promotion decisions without a frozen validation rerun.
 - Policy Simulation V1:
-  - `scripts/run_policy_simulation.py` replays H001 opponent-overlap policy variants from persisted experiment artifacts,
+  - `scripts/run_policy_simulation.py` replays frozen optimizer-policy variants from persisted experiment artifacts,
+  - supports H001 opponent-overlap policies, H002 goalkeeper-conflict policies, and H003 clean-sheet defensive-stack policies,
   - keeps model predictions and candidate pools fixed while varying only optimizer policy constraints,
   - uses independent moving-budget paths per policy variant,
   - writes policy summaries, selected players, round results, comparability metadata, invalid-row diagnostics, and an HTML report under `data/08_reporting/policy_simulations/`,
+  - verifies exploratory fixture identity against persisted source fixture file hashes when source experiments record them,
   - treats fixture-dependent policies as fail-closed unless missing fixture clubs are verified no-fixture/no-scoring candidates in the source artifact,
   - treats unverified fixture identity as `diagnostic_only`; policy simulation remains research evidence only and must not change live defaults without frozen validation.
 - Standard scoring metadata:
@@ -199,6 +201,25 @@ from 100, optimizes each target round under its current budget, then updates its
 next-round budget from the selected squad's official historical `variacao`.
 This means old fixed-budget backtest/experiment evidence is non-comparable and
 must be rerun before making promotion decisions.
+
+Policy-simulation evidence now has three frozen, fixture-verified rejections:
+
+- H001 opponent-overlap exposure: best variant `soft_overlap_penalty_low` gained
+  `+187.91` total points but regressed 2025 by `-57.38`, so it is rejected.
+- H002 goalkeeper-vs-opponent-attack exposure: best variant
+  `gk_vs_opponent_captain_soft` gained `+46.19` total points but improved only
+  `1 / 5` seasons, entirely from 2022, so it is rejected.
+- H003 clean-sheet defensive-stack exposure: best variant
+  `home_cs_pair_bonus_025` gained only `+19.70` total points, improved `2 / 5`
+  seasons, regressed 2025 by `-63.24`, changed `54.1%` of evaluated rounds, and
+  worsened the final moving-budget path by `-6.12`, so it is rejected.
+
+Interpretation: broad overlap penalties and narrow goalkeeper-conflict penalties
+are not stable enough to become optimizer policies. A simple clean-sheet stack
+bonus is also too blunt: it changes many squads but does not produce stable
+season-level value. The next policy hypothesis should use stronger pre-match
+football signal with direct attack-vs-defense mismatch evidence, preferably as
+candidate scoring/context features before adding another optimizer constraint.
 
 The first fixed-budget production-parity model/feature experiment is complete for `2023`,
 `2024`, and `2025` with `fixture_mode=none`, `start_round=5`, and

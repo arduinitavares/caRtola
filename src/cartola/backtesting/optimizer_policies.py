@@ -15,6 +15,18 @@ class OptimizerPolicy:
     policy_variant: str
     overlap_penalty: float = 0.0
     max_overlap_assets: int | None = None
+    gk_opponent_attack_penalty: float = 0.0
+    gk_opponent_attack_positions: tuple[str, ...] = ()
+    max_gk_opponent_attack_pairs: int | None = None
+    gk_opponent_captain_penalty: float = 0.0
+    gk_opponent_captain_positions: tuple[str, ...] = ()
+    clean_sheet_pair_bonus: float = 0.0
+    clean_sheet_pair_anchor_position: str = "gol"
+    clean_sheet_pair_partner_positions: tuple[str, ...] = ("lat", "zag")
+    clean_sheet_pair_min_ppg_diff: float = 0.75
+    clean_sheet_pair_min_xg_diff: float = 0.20
+    clean_sheet_pair_home_only: bool = True
+    max_clean_sheet_pair_bonuses: int | None = None
 
 
 @dataclass(frozen=True)
@@ -42,10 +54,68 @@ _OPPONENT_OVERLAP_V1 = OptimizerPolicySet(
     ),
 )
 
+_GK_CONFLICT_V1 = OptimizerPolicySet(
+    policy_set_id="gk-conflict-v1",
+    policies=(
+        NO_POLICY,
+        OptimizerPolicy(
+            policy_variant="gk_vs_selected_ata_soft_low",
+            gk_opponent_attack_penalty=0.5,
+            gk_opponent_attack_positions=("ata",),
+        ),
+        OptimizerPolicy(
+            policy_variant="gk_vs_selected_ata_soft_medium",
+            gk_opponent_attack_penalty=1.0,
+            gk_opponent_attack_positions=("ata",),
+        ),
+        OptimizerPolicy(
+            policy_variant="gk_vs_opponent_captain_soft",
+            gk_opponent_captain_penalty=2.0,
+            gk_opponent_captain_positions=("ata", "mei"),
+        ),
+        OptimizerPolicy(
+            policy_variant="gk_vs_opponent_attack_hard",
+            gk_opponent_attack_positions=("ata",),
+            max_gk_opponent_attack_pairs=0,
+        ),
+    ),
+)
+
+_CLEAN_SHEET_STACK_V1 = OptimizerPolicySet(
+    policy_set_id="clean-sheet-stack-v1",
+    policies=(
+        NO_POLICY,
+        OptimizerPolicy(
+            policy_variant="home_cs_pair_bonus_025",
+            clean_sheet_pair_bonus=0.25,
+            max_clean_sheet_pair_bonuses=1,
+        ),
+        OptimizerPolicy(
+            policy_variant="home_cs_pair_bonus_050",
+            clean_sheet_pair_bonus=0.50,
+            max_clean_sheet_pair_bonuses=1,
+        ),
+        OptimizerPolicy(
+            policy_variant="home_cs_pair_bonus_075",
+            clean_sheet_pair_bonus=0.75,
+            max_clean_sheet_pair_bonuses=1,
+        ),
+        OptimizerPolicy(
+            policy_variant="home_cs_pair_bonus_100",
+            clean_sheet_pair_bonus=1.00,
+            max_clean_sheet_pair_bonuses=1,
+        ),
+    ),
+)
+
 
 def get_policy_set(policy_set_id: str) -> OptimizerPolicySet:
     if policy_set_id == _OPPONENT_OVERLAP_V1.policy_set_id:
         return _OPPONENT_OVERLAP_V1
+    if policy_set_id == _GK_CONFLICT_V1.policy_set_id:
+        return _GK_CONFLICT_V1
+    if policy_set_id == _CLEAN_SHEET_STACK_V1.policy_set_id:
+        return _CLEAN_SHEET_STACK_V1
     raise ValueError(f"Unknown policy set: {policy_set_id}")
 
 

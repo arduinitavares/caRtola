@@ -291,6 +291,51 @@ def test_policy_replay_allows_no_policy_without_fixture_artifacts(tmp_path: Path
     _assert_no_policy_replay_matches_source(child, result, expected_rounds=(5, 6))
 
 
+def test_policy_replay_requires_clean_sheet_context_columns_for_h003(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    predictions_path = child / "player_predictions.csv"
+    predictions = pd.read_csv(predictions_path).drop(columns=["footystats_xg_diff"])
+    predictions.to_csv(predictions_path, index=False)
+    policy = get_policy_set("clean-sheet-stack-v1").policies[1]
+
+    with pytest.raises(PolicySimulationError, match="clean-sheet.*footystats_xg_diff"):
+        run_policy_replay_for_child(child_path=child, policies=(policy,))
+
+
+def test_policy_replay_rejects_conflicting_clean_sheet_context_for_club_round(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    predictions_path = child / "player_predictions.csv"
+    predictions = pd.read_csv(predictions_path)
+    club_mask = predictions["rodada"].eq(5) & predictions["id_clube"].eq(101)
+    assert int(club_mask.sum()) == 1
+    duplicate = predictions.loc[club_mask].copy()
+    duplicate["id_atleta"] = 999001
+    duplicate["footystats_ppg_diff"] = 0.95
+    predictions = pd.concat([predictions, duplicate], ignore_index=True)
+    predictions.to_csv(predictions_path, index=False)
+    policy = get_policy_set("clean-sheet-stack-v1").policies[1]
+
+    with pytest.raises(PolicySimulationError, match="Conflicting clean-sheet context"):
+        run_policy_replay_for_child(child_path=child, policies=(policy,))
+
+
+def test_policy_replay_does_not_wrap_unrelated_clean_sheet_optimizer_errors(tmp_path: Path) -> None:
+    child = _write_two_round_policy_child(tmp_path)
+    predictions_path = child / "player_predictions.csv"
+    predictions = pd.read_csv(predictions_path)
+    score_mask = predictions["rodada"].eq(5) & predictions["id_atleta"].eq(1)
+    assert int(score_mask.sum()) == 1
+    predictions["test_model_score"] = predictions["test_model_score"].astype(object)
+    predictions.loc[score_mask, "test_model_score"] = "bad-score"
+    predictions.to_csv(predictions_path, index=False)
+    policy = get_policy_set("clean-sheet-stack-v1").policies[1]
+
+    with pytest.raises(ValueError, match="test_model_score") as exc_info:
+        run_policy_replay_for_child(child_path=child, policies=(policy,))
+
+    assert not isinstance(exc_info.value, PolicySimulationError)
+
+
 def test_policy_replay_loads_fixture_source_directory_when_child_artifact_missing(tmp_path: Path) -> None:
     child = _write_two_round_policy_child(tmp_path)
     policy = get_policy_set("opponent-overlap-v1").policies[1]
@@ -324,13 +369,23 @@ def test_policy_replay_output_schemas_match_policy_contract(tmp_path: Path) -> N
     assert list(pd.DataFrame(result.selected_player_rows).columns) == list(POLICY_SELECTED_PLAYER_COLUMNS)
 
 
-@pytest.mark.parametrize("policy_index", [1, 3])
+@pytest.mark.parametrize(
+    ("policy_set_id", "policy_index"),
+    [
+        ("opponent-overlap-v1", 1),
+        ("opponent-overlap-v1", 3),
+        ("gk-conflict-v1", 1),
+        ("gk-conflict-v1", 3),
+        ("gk-conflict-v1", 4),
+    ],
+)
 def test_policy_replay_requires_fixture_file_for_fixture_dependent_policy(
     tmp_path: Path,
+    policy_set_id: str,
     policy_index: int,
 ) -> None:
     child = _write_two_round_policy_child(tmp_path)
-    policy = get_policy_set("opponent-overlap-v1").policies[policy_index]
+    policy = get_policy_set(policy_set_id).policies[policy_index]
     (child / "fixtures_for_round.csv").unlink()
 
     with pytest.raises(
@@ -340,13 +395,23 @@ def test_policy_replay_requires_fixture_file_for_fixture_dependent_policy(
         run_policy_replay_for_child(child_path=child, policies=(policy,))
 
 
-@pytest.mark.parametrize("policy_index", [1, 3])
+@pytest.mark.parametrize(
+    ("policy_set_id", "policy_index"),
+    [
+        ("opponent-overlap-v1", 1),
+        ("opponent-overlap-v1", 3),
+        ("gk-conflict-v1", 1),
+        ("gk-conflict-v1", 3),
+        ("gk-conflict-v1", 4),
+    ],
+)
 def test_policy_replay_requires_fixture_rows_for_target_round(
     tmp_path: Path,
+    policy_set_id: str,
     policy_index: int,
 ) -> None:
     child = _write_two_round_policy_child(tmp_path)
-    policy = get_policy_set("opponent-overlap-v1").policies[policy_index]
+    policy = get_policy_set(policy_set_id).policies[policy_index]
     fixtures = pd.read_csv(child / "fixtures_for_round.csv")
     fixtures["rodada"] = 4
     fixtures.to_csv(child / "fixtures_for_round.csv", index=False)
@@ -494,20 +559,113 @@ def test_policy_decision_marks_non_h001_generation_diagnostic_only() -> None:
 
 def test_policy_decision_rejects_2025_regression() -> None:
     decision = decide_policy_variant(
+        hypothesis_id="H003",
+        policy_set_id="clean-sheet-stack-v1",
         selected_seasons=(2021, 2022, 2023, 2024, 2025),
         fixture_identity_status="verified",
-        total_delta=50.0,
+        total_delta=85.0,
         improved_seasons=4,
-        season_2025_delta=-25.1,
+        season_2025_delta=-15.1,
+        season_deltas=(25.0, 25.0, 25.0, 25.1, -15.1),
         non_optimal_delta=0,
         final_budget_delta=0.0,
         min_budget_delta=0.0,
         max_drawdown_delta=0.0,
         top_two_concentration=0.25,
+        changed_rounds=18,
+        changed_round_rate=0.36,
     )
 
     assert decision.status == "rejected"
     assert "2025" in decision.reason
+
+
+def test_h003_decision_requires_practical_total_delta() -> None:
+    round_results = _h003_policy_summary_round_results(
+        season_deltas=(15.0, 15.0, 15.0, 15.0, 14.0),
+        changed_rounds=18,
+    )
+
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    policy_row = ranked_summary.loc[
+        ranked_summary["policy_variant"].eq("home_cs_pair_bonus_050")
+    ].iloc[0]
+
+    assert policy_row["total_delta"] == pytest.approx(74.0)
+    assert policy_row["decision_status"] == "rejected"
+    assert "total delta" in str(policy_row["decision_reason"])
+
+
+def test_h003_decision_reports_practical_impact_before_missing_concentration() -> None:
+    round_results = _h003_policy_summary_round_results(
+        season_deltas=(-1.0, -1.0, -1.0, -1.0, -1.0),
+        changed_rounds=18,
+    )
+
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    policy_row = ranked_summary.loc[
+        ranked_summary["policy_variant"].eq("home_cs_pair_bonus_050")
+    ].iloc[0]
+
+    assert pd.isna(policy_row["top_two_positive_delta_concentration"])
+    assert policy_row["decision_status"] == "rejected"
+    assert "total delta" in str(policy_row["decision_reason"])
+
+
+def test_h003_decision_requires_changed_round_window() -> None:
+    low_change_results = _h003_policy_summary_round_results(changed_rounds=14)
+    low_change_summary = build_policy_ranked_summary(
+        low_change_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    low_change_row = low_change_summary.loc[
+        low_change_summary["policy_variant"].eq("home_cs_pair_bonus_050")
+    ].iloc[0]
+
+    high_rate_results = _h003_policy_summary_round_results(changed_rounds=21)
+    high_rate_summary = build_policy_ranked_summary(
+        high_rate_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    high_rate_row = high_rate_summary.loc[
+        high_rate_summary["policy_variant"].eq("home_cs_pair_bonus_050")
+    ].iloc[0]
+
+    assert low_change_row["changed_rounds"] == 14
+    assert low_change_row["decision_status"] == "rejected"
+    assert "changed rounds" in str(low_change_row["decision_reason"])
+    assert high_rate_row["changed_round_rate"] == pytest.approx(0.42)
+    assert high_rate_row["decision_status"] == "rejected"
+    assert "changed round rate" in str(high_rate_row["decision_reason"])
+
+
+def test_h003_decision_accepts_candidate_when_all_gates_pass() -> None:
+    round_results = _h003_policy_summary_round_results(changed_rounds=18)
+
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    policy_row = ranked_summary.loc[
+        ranked_summary["policy_variant"].eq("home_cs_pair_bonus_050")
+    ].iloc[0]
+
+    assert policy_row["total_delta"] == pytest.approx(80.0)
+    assert policy_row["changed_rounds"] == 18
+    assert policy_row["changed_round_rate"] == pytest.approx(0.36)
+    assert policy_row["top_two_positive_delta_concentration"] <= 0.50
+    assert policy_row["decision_status"] == "candidate_policy"
 
 
 def test_policy_ranked_summary_marks_policy_ineligible_when_benchmark_season_missing() -> None:
@@ -600,6 +758,34 @@ def test_policy_ranked_summary_uses_worst_case_final_budget_delta_for_budget_gua
     assert "budget path" in str(policy_row["decision_reason"])
 
 
+def test_policy_ranked_summary_reports_changed_round_metrics() -> None:
+    round_results = _policy_summary_round_results()
+    round_results["selected_ids_changed_vs_no_policy"] = round_results[
+        "selected_ids_changed_vs_no_policy"
+    ].astype("boolean")
+    policy_mask = round_results["policy_variant"].eq("soft_overlap_penalty_low")
+    policy_indices = round_results.index[policy_mask].tolist()
+    round_results.loc[policy_mask, "selected_ids_changed_vs_no_policy"] = False
+    round_results.loc[policy_indices[:3], "selected_ids_changed_vs_no_policy"] = True
+    round_results.loc[policy_indices[3], "selected_ids_changed_vs_no_policy"] = pd.NA
+    round_results.loc[policy_indices[4], "solver_status"] = "Infeasible"
+
+    ranked_summary = build_policy_ranked_summary(
+        round_results,
+        selected_seasons=(2021, 2022, 2023, 2024, 2025),
+        fixture_identity_status="verified",
+    )
+    no_policy_row = ranked_summary.loc[ranked_summary["policy_variant"].eq("no_policy")].iloc[0]
+    policy_row = ranked_summary.loc[
+        ranked_summary["policy_variant"].eq("soft_overlap_penalty_low")
+    ].iloc[0]
+
+    assert no_policy_row["changed_rounds"] == 0
+    assert no_policy_row["changed_round_rate"] == pytest.approx(0.0)
+    assert policy_row["changed_rounds"] == 3
+    assert policy_row["changed_round_rate"] == pytest.approx(3 / 8)
+
+
 def test_policy_summary_output_schemas_are_stable() -> None:
     round_results = _policy_summary_round_results()
     selected_players = _policy_summary_selected_players()
@@ -621,6 +807,8 @@ def test_policy_summary_output_schemas_are_stable() -> None:
         "selected_seasons",
         "fixture_identity_status",
         "rounds",
+        "changed_rounds",
+        "changed_round_rate",
         "total_actual_points",
         "benchmark_total_actual_points",
         "total_delta",
@@ -682,6 +870,9 @@ def test_policy_summary_output_schemas_are_stable() -> None:
         "budget_after_round",
         "predicted_points_with_captain",
         "actual_points_with_captain",
+        "clean_sheet_pair_count",
+        "clean_sheet_pair_bonus_applied",
+        "selected_ids_changed_vs_no_policy",
     )
     assert POLICY_SELECTED_PLAYER_COLUMNS == (
         "season",
@@ -738,7 +929,12 @@ def test_policy_report_contains_required_literals_and_table_rows(tmp_path: Path)
 
     write_policy_simulation_report(
         output_dir,
-        manifest={"experiment_id": "H001-test"},
+        manifest={
+            "experiment_id": "H003-test",
+            "hypothesis_id": "H003",
+            "policy_set_id": "clean-sheet-stack-v1",
+            "selected_seasons": [2021, 2022, 2023, 2024, 2025],
+        },
         ranked_summary=ranked_summary,
         per_season_summary=per_season_summary,
         profile_summary=profile_summary,
@@ -747,7 +943,9 @@ def test_policy_report_contains_required_literals_and_table_rows(tmp_path: Path)
 
     html = (output_dir / "policy_simulation_report.html").read_text(encoding="utf-8")
     assert "Policy Simulation V1" in html
-    assert "H001" in html
+    assert "H003 generation: 2021,2022,2023,2024,2025" in html
+    assert "Policy set: clean-sheet-stack-v1" in html
+    assert "H001 generation" not in html
     assert "research evidence only" in html
     assert "diagnostic_only" in html
     assert "<table" in html
@@ -940,6 +1138,67 @@ def _policy_summary_round_results() -> pd.DataFrame:
                         "budget_after_round": budget_after_round,
                         "predicted_points_with_captain": actual_points + 1.0,
                         "actual_points_with_captain": actual_points,
+                        "clean_sheet_pair_count": 0,
+                        "clean_sheet_pair_bonus_applied": 0.0,
+                        "selected_ids_changed_vs_no_policy": policy_variant != "no_policy",
+                    }
+                )
+                current_budget = budget_after_round
+    return pd.DataFrame(rows, columns=pd.Index(POLICY_ROUND_RESULT_COLUMNS))
+
+
+def _h003_policy_summary_round_results(
+    *,
+    season_deltas: tuple[float, float, float, float, float] = (16.0, 16.0, 16.0, 16.0, 16.0),
+    changed_rounds: int,
+    policy_variant: str = "home_cs_pair_bonus_050",
+) -> pd.DataFrame:
+    seasons = (2021, 2022, 2023, 2024, 2025)
+    round_numbers = tuple(range(5, 15))
+    change_slots = [
+        (season, round_number)
+        for round_number in round_numbers
+        for season in seasons
+    ]
+    changed_slots = set(change_slots[:changed_rounds])
+    changed_counts = {
+        season: sum(1 for slot_season, _ in changed_slots if slot_season == season)
+        for season in seasons
+    }
+    rows: list[dict[str, object]] = []
+    for season, season_delta in zip(seasons, season_deltas, strict=True):
+        season_changed_rounds = changed_counts[season]
+        assert season_changed_rounds > 0 or season_delta == 0.0
+        per_changed_round_delta = season_delta / season_changed_rounds if season_changed_rounds else 0.0
+        for variant in ("no_policy", policy_variant):
+            current_budget = 100.0
+            for round_offset, round_number in enumerate(round_numbers):
+                selected_ids_changed = variant != "no_policy" and (season, round_number) in changed_slots
+                actual_points = 40.0 + round_offset
+                if selected_ids_changed:
+                    actual_points += per_changed_round_delta
+                budget_after_round = current_budget + 1.0
+                rows.append(
+                    {
+                        "season": season,
+                        "model_id": "test_model",
+                        "feature_pack": "synthetic_pack",
+                        "strategy": "test_model",
+                        "policy_variant": variant,
+                        "rodada": round_number,
+                        "solver_status": "Optimal",
+                        "formation": "4-3-3",
+                        "captain_id": 1,
+                        "budget_before_round": current_budget,
+                        "budget_used": 90.0,
+                        "budget_remaining": current_budget - 90.0,
+                        "budget_delta": 1.0,
+                        "budget_after_round": budget_after_round,
+                        "predicted_points_with_captain": actual_points + 1.0,
+                        "actual_points_with_captain": actual_points,
+                        "clean_sheet_pair_count": 1 if selected_ids_changed else 0,
+                        "clean_sheet_pair_bonus_applied": 0.5 if selected_ids_changed else 0.0,
+                        "selected_ids_changed_vs_no_policy": selected_ids_changed,
                     }
                 )
                 current_budget = budget_after_round
@@ -1083,6 +1342,9 @@ def _candidate_row(player_id: int, *, position: str, score: float, score_column:
         "variacao": 0.0,
         "baseline_score": score / 3.0,
         "price_score": 1.0,
+        "matchup_is_home": 1,
+        "footystats_ppg_diff": 0.80,
+        "footystats_xg_diff": 0.25,
         score_column: score,
     }
 

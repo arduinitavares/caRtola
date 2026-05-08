@@ -32,6 +32,52 @@ def test_opponent_overlap_v1_policy_set_is_frozen() -> None:
     assert policy_set.policies[4].max_overlap_assets == 2
 
 
+def test_gk_conflict_v1_policy_set_is_frozen() -> None:
+    policy_set = get_policy_set("gk-conflict-v1")
+
+    assert [policy.policy_variant for policy in policy_set.policies] == [
+        "no_policy",
+        "gk_vs_selected_ata_soft_low",
+        "gk_vs_selected_ata_soft_medium",
+        "gk_vs_opponent_captain_soft",
+        "gk_vs_opponent_attack_hard",
+    ]
+    assert policy_set.policies[1].gk_opponent_attack_penalty == 0.5
+    assert policy_set.policies[1].gk_opponent_attack_positions == ("ata",)
+    assert policy_set.policies[2].gk_opponent_attack_penalty == 1.0
+    assert policy_set.policies[2].gk_opponent_attack_positions == ("ata",)
+    assert policy_set.policies[3].gk_opponent_captain_penalty == 2.0
+    assert policy_set.policies[3].gk_opponent_captain_positions == ("ata", "mei")
+    assert policy_set.policies[4].max_gk_opponent_attack_pairs == 0
+    assert policy_set.policies[4].gk_opponent_attack_positions == ("ata",)
+
+
+def test_clean_sheet_stack_v1_policy_set_is_frozen() -> None:
+    policy_set = get_policy_set("clean-sheet-stack-v1")
+
+    assert [policy.policy_variant for policy in policy_set.policies] == [
+        "no_policy",
+        "home_cs_pair_bonus_025",
+        "home_cs_pair_bonus_050",
+        "home_cs_pair_bonus_075",
+        "home_cs_pair_bonus_100",
+    ]
+    assert [policy.clean_sheet_pair_bonus for policy in policy_set.policies] == [
+        0.0,
+        0.25,
+        0.50,
+        0.75,
+        1.00,
+    ]
+    for policy in policy_set.policies[1:]:
+        assert policy.clean_sheet_pair_anchor_position == "gol"
+        assert policy.clean_sheet_pair_partner_positions == ("lat", "zag")
+        assert policy.clean_sheet_pair_min_ppg_diff == 0.75
+        assert policy.clean_sheet_pair_min_xg_diff == 0.20
+        assert policy.clean_sheet_pair_home_only is True
+        assert policy.max_clean_sheet_pair_bonuses == 1
+
+
 def test_get_policy_set_rejects_unknown_policy_set_id() -> None:
     with pytest.raises(ValueError, match="Unknown policy set"):
         get_policy_set("missing-policy-set")
@@ -132,7 +178,9 @@ def test_normalize_policy_candidates_rejects_missing_critical_columns() -> None:
 
 def test_normalize_policy_candidates_returns_empty_copy_for_empty_input() -> None:
     rows = pd.DataFrame(
-        columns=["rodada", "id_atleta", "id_clube", "posicao", "preco_pre_rodada", "model_score", "apelido"]
+        columns=pd.Index(
+            ["rodada", "id_atleta", "id_clube", "posicao", "preco_pre_rodada", "model_score", "apelido"]
+        )
     )
 
     normalized = normalize_policy_candidates(rows, score_column="model_score")
@@ -204,7 +252,7 @@ def test_normalize_policy_candidates_uses_positional_richest_row_with_duplicate_
                 "apelido": "A10",
             },
         ],
-        index=[0, 0],
+        index=pd.Index([0, 0]),
     )
 
     normalized = normalize_policy_candidates(rows, score_column="model_score")

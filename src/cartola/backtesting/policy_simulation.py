@@ -29,10 +29,16 @@ from cartola.backtesting.scoring_contract import (
     SCORING_CONTRACT_VERSION,
     actual_scores_with_captain,
 )
+from cartola.backtesting.strict_fixtures import sha256_file
 
 _SOURCE_ARTIFACTS: tuple[str, ...] = ("player_predictions.csv", "round_results.csv", "selected_players.csv")
 _DIRECT_FIXTURE_ARTIFACTS: tuple[str, ...] = ("fixtures_for_round.csv", "fixtures.csv", "round_fixtures.csv")
 _FIXTURE_COLUMNS: tuple[str, ...] = ("rodada", "id_clube_home", "id_clube_away")
+_CLEAN_SHEET_CONTEXT_COLUMNS: tuple[str, ...] = (
+    "matchup_is_home",
+    "footystats_ppg_diff",
+    "footystats_xg_diff",
+)
 POLICY_INVALID_ROW_COLUMNS: tuple[str, ...] = (
     "season",
     "model_id",
@@ -84,6 +90,7 @@ _H001_SELECTED_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024, 2025)
 _POLICY_CONTEXT_COLUMNS: tuple[str, ...] = ("model_id", "feature_pack", "strategy")
 _POLICY_GROUP_COLUMNS: tuple[str, ...] = (*_POLICY_CONTEXT_COLUMNS, "policy_variant")
 _POLICY_SEASON_GROUP_COLUMNS: tuple[str, ...] = ("season", *_POLICY_GROUP_COLUMNS)
+_H003_POLICY_VARIANT_PREFIX = "home_cs_pair_bonus_"
 _RANKED_BENCHMARK_EVIDENCE_COLUMNS: tuple[str, ...] = (
     "benchmark_total_actual_points",
     "benchmark_final_budget",
@@ -114,6 +121,9 @@ POLICY_ROUND_RESULT_COLUMNS: tuple[str, ...] = (
     "budget_after_round",
     "predicted_points_with_captain",
     "actual_points_with_captain",
+    "clean_sheet_pair_count",
+    "clean_sheet_pair_bonus_applied",
+    "selected_ids_changed_vs_no_policy",
 )
 POLICY_SELECTED_PLAYER_COLUMNS: tuple[str, ...] = (
     "season",
@@ -142,6 +152,8 @@ POLICY_RANKED_SUMMARY_COLUMNS: tuple[str, ...] = (
     "selected_seasons",
     "fixture_identity_status",
     "rounds",
+    "changed_rounds",
+    "changed_round_rate",
     "total_actual_points",
     "benchmark_total_actual_points",
     "total_delta",
@@ -269,6 +281,22 @@ class _PolicySimulationChildSpec:
     feature_pack: str
 
 
+@dataclass(frozen=True)
+class _FixtureIdentityReport:
+    status: str
+    source_fixture_sha256: dict[str, dict[str, str]]
+    computed_fixture_sha256: dict[str, dict[str, str]]
+    errors: list[str]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "source_fixture_sha256": self.source_fixture_sha256,
+            "computed_fixture_sha256": self.computed_fixture_sha256,
+            "errors": self.errors,
+        }
+
+
 def load_policy_source_context(child_path: Path) -> PolicySourceContext:
     resolved_child_path = Path(child_path)
     metadata = _read_metadata(resolved_child_path)
@@ -343,6 +371,12 @@ def run_policy_replay_for_child(*, child_path: Path, policies: tuple[OptimizerPo
             budget_before_round = float(current_budget)
             candidates = _round_candidates(player_predictions, context=context, round_number=round_number)
             normalized_candidates = normalize_policy_candidates(candidates, score_column=context.score_column)
+            if _policy_requires_clean_sheet_context(policy):
+                _validate_clean_sheet_context_columns(
+                    normalized_candidates,
+                    policy_variant=policy.policy_variant,
+                    round_number=round_number,
+                )
             fixtures_for_round = _fixtures_for_policy_round(
                 context=context,
                 candidates=normalized_candidates,
@@ -356,14 +390,19 @@ def run_policy_replay_for_child(*, child_path: Path, policies: tuple[OptimizerPo
                 fixture_mode="none",
                 matchup_context_mode="none",
             )
-            result = optimize_squad(
-                normalized_candidates,
-                score_column=context.score_column,
-                config=replay_config,
-                budget=budget_before_round,
-                policy=policy,
-                fixtures_for_round=fixtures_for_round,
-            )
+            try:
+                result = optimize_squad(
+                    normalized_candidates,
+                    score_column=context.score_column,
+                    config=replay_config,
+                    budget=budget_before_round,
+                    policy=policy,
+                    fixtures_for_round=fixtures_for_round,
+                )
+            except ValueError as exc:
+                if _policy_requires_clean_sheet_context(policy) and _is_clean_sheet_context_error(exc):
+                    raise PolicySimulationError(str(exc)) from exc
+                raise
 
             if result.status != "Optimal" or result.selected.empty:
                 budget_used = 0.0
@@ -419,6 +458,8 @@ def run_policy_replay_for_child(*, child_path: Path, policies: tuple[OptimizerPo
                     budget_after_round=budget_after_round,
                     predicted_points_with_captain=predicted_points_with_captain,
                     actual_points_with_captain=actual_points_with_captain,
+                    clean_sheet_pair_count=result.clean_sheet_pair_count,
+                    clean_sheet_pair_bonus_applied=result.clean_sheet_pair_bonus_applied,
                 )
             )
             current_budget = budget_after_round
@@ -487,16 +528,21 @@ def reproduce_no_policy_round(child_path: Path, round_number: int) -> NoPolicyRe
 
 def decide_policy_variant(
     *,
+    hypothesis_id: str = "H001",
+    policy_set_id: str = "opponent-overlap-v1",
     selected_seasons: tuple[int, ...],
     fixture_identity_status: str,
     total_delta: float,
     improved_seasons: int,
     season_2025_delta: float | None,
+    season_deltas: tuple[float, ...] = (),
     non_optimal_delta: int,
     final_budget_delta: float,
     min_budget_delta: float,
     max_drawdown_delta: float,
     top_two_concentration: float | None,
+    changed_rounds: int = 0,
+    changed_round_rate: float = 0.0,
 ) -> PolicyDecision:
     if selected_seasons != _H001_SELECTED_SEASONS:
         return PolicyDecision(
@@ -513,6 +559,39 @@ def decide_policy_variant(
             status="ineligible",
             reason="policy introduced non-optimal solver rounds versus no_policy.",
         )
+    if hypothesis_id == "H003" or policy_set_id == "clean-sheet-stack-v1":
+        if final_budget_delta < -5.0 or min_budget_delta < -5.0 or max_drawdown_delta > 5.0:
+            return PolicyDecision(status="rejected", reason="budget path delta fails the guardrail.")
+        if total_delta < 75.0:
+            return PolicyDecision(
+                status="rejected",
+                reason="total delta fails the H003 practical impact guardrail.",
+            )
+        if improved_seasons < 3:
+            return PolicyDecision(status="rejected", reason="policy improved fewer than three seasons.")
+        if not season_deltas or not np.isfinite(np.array(season_deltas, dtype=float)).all():
+            return PolicyDecision(status="rejected", reason="season delta evidence is missing.")
+        if float(np.median(np.array(season_deltas, dtype=float))) <= 0.0:
+            return PolicyDecision(status="rejected", reason="median season delta is not positive.")
+        if season_2025_delta is None or season_2025_delta < -15.0:
+            return PolicyDecision(status="rejected", reason="2025 delta fails the regression guardrail.")
+        if any(delta < -25.0 for delta in season_deltas):
+            return PolicyDecision(status="rejected", reason="a season delta fails the regression guardrail.")
+        if changed_rounds < 15:
+            return PolicyDecision(status="rejected", reason="changed rounds are below the H003 guardrail.")
+        if changed_round_rate > 0.40:
+            return PolicyDecision(status="rejected", reason="changed round rate is above the H003 guardrail.")
+        if top_two_concentration is None or not np.isfinite(top_two_concentration):
+            return PolicyDecision(
+                status="rejected",
+                reason="top two rounds concentration evidence is missing.",
+            )
+        if top_two_concentration > 0.50:
+            return PolicyDecision(
+                status="rejected",
+                reason="top two rounds concentration is above the guardrail.",
+            )
+        return PolicyDecision(status="candidate_policy", reason="policy clears H003 evidence guardrails.")
     if total_delta <= 0:
         return PolicyDecision(status="rejected", reason="total delta versus no_policy is not positive.")
     if improved_seasons < 3:
@@ -544,6 +623,13 @@ def build_policy_ranked_summary(
     selected_seasons_label = ",".join(str(season) for season in selected_seasons)
     for group_key, group in per_season_summary.groupby(list(_POLICY_GROUP_COLUMNS), sort=True):
         model_id, feature_pack, strategy, policy_variant = cast(tuple[object, object, object, object], group_key)
+        changed_rounds, changed_round_rate = _changed_round_metrics(
+            round_results,
+            model_id=str(model_id),
+            feature_pack=str(feature_pack),
+            strategy=str(strategy),
+            policy_variant=str(policy_variant),
+        )
         missing_selected_seasons = _missing_selected_policy_seasons(group, selected_seasons)
         benchmark_evidence_complete = not missing_selected_seasons and _has_valid_ranked_benchmark_evidence(group)
         improved_seasons = int(pd.to_numeric(group["total_delta"], errors="coerce").gt(0.0).sum())
@@ -558,6 +644,7 @@ def build_policy_ranked_summary(
         max_drawdown_delta: object = float("nan")
         non_optimal_delta: object = float("nan")
         benchmark_non_optimal_rounds: object = float("nan")
+        season_deltas: tuple[float, ...] = ()
         top_two_concentration = None
         season_2025_delta = _season_delta(group, season=2025) if benchmark_evidence_complete else None
         if benchmark_evidence_complete:
@@ -565,6 +652,7 @@ def build_policy_ranked_summary(
                 _worst_final_budget_values(group)
             )
             total_delta_float = _finite_number_or_zero(group["total_delta"].sum())
+            season_deltas = _season_deltas(group)
             non_optimal_delta_int = int(_finite_number_or_zero(group["non_optimal_delta"].sum()))
             min_budget_delta_float = _finite_number_or_zero(group["min_budget_delta"].min())
             max_drawdown_delta_float = _finite_number_or_zero(group["max_drawdown_delta"].max())
@@ -588,17 +676,23 @@ def build_policy_ranked_summary(
                 strategy=str(strategy),
                 policy_variant=str(policy_variant),
             )
+            hypothesis_id, policy_set_id = _decision_policy_ids(policy_variant=str(policy_variant))
             decision = decide_policy_variant(
+                hypothesis_id=hypothesis_id,
+                policy_set_id=policy_set_id,
                 selected_seasons=selected_seasons,
                 fixture_identity_status=fixture_identity_status,
                 total_delta=total_delta_float,
                 improved_seasons=improved_seasons,
                 season_2025_delta=season_2025_delta,
+                season_deltas=season_deltas,
                 non_optimal_delta=non_optimal_delta_int,
                 final_budget_delta=final_budget_delta_float,
                 min_budget_delta=min_budget_delta_float,
                 max_drawdown_delta=max_drawdown_delta_float,
                 top_two_concentration=top_two_concentration,
+                changed_rounds=changed_rounds,
+                changed_round_rate=changed_round_rate,
             )
         elif missing_selected_seasons:
             decision = PolicyDecision(
@@ -623,6 +717,8 @@ def build_policy_ranked_summary(
                 "selected_seasons": selected_seasons_label,
                 "fixture_identity_status": fixture_identity_status,
                 "rounds": int(group["rounds"].sum()),
+                "changed_rounds": changed_rounds,
+                "changed_round_rate": changed_round_rate,
                 "total_actual_points": _finite_number_or_zero(group["total_actual_points"].sum()),
                 "benchmark_total_actual_points": benchmark_total_actual_points,
                 "total_delta": total_delta,
@@ -779,7 +875,7 @@ def write_policy_simulation_report(
     )
     sections = [
         "<h1>Policy Simulation V1</h1>",
-        "<p>H001 generation: 2021-2025. This report is research evidence only.</p>",
+        _policy_generation_note(manifest),
         "<p>Decision status vocabulary includes diagnostic_only.</p>",
         _json_section("Manifest", manifest),
         _json_section("Comparability Report", comparability_report),
@@ -799,6 +895,21 @@ def write_policy_simulation_report(
     )
 
 
+def _policy_generation_note(manifest: dict[str, object]) -> str:
+    hypothesis_id = html.escape(str(manifest.get("hypothesis_id", "unknown")))
+    policy_set_id = html.escape(str(manifest.get("policy_set_id", "unknown")))
+    selected_seasons_raw = manifest.get("selected_seasons", [])
+    if isinstance(selected_seasons_raw, list):
+        selected_seasons = ",".join(str(season) for season in selected_seasons_raw)
+    else:
+        selected_seasons = str(selected_seasons_raw)
+    selected_seasons = html.escape(selected_seasons or "unknown")
+    return (
+        f"<p>{hypothesis_id} generation: {selected_seasons}. "
+        f"Policy set: {policy_set_id}. This report is research evidence only.</p>"
+    )
+
+
 def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicySimulationRunResult:
     selected_seasons = _parse_season_csv(str(args.seasons))
     selected_models = _parse_required_csv(str(args.models), field_name="models")
@@ -813,7 +924,8 @@ def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicyS
     policies = _policies_with_no_policy(policy_set.policies)
     simulation_id = _timestamp_id()
     output_path = Path(args.output_root) / f"policy_simulation_started_at={simulation_id}"
-    fixture_identity_status = "unverified"
+    fixture_identity = _fixture_identity_report(child_specs)
+    fixture_identity_status = fixture_identity.status
     source_candidate_signature_status = "artifact_backed_unverified"
 
     console.print(
@@ -826,6 +938,7 @@ def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicyS
         console=console,
         allow_incomplete_report=bool(getattr(args, "allow_incomplete_report", False)),
     )
+    round_rows = _annotate_selected_id_changes(round_rows, selected_player_rows)
     if invalid_rows and not bool(getattr(args, "allow_incomplete_report", False)):
         raise PolicySimulationError(
             "Policy simulation produced invalid rows; rerun with --allow-incomplete-report to write diagnostics."
@@ -851,6 +964,7 @@ def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicyS
         child_specs=child_specs,
         policy_variants=tuple(policy.policy_variant for policy in policies),
         fixture_identity_status=fixture_identity_status,
+        fixture_identity=fixture_identity,
         source_candidate_signature_status=source_candidate_signature_status,
         invalid_row_count=len(invalid_rows),
     )
@@ -861,6 +975,7 @@ def run_policy_simulation(args: argparse.Namespace, console: Console) -> PolicyS
         selected_feature_packs=selected_feature_packs,
         child_count=len(child_specs),
         fixture_identity_status=fixture_identity_status,
+        fixture_identity=fixture_identity,
         source_candidate_signature_status=source_candidate_signature_status,
     )
     _write_policy_simulation_artifacts(
@@ -946,6 +1061,11 @@ def _replay_policy_child(
     try:
         result = run_policy_replay_for_child(child_path=spec.child_path, policies=policies)
         _verify_no_policy_replay_coverage(spec.child_path, result)
+        result = PolicyReplayResult(
+            round_rows=_annotate_selected_id_changes(result.round_rows, result.selected_player_rows),
+            selected_player_rows=result.selected_player_rows,
+            invalid_rows=result.invalid_rows,
+        )
     except _INCOMPLETE_REPLAY_ERRORS as exc:
         if not allow_incomplete_report:
             raise
@@ -998,6 +1118,91 @@ def _selected_policy_child_specs(
     if not specs:
         raise PolicySimulationError("No policy simulation child runs were selected.")
     return tuple(specs)
+
+
+def _fixture_identity_report(child_specs: tuple[_PolicySimulationChildSpec, ...]) -> _FixtureIdentityReport:
+    source_by_child: dict[str, dict[str, str]] = {}
+    computed_by_child: dict[str, dict[str, str]] = {}
+    errors: list[str] = []
+    missing_signature_children: list[str] = []
+
+    for spec in child_specs:
+        child_id = _policy_child_id(spec)
+        metadata = _read_metadata(spec.child_path)
+        source_hashes = _metadata_string_mapping(metadata, "fixture_source_sha256")
+        if not source_hashes:
+            source_hashes = _metadata_string_mapping(metadata, "fixture_manifest_sha256")
+        source_by_child[child_id] = source_hashes
+        if not source_hashes:
+            missing_signature_children.append(child_id)
+            computed_by_child[child_id] = {}
+            continue
+
+        computed_hashes: dict[str, str] = {}
+        for stored_path, expected_sha in source_hashes.items():
+            resolved_path = _metadata_file_path(
+                stored_path,
+                metadata=metadata,
+                child_path=spec.child_path,
+            )
+            if not resolved_path.exists():
+                errors.append(f"{child_id}: fixture identity file not found: {stored_path}")
+                continue
+            actual_sha = sha256_file(resolved_path)
+            computed_hashes[stored_path] = actual_sha
+            if actual_sha != expected_sha:
+                errors.append(f"{child_id}: fixture identity hash mismatch: {stored_path}")
+        computed_by_child[child_id] = computed_hashes
+
+    if errors:
+        status = "mismatch"
+    elif missing_signature_children:
+        status = "unverified"
+        errors.extend(f"{child_id}: missing fixture source signatures" for child_id in missing_signature_children)
+    else:
+        status = "verified"
+
+    return _FixtureIdentityReport(
+        status=status,
+        source_fixture_sha256=source_by_child,
+        computed_fixture_sha256=computed_by_child,
+        errors=errors,
+    )
+
+
+def _metadata_string_mapping(metadata: dict[str, object], key: str) -> dict[str, str]:
+    value = metadata.get(key)
+    if not isinstance(value, dict):
+        return {}
+    return {str(item_key): str(item_value) for item_key, item_value in value.items()}
+
+
+def _metadata_file_path(
+    value: str,
+    *,
+    metadata: dict[str, object],
+    child_path: Path,
+) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+
+    fixture_source_directory = _metadata_directory(metadata, "fixture_source_directory", child_path=child_path)
+    if fixture_source_directory is not None:
+        source_candidate = fixture_source_directory / path.name
+        if source_candidate.exists():
+            return source_candidate
+
+    relative_bases = (Path.cwd(), child_path, *child_path.parents)
+    for base in relative_bases:
+        candidate = base / path
+        if candidate.exists():
+            return candidate
+    return path
+
+
+def _policy_child_id(spec: _PolicySimulationChildSpec) -> str:
+    return f"season={spec.season}/model={spec.model_id}/feature_pack={spec.feature_pack}"
 
 
 def _parse_season_csv(value: str) -> tuple[int, ...]:
@@ -1065,6 +1270,46 @@ def _verify_no_policy_replay_coverage(child_path: Path, result: PolicyReplayResu
         )
 
 
+def _annotate_selected_id_changes(
+    round_rows: list[dict[str, object]],
+    selected_player_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not round_rows:
+        return round_rows
+    if not selected_player_rows:
+        annotated: list[dict[str, object]] = []
+        for row in round_rows:
+            changed = False if str(row["policy_variant"]) == NO_POLICY.policy_variant else pd.NA
+            annotated.append({**row, "selected_ids_changed_vs_no_policy": changed})
+        return annotated
+
+    selected = pd.DataFrame(selected_player_rows)
+    key_columns = ["season", "model_id", "feature_pack", "strategy", "rodada"]
+    selected_sets: dict[tuple[object, ...], set[int]] = {}
+    for key, group in selected.groupby([*key_columns, "policy_variant"], sort=False):
+        season, model_id, feature_pack, strategy, rodada, policy_variant = cast(
+            tuple[object, object, object, object, object, object],
+            key,
+        )
+        selected_sets[(season, model_id, feature_pack, strategy, rodada, policy_variant)] = set(
+            pd.to_numeric(group["id_atleta"], errors="coerce").dropna().astype(int).tolist()
+        )
+
+    annotated_rows: list[dict[str, object]] = []
+    for row in round_rows:
+        policy_variant = str(row["policy_variant"])
+        if policy_variant == NO_POLICY.policy_variant:
+            changed: object = False
+        else:
+            benchmark_key = tuple(row[column] for column in key_columns) + (NO_POLICY.policy_variant,)
+            policy_key = tuple(row[column] for column in key_columns) + (policy_variant,)
+            benchmark_ids = selected_sets.get(benchmark_key)
+            policy_ids = selected_sets.get(policy_key)
+            changed = pd.NA if benchmark_ids is None or policy_ids is None else policy_ids != benchmark_ids
+        annotated_rows.append({**row, "selected_ids_changed_vs_no_policy": changed})
+    return annotated_rows
+
+
 def _policy_simulation_manifest(
     *,
     args: argparse.Namespace,
@@ -1076,6 +1321,7 @@ def _policy_simulation_manifest(
     child_specs: tuple[_PolicySimulationChildSpec, ...],
     policy_variants: tuple[str, ...],
     fixture_identity_status: str,
+    fixture_identity: _FixtureIdentityReport,
     source_candidate_signature_status: str,
     invalid_row_count: int,
 ) -> dict[str, object]:
@@ -1093,6 +1339,7 @@ def _policy_simulation_manifest(
         "child_count": len(child_specs),
         "children": [_child_manifest_row(spec) for spec in child_specs],
         "fixture_identity_status": fixture_identity_status,
+        "fixture_identity": fixture_identity.as_dict(),
         "budget_policy": "moving",
         "source_candidate_signature_status": source_candidate_signature_status,
         "invalid_row_count": invalid_row_count,
@@ -1117,11 +1364,18 @@ def _policy_comparability_report(
     selected_feature_packs: tuple[str, ...],
     child_count: int,
     fixture_identity_status: str,
+    fixture_identity: _FixtureIdentityReport,
     source_candidate_signature_status: str,
 ) -> dict[str, object]:
+    if fixture_identity_status == "verified":
+        status = "ok"
+        reason = "fixture identity is verified for policy simulation."
+    else:
+        status = "diagnostic_only"
+        reason = f"fixture identity is {fixture_identity_status} for policy simulation."
     return {
-        "status": "diagnostic_only",
-        "reason": "fixture identity is unverified for policy simulation.",
+        "status": status,
+        "reason": reason,
         "hypothesis_id": str(args.hypothesis_id),
         "policy_set_id": str(args.policy_set),
         "experiment_path": str(Path(args.experiment_path)),
@@ -1130,6 +1384,7 @@ def _policy_comparability_report(
         "selected_feature_packs": list(selected_feature_packs),
         "child_count": child_count,
         "fixture_identity_status": fixture_identity_status,
+        "fixture_identity": fixture_identity.as_dict(),
         "budget_policy": "moving",
         "source_candidate_signature_status": source_candidate_signature_status,
     }
@@ -1300,6 +1555,17 @@ def _season_delta(group: pd.DataFrame, *, season: int) -> float | None:
     return float(value)
 
 
+def _season_deltas(group: pd.DataFrame) -> tuple[float, ...]:
+    ordered = group.sort_values("season", kind="mergesort")
+    return tuple(float(value) for value in pd.to_numeric(ordered["total_delta"], errors="coerce").tolist())
+
+
+def _decision_policy_ids(*, policy_variant: str) -> tuple[str, str]:
+    if policy_variant.startswith(_H003_POLICY_VARIANT_PREFIX):
+        return "H003", "clean-sheet-stack-v1"
+    return "H001", "opponent-overlap-v1"
+
+
 def _top_two_positive_delta_concentration(
     round_results: pd.DataFrame,
     *,
@@ -1344,6 +1610,35 @@ def _top_two_positive_delta_concentration(
         return None
     positive_total = sum(positive_deltas)
     return float(sum(positive_deltas[:2]) / positive_total)
+
+
+def _changed_round_metrics(
+    round_results: pd.DataFrame,
+    *,
+    model_id: str,
+    feature_pack: str,
+    strategy: str,
+    policy_variant: str,
+) -> tuple[int, float]:
+    if policy_variant == NO_POLICY.policy_variant:
+        return 0, 0.0
+    context_mask = (
+        round_results["model_id"].astype(str).eq(model_id)
+        & round_results["feature_pack"].astype(str).eq(feature_pack)
+        & round_results["strategy"].astype(str).eq(strategy)
+        & round_results["policy_variant"].astype(str).eq(policy_variant)
+        & round_results["solver_status"].astype(str).eq("Optimal")
+    )
+    policy_rounds = round_results.loc[context_mask]
+    if policy_rounds.empty:
+        return 0, 0.0
+    changed = policy_rounds["selected_ids_changed_vs_no_policy"].astype("boolean")
+    comparable = changed.notna()
+    comparable_count = int(comparable.sum())
+    if comparable_count == 0:
+        return 0, 0.0
+    changed_count = int(changed.loc[comparable].sum())
+    return changed_count, float(changed_count / comparable_count)
 
 
 def _finite_number_or_zero(value: object) -> float:
@@ -1596,7 +1891,41 @@ def _candidate_rows_are_verified_no_fixture_dnp(candidate_rows: pd.DataFrame) ->
 
 
 def _policy_requires_fixture_coverage(policy: OptimizerPolicy) -> bool:
-    return policy.overlap_penalty > 0.0 or policy.max_overlap_assets is not None
+    return (
+        policy.overlap_penalty > 0.0
+        or policy.max_overlap_assets is not None
+        or policy.gk_opponent_attack_penalty > 0.0
+        or policy.max_gk_opponent_attack_pairs is not None
+        or policy.gk_opponent_captain_penalty > 0.0
+    )
+
+
+def _policy_requires_clean_sheet_context(policy: OptimizerPolicy) -> bool:
+    return policy.clean_sheet_pair_bonus > 0.0 or policy.max_clean_sheet_pair_bonuses is not None
+
+
+def _is_clean_sheet_context_error(error: ValueError) -> bool:
+    message = str(error)
+    return (
+        "clean-sheet" in message
+        or "matchup_is_home" in message
+        or "footystats_ppg_diff" in message
+        or "footystats_xg_diff" in message
+    )
+
+
+def _validate_clean_sheet_context_columns(
+    candidates: pd.DataFrame,
+    *,
+    policy_variant: str,
+    round_number: int,
+) -> None:
+    missing = [column for column in _CLEAN_SHEET_CONTEXT_COLUMNS if column not in candidates.columns]
+    if missing:
+        raise PolicySimulationError(
+            "Missing clean-sheet policy candidate columns for "
+            f"policy_variant={policy_variant!r} round={round_number}: {', '.join(missing)}"
+        )
 
 
 def _fixture_coverage_error_message(*, policy_variant: str, round_number: int, detail: str) -> str:
@@ -1759,6 +2088,9 @@ def _policy_replay_round_row(
     budget_after_round: float,
     predicted_points_with_captain: float,
     actual_points_with_captain: float,
+    clean_sheet_pair_count: int,
+    clean_sheet_pair_bonus_applied: float,
+    selected_ids_changed_vs_no_policy: bool | None = None,
 ) -> dict[str, object]:
     return {
         "season": context.season,
@@ -1777,6 +2109,9 @@ def _policy_replay_round_row(
         "budget_after_round": float(budget_after_round),
         "predicted_points_with_captain": float(predicted_points_with_captain),
         "actual_points_with_captain": float(actual_points_with_captain),
+        "clean_sheet_pair_count": int(clean_sheet_pair_count),
+        "clean_sheet_pair_bonus_applied": float(clean_sheet_pair_bonus_applied),
+        "selected_ids_changed_vs_no_policy": selected_ids_changed_vs_no_policy,
     }
 
 

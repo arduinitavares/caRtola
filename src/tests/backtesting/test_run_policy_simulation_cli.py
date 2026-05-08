@@ -12,6 +12,7 @@ from cartola.backtesting.optimizer import optimize_squad
 from cartola.backtesting.optimizer_policies import NO_POLICY
 from cartola.backtesting.policy_simulation import PolicySimulationError
 from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION, actual_scores_with_captain
+from cartola.backtesting.strict_fixtures import sha256_file
 
 SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "run_policy_simulation.py"
 SPEC = importlib.util.spec_from_file_location("run_policy_simulation", SCRIPT_PATH)
@@ -50,6 +51,30 @@ def test_parse_args_builds_policy_simulation_defaults() -> None:
     assert args.current_year == 2026
     assert args.output_root == Path("data/08_reporting/policy_simulations")
     assert args.allow_incomplete_report is False
+
+
+def test_parse_args_accepts_clean_sheet_stack_policy_set() -> None:
+    args = parse_args(
+        [
+            "--experiment-path",
+            "data/08_reporting/experiments/model_feature/example",
+            "--hypothesis-id",
+            "H003",
+            "--policy-set",
+            "clean-sheet-stack-v1",
+            "--models",
+            "xgboost_depth2_slow",
+            "--feature-packs",
+            "ppg_xg_matchup",
+            "--seasons",
+            "2021,2022,2023,2024,2025",
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    assert args.hypothesis_id == "H003"
+    assert args.policy_set == "clean-sheet-stack-v1"
 
 
 def test_main_writes_artifacts_and_progress_for_synthetic_experiment(
@@ -132,6 +157,113 @@ def test_main_writes_artifacts_and_progress_for_synthetic_experiment(
     ranked_summary = pd.read_csv(output_path / "policy_ranked_summary.csv")
     assert "diagnostic_only" in set(ranked_summary["decision_status"].astype(str))
     assert "no_policy" in set(pd.read_csv(output_path / "policy_round_results.csv")["policy_variant"].astype(str))
+
+
+def test_main_writes_clean_sheet_stack_variant_for_synthetic_experiment(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "policy_simulations"
+    _write_policy_child(
+        experiment_path
+        / "runs"
+        / "season=2025"
+        / "model=test_model"
+        / "feature_pack=synthetic_pack"
+    )
+
+    exit_code = main(
+        [
+            "--experiment-path",
+            str(experiment_path),
+            "--hypothesis-id",
+            "H003",
+            "--policy-set",
+            "clean-sheet-stack-v1",
+            "--models",
+            "test_model",
+            "--feature-packs",
+            "synthetic_pack",
+            "--seasons",
+            "2025",
+            "--current-year",
+            "2026",
+            "--output-root",
+            str(output_root),
+        ]
+    )
+
+    assert exit_code == 0
+    capsys.readouterr()
+    output_path = next(output_root.glob("policy_simulation_started_at=*"))
+    round_results = pd.read_csv(output_path / "policy_round_results.csv")
+    assert "home_cs_pair_bonus_025" in set(round_results["policy_variant"].astype(str))
+
+
+def test_main_marks_fixture_identity_verified_when_source_hashes_match(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "policy_simulations"
+    child = (
+        experiment_path
+        / "runs"
+        / "season=2025"
+        / "model=test_model"
+        / "feature_pack=synthetic_pack"
+    )
+    _write_policy_child(child)
+    fixture_source_dir = tmp_path / "data" / "01_raw" / "fixtures" / "2025"
+    fixture_source_dir.mkdir(parents=True)
+    source_fixture_path = fixture_source_dir / "partidas-5.csv"
+    pd.read_csv(child / "fixtures_for_round.csv").to_csv(source_fixture_path, index=False)
+    metadata = json.loads((child / "run_metadata.json").read_text(encoding="utf-8"))
+    source_fixture_key = "data/01_raw/fixtures/2025/partidas-5.csv"
+    metadata["fixture_source_directory"] = str(fixture_source_dir)
+    metadata["fixture_source_paths"] = [source_fixture_key]
+    metadata["fixture_source_sha256"] = {
+        source_fixture_key: sha256_file(source_fixture_path),
+    }
+    (child / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "--experiment-path",
+            str(experiment_path),
+            "--hypothesis-id",
+            "H001-smoke",
+            "--policy-set",
+            "opponent-overlap-v1",
+            "--models",
+            "test_model",
+            "--feature-packs",
+            "synthetic_pack",
+            "--seasons",
+            "2025",
+            "--current-year",
+            "2026",
+            "--output-root",
+            str(output_root),
+        ]
+    )
+
+    assert exit_code == 0
+    capsys.readouterr()
+    output_path = next(output_root.glob("policy_simulation_started_at=*"))
+    manifest = json.loads((output_path / "policy_simulation_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["fixture_identity_status"] == "verified"
+    assert manifest["fixture_identity"]["status"] == "verified"
+    assert manifest["fixture_identity"]["source_fixture_sha256"] == {
+        "season=2025/model=test_model/feature_pack=synthetic_pack": {
+            source_fixture_key: sha256_file(source_fixture_path),
+        },
+    }
+
+    comparability_report = json.loads((output_path / "policy_comparability_report.json").read_text(encoding="utf-8"))
+    assert comparability_report["status"] == "ok"
+    assert comparability_report["fixture_identity_status"] == "verified"
 
 
 def test_main_allows_incomplete_report_and_writes_invalid_rows(tmp_path: Path) -> None:
@@ -378,6 +510,9 @@ def _candidate_row(player_id: int, *, position: str, score: float, score_column:
         "variacao": 0.0,
         "baseline_score": score / 3.0,
         "price_score": 1.0,
+        "matchup_is_home": 1,
+        "footystats_ppg_diff": 1.0,
+        "footystats_xg_diff": 0.3,
         score_column: score,
     }
 

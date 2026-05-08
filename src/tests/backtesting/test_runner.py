@@ -21,7 +21,7 @@ from cartola.backtesting.features import (
 from cartola.backtesting.footystats_features import FootyStatsJoinDiagnostics, FootyStatsPPGLoadResult
 from cartola.backtesting.runner import run_backtest
 from cartola.backtesting.scoring_contract import contract_fields
-from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult
+from cartola.backtesting.strict_fixtures import StrictFixturesLoadResult, sha256_file
 
 
 def test_effective_model_n_jobs() -> None:
@@ -765,6 +765,29 @@ def test_run_backtest_writes_metadata_for_no_fixture_mode(tmp_path: Path) -> Non
     assert metadata["wall_clock_seconds"] >= 0.0
     for field, expected_value in contract_fields().items():
         assert metadata[field] == expected_value
+
+
+def test_run_backtest_exploratory_mode_records_fixture_source_hashes(tmp_path: Path) -> None:
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    _write_tiny_fixture_files(tmp_path, range(1, 6))
+    config = BacktestConfig(project_root=tmp_path, start_round=5, budget=100, fixture_mode="exploratory")
+
+    result = run_backtest(config, season_df=season_df)
+
+    expected_paths = [
+        f"data/01_raw/fixtures/2025/partidas-{round_number}.csv"
+        for round_number in range(1, 6)
+    ]
+    expected_hashes = {
+        path: sha256_file(tmp_path / path)
+        for path in expected_paths
+    }
+    assert result.metadata.fixture_source_paths == expected_paths
+    assert result.metadata.fixture_source_sha256 == expected_hashes
+
+    metadata = json.loads((tmp_path / "data/08_reporting/backtests/2025/run_metadata.json").read_text())
+    assert metadata["fixture_source_paths"] == expected_paths
+    assert metadata["fixture_source_sha256"] == expected_hashes
 
 
 def test_run_backtest_records_parallel_metadata_defaults(tmp_path: Path) -> None:
