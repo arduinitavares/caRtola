@@ -443,6 +443,53 @@ def write_h004_diagnostic_artifacts(result: H004DiagnosticResult) -> None:
     _write_h004_html_report(result)
 
 
+def build_h004_residual_diagnostic(
+    *,
+    experiment_path: Path,
+    output_path: Path,
+    seasons: tuple[int, ...],
+    model_id: str,
+    feature_pack: str,
+) -> H004DiagnosticResult:
+    children = discover_h004_source_children(
+        experiment_path=experiment_path,
+        seasons=seasons,
+        model_id=model_id,
+        feature_pack=feature_pack,
+    )
+    bundles = tuple(load_h004_prediction_bundle(child) for child in children)
+    played = pd.concat([bundle.played for bundle in bundles], ignore_index=True)
+    all_candidates = pd.concat([bundle.all_candidates for bundle in bundles], ignore_index=True)
+    selected_players = pd.concat(
+        [bundle.selected_players for bundle in bundles],
+        ignore_index=True,
+    )
+
+    correlations = build_h004_residual_correlations(played)
+    quintiles = build_h004_residual_quintiles(played)
+    recall = build_h004_top_actual_recall(played)
+    selected_profile = build_h004_selected_residual_profile(played, selected_players)
+    dnp_profile = build_h004_dnp_context_profile(all_candidates)
+    decision = build_h004_diagnostic_decision(
+        correlations=correlations,
+        top_actual_recall=recall,
+        source_experiment_path=experiment_path,
+        children=children,
+        missing_or_invalid_columns=(),
+    )
+    result = H004DiagnosticResult(
+        output_path=output_path,
+        residual_correlations=correlations,
+        residual_quintiles=quintiles,
+        top_actual_recall=recall,
+        selected_residual_profile=selected_profile,
+        dnp_context_profile=dnp_profile,
+        decision=decision,
+    )
+    write_h004_diagnostic_artifacts(result)
+    return result
+
+
 def _read_json(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise FileNotFoundError(path)

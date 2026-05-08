@@ -16,6 +16,7 @@ from cartola.backtesting.h004_residual_diagnostic import (
     H004SourceChild,
     build_h004_diagnostic_decision,
     build_h004_residual_correlations,
+    build_h004_residual_diagnostic,
     build_h004_residual_quintiles,
     build_h004_selected_residual_profile,
     build_h004_top_actual_recall,
@@ -392,3 +393,21 @@ def test_write_h004_diagnostic_artifacts_creates_required_files(tmp_path: Path) 
     html = (output_path / "h004_residual_diagnostic.html").read_text(encoding="utf-8")
     assert "H004 Residual Diagnostic" in html
     assert "diagnostic_status" in html
+
+
+def test_build_h004_residual_diagnostic_writes_decision_artifacts(tmp_path: Path) -> None:
+    child_path = _write_child(tmp_path, season=2025)
+    _prediction_rows().to_csv(child_path / "player_predictions.csv", index=False)
+    _selected_rows().to_csv(child_path / "selected_players.csv", index=False)
+
+    result = build_h004_residual_diagnostic(
+        experiment_path=tmp_path / "experiment",
+        output_path=tmp_path / "out",
+        seasons=(2025,),
+        model_id=H004_CONTROL_MODEL_ID,
+        feature_pack=H004_CONTROL_FEATURE_PACK,
+    )
+
+    assert result.output_path == tmp_path / "out"
+    assert (tmp_path / "out" / "h004_diagnostic_decision.json").is_file()
+    assert result.decision["diagnostic_status"] in {"passes", "rejected", "invalid"}
