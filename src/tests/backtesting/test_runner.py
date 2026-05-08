@@ -13,6 +13,7 @@ from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, BacktestConfig
 from cartola.backtesting.features import (
     FOOTYSTATS_PPG_FEATURE_COLUMNS,
     FOOTYSTATS_XG_FEATURE_COLUMNS,
+    H004_ATTACK_DEFENSE_FEATURE_COLUMNS,
     MARKET_COLUMNS,
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     build_training_frame,
@@ -383,6 +384,102 @@ def test_run_metadata_records_moving_budget_policy(tmp_path: Path) -> None:
 
     assert result.metadata.budget_policy == "moving"
     assert result.metadata.initial_budget == 100.0
+
+
+def test_run_backtest_records_h004_feature_augmentation_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    rows = _tiny_footystats_rows(range(1, 6))
+    rows["footystats_team_pre_match_xg"] = 1.2
+    rows["footystats_opponent_pre_match_xg"] = 0.8
+    rows["footystats_xg_diff"] = 0.4
+    fixtures = _tiny_fixtures(range(1, 6))
+
+    def fake_load_footystats_feature_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+        return FootyStatsPPGLoadResult(
+            rows=rows,
+            source_path=tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv",
+            source_sha256="fake-sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+            footystats_mode="ppg_xg",
+            feature_columns=(*FOOTYSTATS_PPG_FEATURE_COLUMNS, *FOOTYSTATS_XG_FEATURE_COLUMNS),
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_footystats_feature_rows",
+        fake_load_footystats_feature_rows,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_fixtures",
+        lambda *_, **__: fixtures,
+        raising=False,
+    )
+
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        fixture_mode="exploratory",
+        footystats_mode="ppg_xg",
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h004_attack_defense_v1",
+    )
+    result = run_backtest(config, season_df=season_df)
+
+    assert set(H004_ATTACK_DEFENSE_FEATURE_COLUMNS).issubset(result.player_predictions.columns)
+    assert result.metadata.feature_augmentation_mode == "h004_attack_defense_v1"
+    assert result.metadata.feature_augmentation_columns == H004_ATTACK_DEFENSE_FEATURE_COLUMNS
+
+
+def test_run_backtest_control_mode_does_not_emit_h004_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    season_df = pd.concat([_tiny_round(round_number) for round_number in range(1, 6)], ignore_index=True)
+    rows = _tiny_footystats_rows(range(1, 6))
+    rows["footystats_team_pre_match_xg"] = 1.2
+    rows["footystats_opponent_pre_match_xg"] = 0.8
+    rows["footystats_xg_diff"] = 0.4
+    fixtures = _tiny_fixtures(range(1, 6))
+
+    def fake_load_footystats_feature_rows(**kwargs: object) -> FootyStatsPPGLoadResult:
+        return FootyStatsPPGLoadResult(
+            rows=rows,
+            source_path=tmp_path / "data/footystats/brazil-serie-a-matches-2025-to-2025-stats.csv",
+            source_sha256="fake-sha",
+            diagnostics=FootyStatsJoinDiagnostics(),
+            footystats_mode="ppg_xg",
+            feature_columns=(*FOOTYSTATS_PPG_FEATURE_COLUMNS, *FOOTYSTATS_XG_FEATURE_COLUMNS),
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_footystats_feature_rows",
+        fake_load_footystats_feature_rows,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.runner.load_fixtures",
+        lambda *_, **__: fixtures,
+        raising=False,
+    )
+
+    config = BacktestConfig(
+        project_root=tmp_path,
+        start_round=5,
+        budget=100,
+        fixture_mode="exploratory",
+        footystats_mode="ppg_xg",
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="none",
+    )
+    result = run_backtest(config, season_df=season_df)
+
+    assert set(H004_ATTACK_DEFENSE_FEATURE_COLUMNS).isdisjoint(result.player_predictions.columns)
+    assert result.metadata.feature_augmentation_mode == "none"
+    assert result.metadata.feature_augmentation_columns == []
 
 
 def _minimal_two_round_feasible_season() -> pd.DataFrame:

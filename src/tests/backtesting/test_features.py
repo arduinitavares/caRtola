@@ -8,7 +8,9 @@ from cartola.backtesting.features import (
     FEATURE_COLUMNS,
     FOOTYSTATS_PPG_FEATURE_COLUMNS,
     FOOTYSTATS_XG_FEATURE_COLUMNS,
+    H004_ATTACK_DEFENSE_FEATURE_COLUMNS,
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
+    _add_h004_attack_defense_features,
     build_prediction_frame,
     build_training_frame,
     feature_columns_for_config,
@@ -434,6 +436,109 @@ def test_feature_columns_for_matchup_context_adds_matchup_columns_after_footysta
     expected = [*FEATURE_COLUMNS, *FOOTYSTATS_PPG_FEATURE_COLUMNS, *MATCHUP_CONTEXT_V1_FEATURE_COLUMNS]
     assert columns == expected
     assert "opponent_id_clube" not in columns
+
+
+def test_h004_feature_columns_are_added_only_for_h004_augmentation() -> None:
+    base_columns = feature_columns_for_config(
+        BacktestConfig(footystats_mode="ppg_xg", matchup_context_mode="cartola_matchup_v1")
+    )
+    h004_columns = feature_columns_for_config(
+        BacktestConfig(
+            footystats_mode="ppg_xg",
+            matchup_context_mode="cartola_matchup_v1",
+            feature_augmentation_mode="h004_attack_defense_v1",
+        )
+    )
+
+    assert set(H004_ATTACK_DEFENSE_FEATURE_COLUMNS).isdisjoint(base_columns)
+    assert set(H004_ATTACK_DEFENSE_FEATURE_COLUMNS).issubset(h004_columns)
+
+
+def test_h004_feature_columns_require_matchup_and_xg_context() -> None:
+    with pytest.raises(ValueError, match="requires footystats_mode='ppg_xg'"):
+        feature_columns_for_config(
+            BacktestConfig(
+                footystats_mode="ppg",
+                matchup_context_mode="cartola_matchup_v1",
+                feature_augmentation_mode="h004_attack_defense_v1",
+            )
+        )
+
+    with pytest.raises(ValueError, match="requires matchup_context_mode='cartola_matchup_v1'"):
+        feature_columns_for_config(
+            BacktestConfig(
+                footystats_mode="ppg_xg",
+                matchup_context_mode="none",
+                feature_augmentation_mode="h004_attack_defense_v1",
+            )
+        )
+
+
+def test_h004_feature_formulas_are_finite_and_zero_for_tecnico() -> None:
+    season_df = _season_df()
+    tecnico = season_df[season_df["id_atleta"].eq(2)].copy()
+    tecnico["id_atleta"] = 3
+    tecnico["posicao"] = "tec"
+    tecnico["id_clube"] = 10
+    season_df = pd.concat([season_df, tecnico], ignore_index=True)
+
+    frame = build_prediction_frame(
+        season_df,
+        target_round=3,
+        fixtures=_fixture_df(),
+        footystats_rows=_footystats_rows(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h004_attack_defense_v1",
+    )
+
+    ata = frame.loc[frame["posicao"].eq("ata")].iloc[0]
+    tec = frame.loc[frame["posicao"].eq("tec")].iloc[0]
+    assert ata["h004_position_softness_delta"] == pytest.approx(
+        ata["matchup_opponent_allowed_position_points_roll5"]
+        - ata["matchup_opponent_allowed_points_roll5"]
+    )
+    assert ata["h004_position_mismatch_score"] == pytest.approx(
+        (ata["matchup_club_position_points_roll5"] - ata["position_points_prior"])
+        + (ata["matchup_opponent_allowed_position_points_roll5"] - ata["position_points_prior"])
+    )
+    assert ata["h004_home_xg_edge"] == pytest.approx(ata["matchup_is_home"] * ata["footystats_xg_diff"])
+    assert ata["h004_role_xg_mismatch"] == pytest.approx(
+        ata["footystats_xg_diff"] * ata["h004_position_softness_delta"]
+    )
+    assert tec[list(H004_ATTACK_DEFENSE_FEATURE_COLUMNS)].tolist() == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_h004_feature_formulas_reject_missing_dependency_columns() -> None:
+    frame = pd.DataFrame(
+        {
+            "posicao": ["ata"],
+            "position_points_prior": [5.0],
+            "matchup_club_position_points_roll5": [6.0],
+            "matchup_opponent_allowed_position_points_roll5": [7.0],
+            "matchup_opponent_allowed_points_roll5": [5.5],
+            "matchup_is_home": [1.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="footystats_xg_diff"):
+        _add_h004_attack_defense_features(frame)
+
+
+def test_h004_feature_formulas_reject_infinite_context_values() -> None:
+    frame = pd.DataFrame(
+        {
+            "posicao": ["ata"],
+            "position_points_prior": [5.0],
+            "matchup_club_position_points_roll5": [6.0],
+            "matchup_opponent_allowed_position_points_roll5": [float("inf")],
+            "matchup_opponent_allowed_points_roll5": [5.5],
+            "matchup_is_home": [1.0],
+            "footystats_xg_diff": [0.7],
+        }
+    )
+
+    with pytest.raises(ValueError, match="non-finite numeric context"):
+        _add_h004_attack_defense_features(frame)
 
 
 def test_prediction_frame_merges_footystats_ppg_rows() -> None:

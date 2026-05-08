@@ -102,6 +102,44 @@ def test_xgboost_sensitivity_v2_matrix_uses_controls_and_local_candidates() -> N
     }
 
 
+def test_h004_feature_pack_to_modes() -> None:
+    feature_pack = feature_pack_to_modes("ppg_xg_matchup_h004")
+
+    assert feature_pack == FeaturePack(
+        feature_pack="ppg_xg_matchup_h004",
+        footystats_mode="ppg_xg",
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h004_attack_defense_v1",
+    )
+
+
+def test_h004_attack_defense_mismatch_matrix_is_control_vs_challenger_only() -> None:
+    specs = build_child_run_specs(
+        group="h004-attack-defense-mismatch",
+        seasons=(2021, 2022, 2023, 2024, 2025),
+        start_round=5,
+        budget=100.0,
+        project_root=Path("/repo"),
+        output_root=Path("data/08_reporting/experiments/model_feature/test"),
+        current_year=2026,
+        jobs=12,
+    )
+
+    assert len(specs) == 10
+    assert {spec.fixture_mode for spec in specs} == {"exploratory"}
+    assert {spec.model_id for spec in specs} == {"xgboost_depth2_slow"}
+    assert {spec.feature_pack for spec in specs} == {
+        "ppg_xg_matchup",
+        "ppg_xg_matchup_h004",
+    }
+    h004_specs = [spec for spec in specs if spec.feature_pack == "ppg_xg_matchup_h004"]
+    control_specs = [spec for spec in specs if spec.feature_pack == "ppg_xg_matchup"]
+    assert {spec.backtest_config.feature_augmentation_mode for spec in h004_specs} == {
+        "h004_attack_defense_v1"
+    }
+    assert {spec.backtest_config.feature_augmentation_mode for spec in control_specs} == {"none"}
+
+
 def test_build_child_run_specs_can_include_only_selected_models() -> None:
     specs = build_child_run_specs(
         group="production-parity",

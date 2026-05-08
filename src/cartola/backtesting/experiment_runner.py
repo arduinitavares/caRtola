@@ -705,6 +705,7 @@ def _child_record(spec: ChildRunSpec, result: BacktestResult, *, child_id: str) 
         "model_id": spec.model_id,
         "feature_pack": spec.feature_pack,
         "fixture_mode": spec.fixture_mode,
+        "feature_augmentation_mode": spec.backtest_config.feature_augmentation_mode,
         "output_path": str(spec.output_path),
         "model_n_jobs_effective": _model_n_jobs_for_child(spec, result),
         "strategy_roles": {
@@ -924,6 +925,7 @@ def _child_index_row(
         "budget_policy": result.metadata.budget_policy,
         "footystats_mode": spec.backtest_config.footystats_mode,
         "matchup_context_mode": spec.backtest_config.matchup_context_mode,
+        "feature_augmentation_mode": spec.backtest_config.feature_augmentation_mode,
         "output_path": _relative_path(spec.output_path, project_root=project_root),
         "status": "ok",
         "wall_clock_seconds": result.metadata.wall_clock_seconds,
@@ -988,6 +990,7 @@ def _child_params(spec: ChildRunSpec) -> dict[str, object]:
         "budget_policy": BUDGET_POLICY_MOVING,
         "footystats_mode": spec.backtest_config.footystats_mode,
         "matchup_context_mode": spec.backtest_config.matchup_context_mode,
+        "feature_augmentation_mode": spec.backtest_config.feature_augmentation_mode,
         "start_round": spec.backtest_config.start_round,
         "budget": spec.backtest_config.budget,
         "initial_budget": spec.backtest_config.budget,

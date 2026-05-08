@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS, MARKET_OPEN_PRICE_COLUMN
@@ -69,6 +70,13 @@ MATCHUP_CONTEXT_V1_FEATURE_COLUMNS: list[str] = [
     "matchup_club_position_count",
 ]
 
+H004_ATTACK_DEFENSE_FEATURE_COLUMNS: list[str] = [
+    "h004_position_softness_delta",
+    "h004_position_mismatch_score",
+    "h004_home_xg_edge",
+    "h004_role_xg_mismatch",
+]
+
 NUMERIC_PRIOR_COLUMNS: list[str] = [
     "position_points_prior",
     "prior_appearances",
@@ -100,10 +108,26 @@ def feature_columns_for_config(config: BacktestConfig) -> list[str]:
         raise ValueError(f"Unsupported footystats_mode: {config.footystats_mode!r}")
 
     if config.matchup_context_mode == "none":
+        pass
+    elif config.matchup_context_mode == "cartola_matchup_v1":
+        columns.extend(MATCHUP_CONTEXT_V1_FEATURE_COLUMNS)
+    else:
+        raise ValueError(f"Unsupported matchup_context_mode: {config.matchup_context_mode!r}")
+
+    if config.feature_augmentation_mode == "none":
         return columns
-    if config.matchup_context_mode == "cartola_matchup_v1":
-        return [*columns, *MATCHUP_CONTEXT_V1_FEATURE_COLUMNS]
-    raise ValueError(f"Unsupported matchup_context_mode: {config.matchup_context_mode!r}")
+    if config.feature_augmentation_mode == "h004_attack_defense_v1":
+        if config.footystats_mode != "ppg_xg":
+            raise ValueError(
+                "feature_augmentation_mode='h004_attack_defense_v1' requires footystats_mode='ppg_xg'"
+            )
+        if config.matchup_context_mode != "cartola_matchup_v1":
+            raise ValueError(
+                "feature_augmentation_mode='h004_attack_defense_v1' "
+                "requires matchup_context_mode='cartola_matchup_v1'"
+            )
+        return [*columns, *H004_ATTACK_DEFENSE_FEATURE_COLUMNS]
+    raise ValueError(f"Unsupported feature_augmentation_mode: {config.feature_augmentation_mode!r}")
 
 
 def build_prediction_frame(
@@ -112,6 +136,7 @@ def build_prediction_frame(
     fixtures: pd.DataFrame | None = None,
     footystats_rows: pd.DataFrame | None = None,
     matchup_context_mode: str = "none",
+    feature_augmentation_mode: str = "none",
 ) -> pd.DataFrame:
     candidates = season_df[season_df["rodada"] == target_round].copy()
     played_history = _played_history(season_df, target_round)
@@ -124,7 +149,17 @@ def build_prediction_frame(
         target_round,
         matchup_context_mode=matchup_context_mode,
     )
-    return merge_footystats_features(frame, footystats_rows, target_round=target_round)
+    frame = merge_footystats_features(frame, footystats_rows, target_round=target_round)
+    if feature_augmentation_mode == "none":
+        return frame
+    if feature_augmentation_mode == "h004_attack_defense_v1":
+        if matchup_context_mode != "cartola_matchup_v1":
+            raise ValueError(
+                "feature_augmentation_mode='h004_attack_defense_v1' "
+                "requires matchup_context_mode='cartola_matchup_v1'"
+            )
+        return _add_h004_attack_defense_features(frame)
+    raise ValueError(f"Unsupported feature_augmentation_mode: {feature_augmentation_mode!r}")
 
 
 def build_training_frame(
@@ -134,6 +169,7 @@ def build_training_frame(
     fixtures: pd.DataFrame | None = None,
     footystats_rows: pd.DataFrame | None = None,
     matchup_context_mode: str = "none",
+    feature_augmentation_mode: str = "none",
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     historical_rounds = sorted(
@@ -147,6 +183,7 @@ def build_training_frame(
             fixtures=fixtures,
             footystats_rows=footystats_rows,
             matchup_context_mode=matchup_context_mode,
+            feature_augmentation_mode=feature_augmentation_mode,
         )
         if playable_statuses is not None:
             round_frame = round_frame[round_frame["status"].isin(playable_statuses)].copy()
@@ -157,12 +194,64 @@ def build_training_frame(
         feature_columns = list(FEATURE_COLUMNS)
         if matchup_context_mode == "cartola_matchup_v1":
             feature_columns.extend(MATCHUP_CONTEXT_V1_FEATURE_COLUMNS)
+        if feature_augmentation_mode == "h004_attack_defense_v1":
+            feature_columns.extend(H004_ATTACK_DEFENSE_FEATURE_COLUMNS)
         return pd.DataFrame(
             columns=pd.Index(
                 list(dict.fromkeys([*MARKET_COLUMNS, *feature_columns, "target"]))
             )
         )
     return pd.concat(frames, ignore_index=True)
+
+
+def _add_h004_attack_defense_features(frame: pd.DataFrame) -> pd.DataFrame:
+    required_columns = [
+        "posicao",
+        "position_points_prior",
+        "matchup_club_position_points_roll5",
+        "matchup_opponent_allowed_position_points_roll5",
+        "matchup_opponent_allowed_points_roll5",
+        "matchup_is_home",
+        "footystats_xg_diff",
+    ]
+    missing_columns = [column for column in required_columns if column not in frame.columns]
+    if missing_columns:
+        raise ValueError(f"H004 feature augmentation requires columns: {', '.join(missing_columns)}")
+
+    result = frame.copy()
+    numeric_columns = [column for column in required_columns if column != "posicao"]
+    for column in numeric_columns:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+
+    numeric_context = result[numeric_columns]
+    invalid = numeric_context.isna().any(axis=1) | ~np.isfinite(numeric_context).all(axis=1)
+    if bool(invalid.any()):
+        invalid_columns = [
+            column
+            for column in numeric_columns
+            if bool(result.loc[invalid, column].isna().any())
+            or bool((~np.isfinite(result.loc[invalid, column])).any())
+        ]
+        raise ValueError(f"H004 feature augmentation has non-finite numeric context: {', '.join(invalid_columns)}")
+
+    result["h004_position_softness_delta"] = (
+        result["matchup_opponent_allowed_position_points_roll5"]
+        - result["matchup_opponent_allowed_points_roll5"]
+    )
+    result["h004_position_mismatch_score"] = (
+        result["matchup_club_position_points_roll5"] - result["position_points_prior"]
+    ) + (
+        result["matchup_opponent_allowed_position_points_roll5"] - result["position_points_prior"]
+    )
+    result["h004_home_xg_edge"] = result["matchup_is_home"] * result["footystats_xg_diff"]
+    result["h004_role_xg_mismatch"] = (
+        result["footystats_xg_diff"] * result["h004_position_softness_delta"]
+    )
+    tecnico_mask = result["posicao"].astype(str).eq("tec")
+    result.loc[tecnico_mask, H004_ATTACK_DEFENSE_FEATURE_COLUMNS] = 0.0
+    for column in H004_ATTACK_DEFENSE_FEATURE_COLUMNS:
+        result[column] = pd.to_numeric(result[column], errors="raise").astype(float)
+    return result
 
 
 def _played_history(season_df: pd.DataFrame, target_round: int) -> pd.DataFrame:

@@ -6,12 +6,24 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, cast
 
-from cartola.backtesting.config import BacktestConfig, FixtureMode, FootyStatsMode, MatchupContextMode
+from cartola.backtesting.config import (
+    BacktestConfig,
+    FeatureAugmentationMode,
+    FixtureMode,
+    FootyStatsMode,
+    MatchupContextMode,
+)
 from cartola.backtesting.model_registry import MODEL_SPECS, ModelId
 from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION
 
-ExperimentGroup = Literal["production-parity", "matchup-research", "xgboost-research", "xgboost-sensitivity-v2"]
-FeaturePackId = Literal["ppg", "ppg_xg", "ppg_matchup", "ppg_xg_matchup"]
+ExperimentGroup = Literal[
+    "production-parity",
+    "matchup-research",
+    "xgboost-research",
+    "xgboost-sensitivity-v2",
+    "h004-attack-defense-mismatch",
+]
+FeaturePackId = Literal["ppg", "ppg_xg", "ppg_matchup", "ppg_xg_matchup", "ppg_xg_matchup_h004"]
 
 
 @dataclass(frozen=True)
@@ -19,6 +31,7 @@ class FeaturePack:
     feature_pack: FeaturePackId
     footystats_mode: FootyStatsMode
     matchup_context_mode: MatchupContextMode
+    feature_augmentation_mode: FeatureAugmentationMode = "none"
 
 
 @dataclass(frozen=True)
@@ -46,6 +59,7 @@ _GROUP_FIXTURE_MODES: Mapping[ExperimentGroup, FixtureMode] = {
     "matchup-research": "exploratory",
     "xgboost-research": "exploratory",
     "xgboost-sensitivity-v2": "exploratory",
+    "h004-attack-defense-mismatch": "exploratory",
 }
 
 _GROUP_FEATURE_PACKS: Mapping[ExperimentGroup, tuple[FeaturePackId, ...]] = {
@@ -53,6 +67,7 @@ _GROUP_FEATURE_PACKS: Mapping[ExperimentGroup, tuple[FeaturePackId, ...]] = {
     "matchup-research": ("ppg", "ppg_xg", "ppg_matchup", "ppg_xg_matchup"),
     "xgboost-research": ("ppg_xg", "ppg_xg_matchup"),
     "xgboost-sensitivity-v2": ("ppg_xg_matchup",),
+    "h004-attack-defense-mismatch": ("ppg_xg_matchup", "ppg_xg_matchup_h004"),
 }
 
 _GROUP_MODEL_IDS: Mapping[ExperimentGroup, tuple[ModelId, ...]] = {
@@ -72,6 +87,7 @@ _GROUP_MODEL_IDS: Mapping[ExperimentGroup, tuple[ModelId, ...]] = {
         "xgboost_depth2_l1_gamma",
         "xgboost_depth3_slow",
     ),
+    "h004-attack-defense-mismatch": ("xgboost_depth2_slow",),
 }
 
 _FEATURE_PACKS: Mapping[FeaturePackId, FeaturePack] = {
@@ -94,6 +110,12 @@ _FEATURE_PACKS: Mapping[FeaturePackId, FeaturePack] = {
         feature_pack="ppg_xg_matchup",
         footystats_mode="ppg_xg",
         matchup_context_mode="cartola_matchup_v1",
+    ),
+    "ppg_xg_matchup_h004": FeaturePack(
+        feature_pack="ppg_xg_matchup_h004",
+        footystats_mode="ppg_xg",
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h004_attack_defense_v1",
     ),
 }
 
@@ -170,6 +192,7 @@ def build_child_run_specs(
                     fixture_mode=fixture_mode,
                     matchup_context_mode=feature_pack.matchup_context_mode,
                     footystats_mode=feature_pack.footystats_mode,
+                    feature_augmentation_mode=feature_pack.feature_augmentation_mode,
                     current_year=current_year,
                     jobs=jobs,
                     profile_runtime=profile_runtime,
@@ -183,6 +206,7 @@ def build_child_run_specs(
                     "fixture_mode": fixture_mode,
                     "footystats_mode": feature_pack.footystats_mode,
                     "matchup_context_mode": feature_pack.matchup_context_mode,
+                    "feature_augmentation_mode": feature_pack.feature_augmentation_mode,
                     "start_round": start_round,
                     "budget": budget,
                     "current_year": current_year,
