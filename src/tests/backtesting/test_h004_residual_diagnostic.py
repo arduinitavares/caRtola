@@ -156,3 +156,25 @@ def test_load_h004_prediction_bundle_fails_for_missing_score_column(tmp_path: Pa
 
     with pytest.raises(ValueError, match="xgboost_depth2_slow_score"):
         load_h004_prediction_bundle(child)
+
+
+def test_load_h004_prediction_bundle_keeps_string_false_rows_as_dnp(tmp_path: Path) -> None:
+    child_path = _write_child(tmp_path, season=2025)
+    predictions = _prediction_rows()
+    predictions["entrou_em_campo"] = predictions["entrou_em_campo"].astype(object)
+    predictions.loc[0, "entrou_em_campo"] = "true"
+    predictions.loc[1, "entrou_em_campo"] = "1"
+    predictions.loc[2, "entrou_em_campo"] = "False"
+    predictions.to_csv(child_path / "player_predictions.csv", index=False)
+    _selected_rows().to_csv(child_path / "selected_players.csv", index=False)
+    child = discover_h004_source_children(
+        experiment_path=tmp_path / "experiment",
+        seasons=(2025,),
+        model_id=H004_CONTROL_MODEL_ID,
+        feature_pack=H004_CONTROL_FEATURE_PACK,
+    )[0]
+
+    bundle = load_h004_prediction_bundle(child)
+
+    assert bundle.dnp["id_atleta"].tolist() == [3]
+    assert bundle.played["id_atleta"].tolist() == [1, 2]

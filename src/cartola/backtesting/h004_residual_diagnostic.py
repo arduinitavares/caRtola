@@ -34,6 +34,8 @@ H004_REQUIRED_SELECTED_COLUMNS: tuple[str, ...] = (
     "pontuacao",
     "entrou_em_campo",
 )
+H004_TRUE_VALUES = frozenset(("1", "1.0", "true", "t", "yes", "y"))
+H004_FALSE_VALUES = frozenset(("0", "0.0", "false", "f", "no", "n"))
 
 
 @dataclass(frozen=True)
@@ -123,7 +125,10 @@ def load_h004_prediction_bundle(child: H004SourceChild) -> H004PredictionBundle:
     frame["feature_pack"] = child.feature_pack
     frame["predicted_points"] = pd.to_numeric(frame[child.score_column], errors="coerce")
     frame["actual_points"] = pd.to_numeric(frame["pontuacao"], errors="coerce")
-    frame["entered_field"] = frame["entrou_em_campo"].fillna(False).astype(bool)
+    frame["entered_field"] = _parse_bool_like_series(
+        "player_predictions.csv",
+        frame["entrou_em_campo"],
+    )
 
     numeric_columns = (
         "rodada",
@@ -160,6 +165,10 @@ def load_h004_prediction_bundle(child: H004SourceChild) -> H004PredictionBundle:
     selected_frame["feature_pack"] = child.feature_pack
     selected_frame["rodada"] = pd.to_numeric(selected_frame["rodada"], errors="coerce")
     selected_frame["id_atleta"] = pd.to_numeric(selected_frame["id_atleta"], errors="coerce")
+    selected_frame["entrou_em_campo"] = _parse_bool_like_series(
+        "selected_players.csv",
+        selected_frame["entrou_em_campo"],
+    )
 
     return H004PredictionBundle(
         child=child,
@@ -206,3 +215,29 @@ def _validate_columns(frame_name: str, frame: pd.DataFrame, required_columns: tu
     missing = [column for column in required_columns if column not in frame.columns]
     if missing:
         raise ValueError(f"Missing required columns in {frame_name}: {', '.join(missing)}")
+
+
+def _parse_bool_like_series(frame_name: str, values: pd.Series) -> pd.Series:
+    column_name = str(values.name)
+    return values.map(lambda value: _parse_bool_like(value, frame_name=frame_name, column_name=column_name))
+
+
+def _parse_bool_like(value: object, *, frame_name: str, column_name: str) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    try:
+        if bool(pd.isna(value)):
+            return False
+    except (TypeError, ValueError):
+        pass
+
+    normalized = str(value).strip().lower()
+    if normalized == "":
+        return False
+    if normalized in H004_TRUE_VALUES:
+        return True
+    if normalized in H004_FALSE_VALUES:
+        return False
+    raise ValueError(f"Unrecognized boolean value in {frame_name}.{column_name}: {value!r}")
