@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from cartola.backtesting.h004_residual_diagnostic import (
     H004_CONTROL_FEATURE_PACK,
     H004_CONTROL_MODEL_ID,
     H004_PRIMARY_SCORE_COLUMN,
+    H004PredictionBundle,
     H004SourceChild,
     discover_h004_source_children,
+    load_h004_prediction_bundle,
 )
 
 
@@ -42,6 +45,41 @@ def _write_child(tmp_path: Path, *, season: int = 2025) -> Path:
         encoding="utf-8",
     )
     return child
+
+
+def _prediction_rows() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "rodada": [5, 5, 5],
+            "id_atleta": [1, 2, 3],
+            "posicao": ["ata", "mei", "tec"],
+            "id_clube": [10, 20, 30],
+            "pontuacao": [8.0, 2.0, None],
+            "entrou_em_campo": [True, True, False],
+            "xgboost_depth2_slow_score": [5.0, 4.0, 3.0],
+            "matchup_is_home": [1, 0, 1],
+            "footystats_xg_diff": [0.6, -0.2, 0.1],
+            "footystats_ppg_diff": [0.8, -0.4, 0.2],
+            "matchup_opponent_allowed_points_roll5": [4.0, 5.0, 3.0],
+            "matchup_opponent_allowed_position_points_roll5": [6.0, 4.0, 3.0],
+            "matchup_club_position_points_roll5": [7.0, 3.5, 2.0],
+            "matchup_opponent_allowed_position_count": [5, 5, 0],
+            "matchup_club_position_count": [5, 5, 0],
+            "position_points_prior": [4.0, 3.0, 2.0],
+        }
+    )
+
+
+def _selected_rows() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "rodada": [5],
+            "id_atleta": [1],
+            "posicao": ["ata"],
+            "pontuacao": [8.0],
+            "entrou_em_campo": [True],
+        }
+    )
 
 
 def test_discover_h004_source_children_derives_season_from_context_not_prediction_csv(tmp_path: Path) -> None:
@@ -78,3 +116,43 @@ def test_discover_h004_source_children_fails_when_child_is_missing(tmp_path: Pat
             model_id=H004_CONTROL_MODEL_ID,
             feature_pack=H004_CONTROL_FEATURE_PACK,
         )
+
+
+def test_load_h004_prediction_bundle_adds_context_season_and_residuals(tmp_path: Path) -> None:
+    child_path = _write_child(tmp_path, season=2025)
+    _prediction_rows().to_csv(child_path / "player_predictions.csv", index=False)
+    _selected_rows().to_csv(child_path / "selected_players.csv", index=False)
+    child = discover_h004_source_children(
+        experiment_path=tmp_path / "experiment",
+        seasons=(2025,),
+        model_id=H004_CONTROL_MODEL_ID,
+        feature_pack=H004_CONTROL_FEATURE_PACK,
+    )[0]
+
+    bundle = load_h004_prediction_bundle(child)
+
+    assert isinstance(bundle, H004PredictionBundle)
+    assert bundle.played["season"].tolist() == [2025, 2025]
+    assert bundle.played["predicted_points"].tolist() == [5.0, 4.0]
+    assert bundle.played["prediction_residual"].tolist() == [3.0, -2.0]
+    assert bundle.dnp["id_atleta"].tolist() == [3]
+    assert bundle.selected_players["season"].tolist() == [2025]
+    assert bundle.selected_players["id_atleta"].tolist() == [1]
+
+
+def test_load_h004_prediction_bundle_fails_for_missing_score_column(tmp_path: Path) -> None:
+    child_path = _write_child(tmp_path, season=2025)
+    _prediction_rows().drop(columns=["xgboost_depth2_slow_score"]).to_csv(
+        child_path / "player_predictions.csv",
+        index=False,
+    )
+    _selected_rows().to_csv(child_path / "selected_players.csv", index=False)
+    child = discover_h004_source_children(
+        experiment_path=tmp_path / "experiment",
+        seasons=(2025,),
+        model_id=H004_CONTROL_MODEL_ID,
+        feature_pack=H004_CONTROL_FEATURE_PACK,
+    )[0]
+
+    with pytest.raises(ValueError, match="xgboost_depth2_slow_score"):
+        load_h004_prediction_bundle(child)
