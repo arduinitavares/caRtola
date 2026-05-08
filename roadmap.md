@@ -177,6 +177,17 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - verifies exploratory fixture identity against persisted source fixture file hashes when source experiments record them,
   - treats fixture-dependent policies as fail-closed unless missing fixture clubs are verified no-fixture/no-scoring candidates in the source artifact,
   - treats unverified fixture identity as `diagnostic_only`; policy simulation remains research evidence only and must not change live defaults without frozen validation.
+- H004 residual diagnostic:
+  - `scripts/run_h004_residual_diagnostic.py` tests whether attack-vs-defense
+    mismatch context is visible in model residuals before building a new feature
+    pack,
+  - reads persisted `xgboost_depth2_slow + ppg_xg_matchup` experiment artifacts
+    instead of rerunning models,
+  - writes residual correlations, quintile spreads, top-actual recall, selected
+    residual profiles, DNP context profiles, decision JSON, and HTML under
+    `data/08_reporting/hypotheses/`,
+  - treats the output as model-signal research only; a pass authorizes a frozen
+    feature-pack experiment plan, not a live default or optimizer-policy change.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -220,6 +231,30 @@ bonus is also too blunt: it changes many squads but does not produce stable
 season-level value. The next policy hypothesis should use stronger pre-match
 football signal with direct attack-vs-defense mismatch evidence, preferably as
 candidate scoring/context features before adding another optimizer constraint.
+
+H004 attack-vs-defense mismatch is being tested as model-signal research, not
+an optimizer policy. Phase 1 residual diagnostics read persisted
+`xgboost_depth2_slow + ppg_xg_matchup` artifacts and decide whether residuals
+correlate with pre-match xG/home/position matchup context strongly enough to
+justify a frozen feature-pack experiment.
+
+Latest H004 residual diagnostic:
+
+- output:
+  `data/08_reporting/hypotheses/h004_residual_diagnostic_started_at=20260508T182202655139Z`;
+- diagnostic status: `passes`;
+- passed families: `C`;
+- Family C passed seasons: `2021`, `2022`, `2023`, and `2025`;
+- Family A passed only `2022`;
+- Family B passed no seasons;
+- fixture identity status: `unverified`.
+
+Interpretation: H004 Phase 1 is strong enough to proceed to a Phase 2
+`ppg_xg_matchup_h004` feature-pack plan. The signal is specifically that actual
+top scorers were often poorly ranked despite favorable context, not that simple
+residual correlations already prove an attack/defense feature. Because fixture
+identity is still unverified, this remains research evidence and must not
+change live defaults without a frozen validation run.
 
 The first fixed-budget production-parity model/feature experiment is complete for `2023`,
 `2024`, and `2025` with `fixture_mode=none`, `start_round=5`, and
@@ -478,6 +513,14 @@ Oracle knowledge discovery for a completed experiment:
 uv run --frozen python scripts/run_oracle_knowledge_discovery.py \
   --experiment-path data/08_reporting/experiments/model_feature/<experiment_id> \
   --current-year 2026
+```
+
+H004 residual diagnostic for the current XGBoost sensitivity control:
+
+```bash
+uv run --frozen python scripts/run_h004_residual_diagnostic.py \
+  --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d \
+  --seasons 2021,2022,2023,2024,2025
 ```
 
 Fast implementation smoke for the tuning runner:
