@@ -19,7 +19,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run H004 residual diagnostic from model experiment artifacts.")
     parser.add_argument("--experiment-path", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/hypotheses"))
-    parser.add_argument("--seasons", default="2021,2022,2023,2024,2025")
+    parser.add_argument("--seasons", type=_parse_seasons, default=(2021, 2022, 2023, 2024, 2025))
     parser.add_argument("--model-id", default="xgboost_depth2_slow")
     parser.add_argument("--feature-pack", default="ppg_xg_matchup")
     return parser.parse_args(argv)
@@ -49,10 +49,13 @@ def _load_runtime_dependencies() -> None:
 
 
 def _parse_seasons(value: str) -> tuple[int, ...]:
-    seasons = tuple(int(part.strip()) for part in value.split(",") if part.strip())
+    try:
+        seasons = tuple(int(part.strip()) for part in value.split(",") if part.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid seasons value: {value}") from exc
     duplicates = sorted({season for season in seasons if seasons.count(season) > 1})
     if duplicates:
-        raise ValueError(f"Duplicate seasons are not allowed: {duplicates}")
+        raise argparse.ArgumentTypeError(f"Duplicate seasons are not allowed: {duplicates}")
     return seasons
 
 
@@ -65,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     _bootstrap_dotenv()
 
     console = Console()
-    seasons = _parse_seasons(str(args.seasons))
+    seasons = args.seasons
     output_path = args.output_root / f"h004_residual_diagnostic_started_at={_timestamp()}"
     console.print(
         f"H004 residual diagnostic started: seasons={','.join(str(season) for season in seasons)} "
