@@ -21,6 +21,7 @@ from cartola.backtesting.budgeting import (
 from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
 from cartola.backtesting.features import (
+    H004_ATTACK_DEFENSE_FEATURE_COLUMNS,
     MARKET_COLUMNS,  # noqa: F401
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     build_prediction_frame,
@@ -131,6 +132,8 @@ class BacktestMetadata:
     strict_alignment_policy: str
     matchup_context_mode: str
     matchup_context_feature_columns: list[str]
+    feature_augmentation_mode: str
+    feature_augmentation_columns: list[str]
     fixture_source_directory: str | None
     fixture_manifest_paths: list[str]
     fixture_manifest_sha256: dict[str, str]
@@ -200,11 +203,13 @@ class RoundFrameStore:
         fixtures: pd.DataFrame | None,
         footystats_rows: pd.DataFrame | None,
         matchup_context_mode: str,
+        feature_augmentation_mode: str = "none",
     ) -> None:
         self._season_df = season_df
         self._fixtures = fixtures
         self._footystats_rows = footystats_rows
         self._matchup_context_mode = matchup_context_mode
+        self._feature_augmentation_mode = feature_augmentation_mode
         self._frames: dict[int, pd.DataFrame] = {}
         self._lock = Lock()
 
@@ -222,6 +227,7 @@ class RoundFrameStore:
                 fixtures=self._fixtures,
                 footystats_rows=self._footystats_rows,
                 matchup_context_mode=self._matchup_context_mode,
+                feature_augmentation_mode=self._feature_augmentation_mode,
             ).copy(deep=True)
 
     def prediction_frame(self, round_number: int) -> pd.DataFrame:
@@ -333,6 +339,7 @@ def _run_backtest(
         fixtures=fixture_data,
         footystats_rows=footystats_rows,
         matchup_context_mode=config.matchup_context_mode,
+        feature_augmentation_mode=config.feature_augmentation_mode,
     )
     round_frame_store.build_all(cached_rounds)
 
@@ -371,6 +378,8 @@ def _run_backtest(
         strict_alignment_policy=config.strict_alignment_policy,
         matchup_context_mode=config.matchup_context_mode,
         matchup_context_feature_columns=_matchup_context_feature_columns(config),
+        feature_augmentation_mode=config.feature_augmentation_mode,
+        feature_augmentation_columns=_feature_augmentation_columns(config),
         fixture_source_directory=resolved_fixtures.source_directory,
         fixture_manifest_paths=resolved_fixtures.manifest_paths,
         fixture_manifest_sha256=resolved_fixtures.manifest_sha256,
@@ -495,6 +504,14 @@ def _matchup_context_feature_columns(config: BacktestConfig) -> list[str]:
     if config.matchup_context_mode == "cartola_matchup_v1":
         return list(MATCHUP_CONTEXT_V1_FEATURE_COLUMNS)
     raise ValueError(f"Unsupported matchup_context_mode: {config.matchup_context_mode!r}")
+
+
+def _feature_augmentation_columns(config: BacktestConfig) -> list[str]:
+    if config.feature_augmentation_mode == "none":
+        return []
+    if config.feature_augmentation_mode == "h004_attack_defense_v1":
+        return list(H004_ATTACK_DEFENSE_FEATURE_COLUMNS)
+    raise ValueError(f"Unsupported feature_augmentation_mode: {config.feature_augmentation_mode!r}")
 
 
 def _validate_footystats_join_diagnostics(diagnostics: FootyStatsJoinDiagnostics) -> None:
