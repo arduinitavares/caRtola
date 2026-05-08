@@ -12,6 +12,8 @@ from cartola.backtesting.h004_residual_diagnostic import (
     H004_PRIMARY_SCORE_COLUMN,
     H004PredictionBundle,
     H004SourceChild,
+    build_h004_residual_correlations,
+    build_h004_residual_quintiles,
     discover_h004_source_children,
     load_h004_prediction_bundle,
 )
@@ -80,6 +82,22 @@ def _selected_rows() -> pd.DataFrame:
             "entrou_em_campo": [True],
         }
     )
+
+
+def _played_signal_rows() -> pd.DataFrame:
+    rows = []
+    for index in range(120):
+        rows.append(
+            {
+                "season": 2025,
+                "posicao": "ata",
+                "prediction_residual": float(index) / 20.0,
+                "footystats_xg_diff": float(index) / 100.0,
+                "matchup_opponent_allowed_position_points_roll5": float(index) / 30.0,
+                "matchup_is_home": 1,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def test_discover_h004_source_children_derives_season_from_context_not_prediction_csv(tmp_path: Path) -> None:
@@ -178,3 +196,28 @@ def test_load_h004_prediction_bundle_keeps_string_false_rows_as_dnp(tmp_path: Pa
 
     assert bundle.dnp["id_atleta"].tolist() == [3]
     assert bundle.played["id_atleta"].tolist() == [1, 2]
+
+
+def test_build_h004_residual_correlations_requires_minimum_rows_and_flags_signal() -> None:
+    correlations = build_h004_residual_correlations(_played_signal_rows())
+
+    row = correlations[
+        correlations["context_column"].eq("footystats_xg_diff")
+        & correlations["position"].eq("ata")
+        & correlations["season"].eq(2025)
+    ].iloc[0]
+    assert row["row_count"] == 120
+    assert row["spearman"] > 0.99
+    assert bool(row["passes_signal"])
+
+
+def test_build_h004_residual_quintiles_outputs_deterministic_quintile_rows() -> None:
+    quintiles = build_h004_residual_quintiles(_played_signal_rows())
+
+    subset = quintiles[
+        quintiles["context_column"].eq("footystats_xg_diff")
+        & quintiles["position"].eq("ata")
+        & quintiles["season"].eq(2025)
+    ]
+    assert subset["quintile"].tolist() == [1, 2, 3, 4, 5]
+    assert subset["row_count"].sum() == 120

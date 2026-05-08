@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -10,6 +11,14 @@ H004_CONTROL_MODEL_ID = "xgboost_depth2_slow"
 H004_CONTROL_FEATURE_PACK = "ppg_xg_matchup"
 H004_PRIMARY_SCORE_COLUMN = "xgboost_depth2_slow_score"
 H004_REQUIRED_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024, 2025)
+H004_MIN_CORRELATION_ROWS = 100
+H004_MIN_ABS_SPEARMAN = 0.05
+H004_MIN_QUINTILE_SPREAD = 0.25
+H004_SIGNAL_COLUMNS: tuple[str, ...] = (
+    "footystats_xg_diff",
+    "matchup_opponent_allowed_position_points_roll5",
+    "diagnostic_home_xg_edge",
+)
 H004_REQUIRED_PREDICTION_COLUMNS: tuple[str, ...] = (
     "rodada",
     "id_atleta",
@@ -179,6 +188,78 @@ def load_h004_prediction_bundle(child: H004SourceChild) -> H004PredictionBundle:
     )
 
 
+def build_h004_residual_correlations(played: pd.DataFrame) -> pd.DataFrame:
+    frame = _with_diagnostic_signal_columns(played)
+    rows: list[dict[str, object]] = []
+    for season, position, column in _season_position_column_keys(frame, H004_SIGNAL_COLUMNS):
+        group = _valid_metric_group(frame, season=season, position=position, column=column)
+        row_count = int(len(group))
+        spearman = float("nan")
+        spread = float("nan")
+        passes_signal = False
+        if row_count >= H004_MIN_CORRELATION_ROWS and group[column].nunique(dropna=True) > 1:
+            spearman = float(group["prediction_residual"].corr(group[column], method="spearman"))
+            spread = _quintile_spread(group, column)
+            passes_signal = bool(
+                pd.notna(spearman)
+                and abs(spearman) >= H004_MIN_ABS_SPEARMAN
+                and pd.notna(spread)
+                and spread >= H004_MIN_QUINTILE_SPREAD
+            )
+        rows.append(
+            {
+                "season": int(season),
+                "position": str(position),
+                "signal_family": _signal_family(position=str(position), column=column),
+                "context_column": column,
+                "row_count": row_count,
+                "spearman": spearman,
+                "quintile_residual_spread": spread,
+                "passes_signal": passes_signal,
+            }
+        )
+    return (
+        pd.DataFrame(rows, columns=_residual_correlation_columns())
+        .sort_values(["season", "position", "context_column"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+
+def build_h004_residual_quintiles(played: pd.DataFrame) -> pd.DataFrame:
+    frame = _with_diagnostic_signal_columns(played)
+    rows: list[dict[str, object]] = []
+    for season, position, column in _season_position_column_keys(frame, H004_SIGNAL_COLUMNS):
+        group = _valid_metric_group(frame, season=season, position=position, column=column)
+        if group.empty:
+            continue
+        ranked = group.sort_values([column, "prediction_residual"], kind="mergesort").copy()
+        ranked["quintile"] = pd.qcut(
+            ranked[column].rank(method="first"),
+            q=min(5, len(ranked)),
+            labels=False,
+        ) + 1
+        for quintile, quintile_group in ranked.groupby("quintile", sort=True):
+            quintile_value = int(cast("int", quintile))
+            rows.append(
+                {
+                    "season": int(season),
+                    "position": str(position),
+                    "context_column": column,
+                    "quintile": quintile_value,
+                    "row_count": int(len(quintile_group)),
+                    "context_min": float(quintile_group[column].min()),
+                    "context_max": float(quintile_group[column].max()),
+                    "mean_residual": float(quintile_group["prediction_residual"].mean()),
+                    "median_residual": float(quintile_group["prediction_residual"].median()),
+                }
+            )
+    return (
+        pd.DataFrame(rows, columns=_residual_quintile_columns())
+        .sort_values(["season", "position", "context_column", "quintile"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+
 def _read_json(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -241,3 +322,89 @@ def _parse_bool_like(value: object, *, frame_name: str, column_name: str) -> boo
     if normalized in H004_FALSE_VALUES:
         return False
     raise ValueError(f"Unrecognized boolean value in {frame_name}.{column_name}: {value!r}")
+
+
+def _with_diagnostic_signal_columns(played: pd.DataFrame) -> pd.DataFrame:
+    frame = played.copy()
+    frame["diagnostic_home_xg_edge"] = (
+        pd.to_numeric(frame["matchup_is_home"], errors="coerce")
+        * pd.to_numeric(frame["footystats_xg_diff"], errors="coerce")
+    )
+    return frame
+
+
+def _season_position_column_keys(
+    frame: pd.DataFrame,
+    columns: tuple[str, ...],
+) -> list[tuple[int, str, str]]:
+    seasons = sorted(int(value) for value in frame["season"].dropna().unique())
+    positions = sorted(str(value) for value in frame["posicao"].dropna().unique())
+    return [(season, position, column) for season in seasons for position in positions for column in columns]
+
+
+def _valid_metric_group(
+    frame: pd.DataFrame,
+    *,
+    season: int,
+    position: str,
+    column: str,
+) -> pd.DataFrame:
+    group = frame.loc[frame["season"].eq(season) & frame["posicao"].eq(position)].copy()
+    values = pd.to_numeric(group[column], errors="coerce")
+    residuals = pd.to_numeric(group["prediction_residual"], errors="coerce")
+    valid = values.notna() & residuals.notna()
+    group = group.loc[valid].copy()
+    group[column] = values.loc[valid]
+    group["prediction_residual"] = residuals.loc[valid]
+    return group
+
+
+def _quintile_spread(group: pd.DataFrame, column: str) -> float:
+    if len(group) < 5 or group[column].nunique(dropna=True) < 2:
+        return float("nan")
+    ranked = group.sort_values([column, "prediction_residual"], kind="mergesort").copy()
+    ranked["quintile"] = pd.qcut(ranked[column].rank(method="first"), q=5, labels=False) + 1
+    means = ranked.groupby("quintile")["prediction_residual"].mean()
+    return float(means.loc[5] - means.loc[1])
+
+
+def _signal_family(*, position: str, column: str) -> str:
+    if position in {"ata", "mei"} and column in {
+        "footystats_xg_diff",
+        "matchup_opponent_allowed_position_points_roll5",
+    }:
+        return "A"
+    if position in {"gol", "lat", "zag"} and column == "diagnostic_home_xg_edge":
+        return "B"
+    return "descriptive"
+
+
+def _residual_correlation_columns() -> pd.Index:
+    return pd.Index(
+        [
+            "season",
+            "position",
+            "signal_family",
+            "context_column",
+            "row_count",
+            "spearman",
+            "quintile_residual_spread",
+            "passes_signal",
+        ]
+    )
+
+
+def _residual_quintile_columns() -> pd.Index:
+    return pd.Index(
+        [
+            "season",
+            "position",
+            "context_column",
+            "quintile",
+            "row_count",
+            "context_min",
+            "context_max",
+            "mean_residual",
+            "median_residual",
+        ]
+    )
