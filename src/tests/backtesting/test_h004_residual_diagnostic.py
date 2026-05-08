@@ -13,8 +13,10 @@ from cartola.backtesting.h004_residual_diagnostic import (
     H004_PRIMARY_SCORE_COLUMN,
     H004PredictionBundle,
     H004SourceChild,
+    build_h004_diagnostic_decision,
     build_h004_residual_correlations,
     build_h004_residual_quintiles,
+    build_h004_top_actual_recall,
     discover_h004_source_children,
     load_h004_prediction_bundle,
 )
@@ -98,6 +100,28 @@ def _played_signal_rows() -> pd.DataFrame:
                 "matchup_is_home": 1,
             }
         )
+    return pd.DataFrame(rows)
+
+
+def _top_actual_rows() -> pd.DataFrame:
+    rows = []
+    for season in (2021, 2022, 2023):
+        for round_number in range(5, 8):
+            for index in range(12):
+                rows.append(
+                    {
+                        "season": season,
+                        "rodada": round_number,
+                        "posicao": "ata",
+                        "id_atleta": season * 1000 + round_number * 100 + index,
+                        "actual_points": 20.0 - index if index < 5 else 1.0,
+                        "predicted_points": 1.0 + index,
+                        "footystats_xg_diff": 2.0 if index < 5 else -1.0,
+                        "matchup_opponent_allowed_position_points_roll5": 8.0
+                        if index < 5
+                        else 2.0,
+                    }
+                )
     return pd.DataFrame(rows)
 
 
@@ -240,3 +264,49 @@ def test_build_h004_residual_quintiles_outputs_deterministic_quintile_rows() -> 
     ]
     assert subset["quintile"].tolist() == [1, 2, 3, 4, 5]
     assert subset["row_count"].sum() == 120
+
+
+def test_build_h004_top_actual_recall_detects_context_gap() -> None:
+    recall = build_h004_top_actual_recall(_top_actual_rows())
+
+    assert set(recall.loc[recall["passes_signal"], "season"]) == {2021, 2022, 2023}
+    assert recall["median_predicted_rank_percentile"].min() >= 0.35
+    assert recall["median_context_edge"].min() >= 0.25
+
+
+def test_build_h004_diagnostic_decision_passes_when_one_family_clears_three_seasons() -> None:
+    correlations = pd.DataFrame(
+        {
+            "season": [2021, 2022, 2023],
+            "position": ["ata", "ata", "ata"],
+            "signal_family": ["A", "A", "A"],
+            "context_column": ["footystats_xg_diff"] * 3,
+            "row_count": [120, 120, 120],
+            "spearman": [0.08, 0.07, 0.06],
+            "quintile_residual_spread": [0.3, 0.4, 0.25],
+            "passes_signal": [True, True, True],
+        }
+    )
+    recall = pd.DataFrame(
+        columns=pd.Index(
+            [
+                "season",
+                "position",
+                "row_count",
+                "median_predicted_rank_percentile",
+                "median_context_edge",
+                "passes_signal",
+            ]
+        ),
+    )
+
+    decision = build_h004_diagnostic_decision(
+        correlations=correlations,
+        top_actual_recall=recall,
+        source_experiment_path=Path("experiment"),
+        children=(),
+        missing_or_invalid_columns=(),
+    )
+
+    assert decision["diagnostic_status"] == "passes"
+    assert decision["passed_families"] == ["A"]

@@ -260,6 +260,95 @@ def build_h004_residual_quintiles(played: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def build_h004_top_actual_recall(played: pd.DataFrame) -> pd.DataFrame:
+    frame = played.copy()
+    if frame.empty:
+        return pd.DataFrame(columns=_top_actual_recall_columns())
+
+    frame["context_edge"] = _context_edge(frame)
+    rows: list[pd.DataFrame] = []
+    for _, group in frame.groupby(["season", "rodada", "posicao"], sort=True):
+        played_count = len(group)
+        ranked_prediction = group.copy()
+        ranked_prediction["predicted_rank"] = ranked_prediction["predicted_points"].rank(
+            method="average",
+            ascending=False,
+        )
+        ranked_prediction["predicted_rank_percentile"] = (
+            (ranked_prediction["predicted_rank"] - 1.0) / max(float(played_count - 1), 1.0)
+        )
+        actual_top = ranked_prediction.sort_values(
+            ["actual_points", "id_atleta"],
+            ascending=[False, True],
+            kind="mergesort",
+        ).head(min(5, played_count))
+        rows.append(actual_top)
+
+    if not rows:
+        return pd.DataFrame(columns=_top_actual_recall_columns())
+
+    actual_top_frame = pd.concat(rows, ignore_index=True)
+    summary = (
+        actual_top_frame.groupby(["season", "posicao"], as_index=False)
+        .agg(
+            row_count=("id_atleta", "count"),
+            median_predicted_rank_percentile=("predicted_rank_percentile", "median"),
+            median_context_edge=("context_edge", "median"),
+        )
+        .rename(columns={"posicao": "position"})
+    )
+    summary["passes_signal"] = (
+        summary["median_predicted_rank_percentile"].ge(0.35)
+        & summary["median_context_edge"].ge(0.25)
+    )
+    return (
+        summary.loc[:, _top_actual_recall_columns()]
+        .sort_values(["season", "position"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+
+def build_h004_diagnostic_decision(
+    *,
+    correlations: pd.DataFrame,
+    top_actual_recall: pd.DataFrame,
+    source_experiment_path: Path,
+    children: tuple[H004SourceChild, ...],
+    missing_or_invalid_columns: tuple[str, ...],
+) -> dict[str, object]:
+    family_results = {
+        "A": _family_result(correlations, family="A"),
+        "B": _family_result(correlations, family="B"),
+        "C": _family_result(top_actual_recall, family=None),
+    }
+    passed_families = [
+        family for family in ("A", "B", "C") if bool(family_results[family]["passed"])
+    ]
+    diagnostic_status = (
+        "invalid"
+        if missing_or_invalid_columns
+        else ("passes" if passed_families else "rejected")
+    )
+    score_column_mapping = {
+        child.model_id: child.score_column for child in sorted(children, key=lambda child: child.model_id)
+    } or {H004_CONTROL_MODEL_ID: H004_PRIMARY_SCORE_COLUMN}
+
+    return {
+        "diagnostic_status": diagnostic_status,
+        "passed_families": passed_families,
+        "family_results": family_results,
+        "source_experiment_path": str(source_experiment_path),
+        "source_children": [child.as_dict() for child in sorted(children, key=lambda child: child.season)],
+        "score_column_mapping": score_column_mapping,
+        "fixture_identity_status": _fixture_identity_status(children),
+        "footystats_source_identity": {
+            str(child.season): child.footystats_source_identity
+            for child in sorted(children, key=lambda child: child.season)
+        },
+        "missing_or_invalid_columns": sorted(missing_or_invalid_columns),
+    }
+
+
 def _read_json(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -368,6 +457,46 @@ def _quintile_spread(group: pd.DataFrame, column: str) -> float:
     return float(means.loc[5] - means.loc[1])
 
 
+def _context_edge(frame: pd.DataFrame) -> pd.Series:
+    xg = _zscore_by_season_position(frame, "footystats_xg_diff")
+    position_allowed = _zscore_by_season_position(
+        frame,
+        "matchup_opponent_allowed_position_points_roll5",
+    )
+    return xg + position_allowed
+
+
+def _zscore_by_season_position(frame: pd.DataFrame, column: str) -> pd.Series:
+    values = pd.to_numeric(frame[column], errors="coerce")
+    grouped = frame.assign(_value=values).groupby(["season", "posicao"])["_value"]
+    mean = grouped.transform("mean")
+    std = grouped.transform("std")
+    valid_std = std.notna() & std.ne(0.0)
+    result = pd.Series(0.0, index=frame.index, dtype="float64")
+    result.loc[valid_std] = (values.loc[valid_std] - mean.loc[valid_std]) / std.loc[valid_std]
+    return result.fillna(0.0)
+
+
+def _family_result(correlations: pd.DataFrame, *, family: str | None) -> dict[str, object]:
+    if correlations.empty or "passes_signal" not in correlations.columns or "season" not in correlations.columns:
+        return {"passed": False, "passed_seasons": []}
+    subset = correlations
+    if family is not None:
+        if "signal_family" not in correlations.columns:
+            return {"passed": False, "passed_seasons": []}
+        subset = subset.loc[subset["signal_family"].eq(family)]
+    subset = subset.loc[subset["passes_signal"].eq(True)]
+    seasons = sorted(int(value) for value in subset["season"].dropna().unique())
+    return {"passed": len(seasons) >= 3, "passed_seasons": seasons}
+
+
+def _fixture_identity_status(children: tuple[H004SourceChild, ...]) -> str:
+    if not children:
+        return "unavailable"
+    statuses = {child.fixture_identity_status for child in children}
+    return "verified" if statuses == {"verified"} else "unverified"
+
+
 def _signal_family(*, position: str, column: str) -> str:
     if position in {"ata", "mei"} and column in {
         "footystats_xg_diff",
@@ -406,5 +535,18 @@ def _residual_quintile_columns() -> pd.Index:
             "context_max",
             "mean_residual",
             "median_residual",
+        ]
+    )
+
+
+def _top_actual_recall_columns() -> pd.Index:
+    return pd.Index(
+        [
+            "season",
+            "position",
+            "row_count",
+            "median_predicted_rank_percentile",
+            "median_context_edge",
+            "passes_signal",
         ]
     )
