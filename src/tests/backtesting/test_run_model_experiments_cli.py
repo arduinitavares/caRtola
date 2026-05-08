@@ -110,6 +110,25 @@ def test_parse_args_defaults() -> None:
     assert args.mlflow_tracking_uri is None
 
 
+def test_parse_args_accepts_h004_group() -> None:
+    args = parse_args(
+        [
+            "--group",
+            "h004-attack-defense-mismatch",
+            "--seasons",
+            "2021,2022",
+            "--start-round",
+            "5",
+            "--budget",
+            "100",
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    assert args.group == "h004-attack-defense-mismatch"
+
+
 def test_main_calls_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     observed: dict[str, object] = {}
 

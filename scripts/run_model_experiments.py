@@ -37,7 +37,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Cartola model feature experiment groups.")
     parser.add_argument(
         "--group",
-        choices=("production-parity", "matchup-research", "xgboost-research", "xgboost-sensitivity-v2"),
+        choices=(
+            "production-parity",
+            "matchup-research",
+            "xgboost-research",
+            "xgboost-sensitivity-v2",
+            "h004-attack-defense-mismatch",
+        ),
         required=True,
     )
     parser.add_argument("--seasons", default="2023,2024,2025")
