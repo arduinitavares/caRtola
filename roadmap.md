@@ -256,6 +256,34 @@ residual correlations already prove an attack/defense feature. Because fixture
 identity is still unverified, this remains research evidence and must not
 change live defaults without a frozen validation run.
 
+H004 Phase 2 feature-pack experiment is complete and rejected:
+
+- output:
+  `data/08_reporting/experiments/model_feature/group=h004-attack-defense-mismatch__started_at=20260508T191417000002Z__matrix=fc77bcf76f40`;
+- decision artifact:
+  `h004_phase2_decision.json`;
+- control:
+  `xgboost_depth2_slow + ppg_xg_matchup`;
+- challenger:
+  `xgboost_depth2_slow + ppg_xg_matchup_h004`;
+- fixture identity status: `verified`;
+- candidate signature status: `ok`;
+- aggregate actual-points delta: `-90.60`;
+- improved seasons: `2 / 5`;
+- season deltas:
+  `2021=-80.24`, `2022=+110.38`, `2023=+101.26`, `2024=-38.73`,
+  `2025=-183.27`;
+- failed gates:
+  aggregate lift, improved seasons, worst-season delta, 2025 delta, and
+  top-two positive season concentration.
+
+Interpretation: the H004 feature pack improved the moving-budget path and
+helped 2022/2023, but it failed the actual-points gates and badly regressed the
+most recent complete season. Do not promote or keep iterating on
+`ppg_xg_matchup_h004`; preserve it as negative evidence. The next feature
+hypothesis should start from a fresh residual diagnostic or a materially
+different football signal, not a direct H004-family tweak.
+
 The first fixed-budget production-parity model/feature experiment is complete for `2023`,
 `2024`, and `2025` with `fixture_mode=none`, `start_round=5`, and
 `budget=100`.
