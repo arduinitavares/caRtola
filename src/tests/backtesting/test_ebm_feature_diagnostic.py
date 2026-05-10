@@ -15,6 +15,7 @@ from cartola.backtesting.ebm_feature_diagnostic import (
     SourceChildContext,
     aggregate_candidate_hypotheses,
     assign_continuous_bins,
+    build_ebm_feature_diagnostic,
     compute_interaction_cell_support,
     inspect_ebm_runtime,
     prepare_diagnostic_dataset,
@@ -908,6 +909,38 @@ def test_write_ebm_diagnostic_artifacts_adds_discovery_metadata(tmp_path: Path) 
     assert "<!doctype html>" in html_report
     assert "discovery_only=true" in html_report
     assert "diagnostic_status=invalid" in html_report
+
+
+def test_build_ebm_feature_diagnostic_writes_metadata_only_scope(tmp_path: Path) -> None:
+    child = _write_source_child(tmp_path)
+    experiment_path = tmp_path / "experiment"
+    output_path = tmp_path / "ebm-output"
+    _write_parent(experiment_path, [child])
+    events: list[str] = []
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=output_path,
+        seasons=(2025,),
+        model_id="ridge",
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        current_year=2026,
+        max_interactions=10,
+        min_validation_rows=500,
+        random_seed=123,
+        profile_runtime=True,
+        progress_callback=events.append,
+    )
+
+    manifest = json.loads((output_path / "ebm_diagnostic_manifest.json").read_text(encoding="utf-8"))
+    decision = json.loads((output_path / "ebm_diagnostic_decision.json").read_text(encoding="utf-8"))
+    assert result.decision["diagnostic_status"] == "diagnostic_complete"
+    assert manifest["diagnostic_phase"] == "metadata_only"
+    assert decision["diagnostic_phase"] == "metadata_only"
+    assert manifest["profile_runtime"] is True
+    assert any("artifact validation" in event for event in events)
+    assert any("metadata-only" in event for event in events)
 
 
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:

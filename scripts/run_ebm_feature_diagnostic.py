@@ -2,16 +2,22 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 
-build_ebm_feature_diagnostic: Callable[..., Any] | None = None
+
+class _DiagnosticResult(Protocol):
+    output_path: Path
+    decision: Mapping[str, object]
+
+
+build_ebm_feature_diagnostic: Callable[..., _DiagnosticResult] | None = None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -56,6 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_interactions=args.max_interactions,
             min_validation_rows=args.min_validation_rows,
             random_seed=args.random_seed,
+            profile_runtime=args.profile_runtime,
             progress_callback=lambda message: console.print(message),
         )
     except Exception as exc:
@@ -70,12 +77,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     console.print(
         Panel(
-            f"diagnostic_status={result.decision.get('diagnostic_status')}\noutput_path={result.output_path}",
+            _completion_summary(result),
             title="EBM diagnostic complete",
             border_style="green",
         )
     )
     return 0
+
+
+def _completion_summary(result: _DiagnosticResult) -> str:
+    decision = result.decision
+    lines = [f"diagnostic_status={decision.get('diagnostic_status')}"]
+    diagnostic_phase = decision.get("diagnostic_phase") or decision.get("diagnostic_scope")
+    if diagnostic_phase is not None:
+        lines.append(f"diagnostic_phase={diagnostic_phase}")
+    lines.append(f"output_path={result.output_path}")
+    return "\n".join(lines)
 
 
 def _parse_seasons(value: str) -> tuple[int, ...]:

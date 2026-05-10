@@ -532,6 +532,7 @@ def build_ebm_feature_diagnostic(
     max_interactions: int,
     min_validation_rows: int,
     random_seed: int,
+    profile_runtime: bool,
     progress_callback: Callable[[str], None] | None = None,
 ) -> EbmDiagnosticResult:
     started = perf_counter()
@@ -548,6 +549,7 @@ def build_ebm_feature_diagnostic(
     decision: dict[str, object] = {
         "discovery_only": True,
         "diagnostic_status": "diagnostic_complete",
+        "diagnostic_phase": "metadata_only",
         "inner_validation_mode": "disabled_full_outer_train",
         "position_handling": "one_hot",
         "source_experiment_path": str(experiment_path),
@@ -555,6 +557,7 @@ def build_ebm_feature_diagnostic(
     }
     manifest: dict[str, object] = {
         "discovery_only": True,
+        "diagnostic_phase": "metadata_only",
         "current_year": current_year,
         "model_id": model_id,
         "feature_pack": feature_pack,
@@ -566,6 +569,7 @@ def build_ebm_feature_diagnostic(
         "max_interactions": max_interactions,
         "min_validation_rows": min_validation_rows,
         "random_seed": random_seed,
+        "profile_runtime": profile_runtime,
     }
 
     _emit_progress(progress_callback, f"WRITE EBM diagnostic artifacts: output_path={output_path}")
