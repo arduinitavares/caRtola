@@ -172,6 +172,10 @@ _PAIRWISE_AGGREGATION_COLUMNS = (
     "fold_candidate_signal",
 )
 
+_MIN_CANDIDATE_TOTAL_ROW_SUPPORT = 1000
+_MIN_CANDIDATE_BIN_OR_CELL_ROW_SUPPORT = 50
+_MIN_CANDIDATE_BIN_OR_CELL_ROUND_SUPPORT = 5
+
 
 def build_season_folds(seasons: tuple[int, ...]) -> tuple[SeasonFold, ...]:
     if len(seasons) != len(set(seasons)):
@@ -552,16 +556,33 @@ def _aggregate_main_effect_hypotheses(feature_shape_summary: pd.DataFrame) -> li
         if signals.empty:
             continue
 
+        term_name = str(feature_name)
+        _validate_unique_signal_rows(signals, term_name=term_name)
         direction_values = _normalized_direction_values(signals["monotonicity_hint"])
         total_row_support = _sum_numeric_int(signals, "row_support")
+        min_bin_or_cell_row_support = _min_numeric_int(
+            signals,
+            (
+                "largest_positive_bin_row_support",
+                "largest_negative_bin_row_support",
+            ),
+        )
+        min_bin_or_cell_round_support = _min_numeric_int(
+            signals,
+            (
+                "largest_positive_bin_round_support",
+                "largest_negative_bin_round_support",
+            ),
+        )
         fold_signal_count = _fold_signal_count(signals)
         candidate_hypothesis_flag = (
             str(target_type) == "source_residual"
             and fold_signal_count >= 2
-            and total_row_support >= 1000
+            and total_row_support >= _MIN_CANDIDATE_TOTAL_ROW_SUPPORT
+            and min_bin_or_cell_row_support >= _MIN_CANDIDATE_BIN_OR_CELL_ROW_SUPPORT
+            and min_bin_or_cell_round_support >= _MIN_CANDIDATE_BIN_OR_CELL_ROUND_SUPPORT
             and _directions_compatible(direction_values)
         )
-        term_name = str(feature_name)
         rows.append(
             {
                 "discovery_only": True,
@@ -573,20 +594,8 @@ def _aggregate_main_effect_hypotheses(feature_shape_summary: pd.DataFrame) -> li
                 "fold_signal_count": fold_signal_count,
                 "validation_seasons_with_signal": _joined_sorted_values(signals["validation_season"]),
                 "total_row_support": total_row_support,
-                "min_bin_or_cell_row_support": _min_numeric_int(
-                    signals,
-                    (
-                        "largest_positive_bin_row_support",
-                        "largest_negative_bin_row_support",
-                    ),
-                ),
-                "min_bin_or_cell_round_support": _min_numeric_int(
-                    signals,
-                    (
-                        "largest_positive_bin_round_support",
-                        "largest_negative_bin_round_support",
-                    ),
-                ),
+                "min_bin_or_cell_row_support": min_bin_or_cell_row_support,
+                "min_bin_or_cell_round_support": min_bin_or_cell_round_support,
                 "effect_range_median": _median_numeric_float(signals, "effect_range"),
                 "direction_summary": ",".join(sorted(direction_values)),
                 "failed_validation_seasons": _joined_sorted_values(group.loc[~signal_mask, "validation_season"]),
@@ -619,38 +628,46 @@ def _aggregate_pairwise_hypotheses(pairwise_interactions: pd.DataFrame) -> list[
         if signals.empty:
             continue
 
+        term_name = str(interaction_name)
+        _validate_unique_signal_rows(signals, term_name=term_name)
         total_row_support = _sum_numeric_int(signals, "row_support")
+        min_bin_or_cell_row_support = _min_numeric_int(
+            signals,
+            (
+                "max_effect_cell_row_support",
+                "min_effect_cell_row_support",
+            ),
+        )
+        min_bin_or_cell_round_support = _min_numeric_int(
+            signals,
+            (
+                "max_effect_cell_round_support",
+                "min_effect_cell_round_support",
+            ),
+        )
         fold_signal_count = _fold_signal_count(signals)
         candidate_hypothesis_flag = (
-            str(target_type) == "source_residual" and fold_signal_count >= 2 and total_row_support >= 1000
+            str(target_type) == "source_residual"
+            and fold_signal_count >= 2
+            and total_row_support >= _MIN_CANDIDATE_TOTAL_ROW_SUPPORT
+            and min_bin_or_cell_row_support >= _MIN_CANDIDATE_BIN_OR_CELL_ROW_SUPPORT
+            and min_bin_or_cell_round_support >= _MIN_CANDIDATE_BIN_OR_CELL_ROUND_SUPPORT
         )
         rows.append(
             {
                 "discovery_only": True,
                 "target_type": str(target_type),
-                "candidate_type": "pairwise_interaction",
-                "term_name": str(interaction_name),
+                "candidate_type": "interaction",
+                "term_name": term_name,
                 "feature_a": str(feature_a),
                 "feature_b": str(feature_b),
                 "fold_signal_count": fold_signal_count,
                 "validation_seasons_with_signal": _joined_sorted_values(signals["validation_season"]),
                 "total_row_support": total_row_support,
-                "min_bin_or_cell_row_support": _min_numeric_int(
-                    signals,
-                    (
-                        "max_effect_cell_row_support",
-                        "min_effect_cell_row_support",
-                    ),
-                ),
-                "min_bin_or_cell_round_support": _min_numeric_int(
-                    signals,
-                    (
-                        "max_effect_cell_round_support",
-                        "min_effect_cell_round_support",
-                    ),
-                ),
+                "min_bin_or_cell_row_support": min_bin_or_cell_row_support,
+                "min_bin_or_cell_round_support": min_bin_or_cell_round_support,
                 "effect_range_median": _median_numeric_float(signals, "effect_range"),
-                "direction_summary": "interaction",
+                "direction_summary": "interaction_mixed",
                 "failed_validation_seasons": _joined_sorted_values(group.loc[~signal_mask, "validation_season"]),
                 "candidate_hypothesis_flag": bool(candidate_hypothesis_flag),
                 "candidate_scope": "human_review_only",
@@ -668,6 +685,23 @@ def _require_dataframe_columns(
     missing_columns = tuple(column for column in columns if column not in frame.columns)
     if missing_columns:
         raise EbmDiagnosticInvalid(f"Missing required {artifact_name} columns: {', '.join(missing_columns)}")
+
+
+def _validate_unique_signal_rows(signals: pd.DataFrame, *, term_name: str) -> None:
+    duplicated_mask = signals.duplicated(subset=["fold_id", "validation_season"], keep=False)
+    if not bool(duplicated_mask.any()):
+        return
+
+    duplicated_pairs = (
+        signals.loc[duplicated_mask, ["fold_id", "validation_season"]]
+        .drop_duplicates()
+        .sort_values(["fold_id", "validation_season"], key=lambda values: values.astype(str))
+    )
+    pair_summaries = [
+        f"fold_id={row['fold_id']} validation_season={row['validation_season']}"
+        for _, row in duplicated_pairs.iterrows()
+    ]
+    raise EbmDiagnosticInvalid(f"Duplicate signal rows for {term_name}: {'; '.join(pair_summaries)}")
 
 
 def _fold_signal_count(signals: pd.DataFrame) -> int:
@@ -738,9 +772,13 @@ def _directions_compatible(directions: set[str]) -> bool:
         return False
     if directions & {"mixed", "unstable"}:
         return False
+    monotone_directions = {"increasing", "decreasing"}
+    shaped_directions = {"u_shaped", "inverted_u"}
+    if directions & monotone_directions and directions & shaped_directions:
+        return False
     contradictory_direction_sets = (
-        {"increasing", "decreasing"},
-        {"u_shaped", "inverted_u"},
+        monotone_directions,
+        shaped_directions,
     )
     return not any(contradictory_directions.issubset(directions) for contradictory_directions in contradictory_direction_sets)
 
