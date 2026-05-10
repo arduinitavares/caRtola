@@ -64,6 +64,8 @@ Steps:
   `uv run --frozen python scripts/run_model_experiments.py --group xgboost-research --seasons 2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --jobs 12 --profile-runtime`
 - XGBoost sensitivity v2 experiment:
   `uv run --frozen python scripts/run_model_experiments.py --group xgboost-sensitivity-v2 --seasons 2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --jobs 12 --profile-runtime`
+- H004 attack-defense mismatch experiment:
+  `uv run --frozen python scripts/run_model_experiments.py --group h004-attack-defense-mismatch --seasons 2021,2022,2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --jobs 12 --profile-runtime`
 - Experiment outputs are written under `data/08_reporting/experiments/model_feature/<experiment_id>/`.
 - Experiment runs are indexed in SQLite at `data/08_reporting/experiments/experiment_index.sqlite`.
 - Use `--models` and `--exclude-models` for targeted experiment slices; filters must leave at least one model.
@@ -86,10 +88,13 @@ Steps:
   `uv run --frozen python scripts/run_policy_simulation.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --hypothesis-id H001 --policy-set opponent-overlap-v1 --models xgboost_depth2_slow --feature-packs ppg_xg_matchup --seasons 2021,2022,2023,2024,2025 --current-year 2026`
 - Artifact-backed H002 goalkeeper-conflict policy replay for a completed model-feature experiment:
   `uv run --frozen python scripts/run_policy_simulation.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --hypothesis-id H002 --policy-set gk-conflict-v1 --models xgboost_depth2_slow --feature-packs ppg_xg_matchup --seasons 2021,2022,2023,2024,2025 --current-year 2026`
+- Artifact-backed H003 clean-sheet defensive-stack policy replay for a completed model-feature experiment:
+  `uv run --frozen python scripts/run_policy_simulation.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --hypothesis-id H003 --policy-set clean-sheet-stack-v1 --models xgboost_depth2_slow --feature-packs ppg_xg_matchup --seasons 2021,2022,2023,2024,2025 --current-year 2026`
 - Policy simulation outputs are written under `data/08_reporting/policy_simulations/policy_simulation_started_at=.../` and include `policy_simulation_manifest.json`, policy summary CSVs, selected-player and round-result CSVs, `policy_comparability_report.json`, and `policy_simulation_report.html`.
 - Treat policy simulation as research-only: it replays policy variants from persisted experiment artifacts, keeps model predictions and candidate pools fixed, and gives each policy an independent moving-budget path.
 - Exploratory fixture backtests record fixture source paths and SHA-256 hashes in `run_metadata.json`; policy simulation verifies those hashes when present.
 - Verified fixture identity produces `ok` comparability; unverified or mismatched fixture identity produces `diagnostic_only`, which is not promotion evidence.
+- H003 `clean-sheet-stack-v1` latest verified run was rejected; do not promote defensive-stack optimizer bonuses without a new frozen validation run.
 - Do not change live defaults from policy simulation output without a frozen validation run.
 
 ## Oracle Discovery Workflow
@@ -98,6 +103,16 @@ Steps:
   `uv run --frozen python scripts/run_oracle_knowledge_discovery.py --experiment-path data/08_reporting/experiments/model_feature/<experiment_id> --current-year 2026`
 - Oracle discovery outputs are written under `data/08_reporting/oracle_discovery/oracle_discovery_started_at=.../` and include `oracle_round_results.csv`, `oracle_selected_players.csv`, `oracle_captain_profiles.csv`, `model_vs_oracle_recall.csv`, `profile_gap_summary.csv`, `invalid_oracle_rows.csv`, `oracle_discovery_metadata.json`, and `oracle_knowledge_discovery.html`.
 - Treat oracle discovery as hindsight research only: it reads persisted source experiment artifacts, does not make promotion decisions, and must not change live defaults, experiment rankings, or experiment index promotion fields.
+
+## H004 Attack-Defense Research
+
+- Artifact-backed H004 residual diagnostic for the current XGBoost sensitivity control:
+  `uv run --frozen python scripts/run_h004_residual_diagnostic.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --seasons 2021,2022,2023,2024,2025`
+- H004 residual diagnostic outputs are written under `data/08_reporting/hypotheses/h004_residual_diagnostic_started_at=.../` and include `h004_residual_correlations.csv`, `h004_residual_quintiles.csv`, `h004_top_actual_recall.csv`, `h004_selected_residual_profile.csv`, `h004_dnp_context_profile.csv`, `h004_diagnostic_decision.json`, and `h004_residual_diagnostic.html`.
+- H004 Phase 2 compares `xgboost_depth2_slow + ppg_xg_matchup` against `xgboost_depth2_slow + ppg_xg_matchup_h004` in the same experiment matrix; do not compare the H004 challenger against old control artifacts.
+- Build the deterministic H004 Phase 2 decision artifact after a completed H004 experiment:
+  `uv run --frozen python scripts/run_h004_feature_decision.py --experiment-path data/08_reporting/experiments/model_feature/group=h004-attack-defense-mismatch__started_at=20260508T191417000002Z__matrix=fc77bcf76f40`
+- H004 Phase 2 writes `h004_phase2_decision.json`; the latest verified run rejected `ppg_xg_matchup_h004` after aggregate and 2025 actual-points regressions, so preserve it as negative research evidence rather than a live default or direct follow-up tweak.
 
 ## Ridge Tuning Workflow
 
