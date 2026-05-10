@@ -245,6 +245,7 @@ def fit_ebm_fold_target(
         "n_jobs": -1,
         "objective": "rmse",
         "validation_size": 0.0,
+        "early_stopping_rounds": 100,
     }
     model = ebm_class(**_filter_constructor_params(ebm_class, constructor_params))
     training_features = train_rows.loc[:, feature_columns]
@@ -254,11 +255,9 @@ def fit_ebm_fold_target(
     started = perf_counter()
     model.fit(training_features, training_target)
     fit_seconds = perf_counter() - started
-    predictions = pd.Series(
-        model.predict(validation_features),
-        index=validation_rows.index,
-        dtype="float64",
-    )
+    raw_predictions = model.predict(validation_features)
+    prediction_values = np.asarray(raw_predictions, dtype="float64")
+    predictions = pd.Series(prediction_values, index=validation_rows.index)
     return EBMFitResult(
         model=model,
         predictions=predictions,

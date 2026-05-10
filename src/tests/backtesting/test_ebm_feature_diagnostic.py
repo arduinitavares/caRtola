@@ -78,6 +78,11 @@ class _RecordingEbm:
         return [0.25 for _ in range(len(x_values))]
 
 
+class _SeriesPredictingEbm(_RecordingEbm):
+    def predict(self, x_values: pd.DataFrame) -> pd.Series:
+        return pd.Series([0.75 for _ in range(len(x_values))], index=range(len(x_values)))
+
+
 class _RecordingEbmWithoutValidationSize:
     def __init__(self, *, interactions: int = 0, random_state: int | None = None) -> None:
         self.params: dict[str, object] = {
@@ -345,7 +350,28 @@ def test_fit_ebm_fold_target_disables_internal_validation() -> None:
     assert result.predictions.index.tolist() == [99]
     assert result.model.params["interactions"] == 0
     assert result.model.params["validation_size"] == 0.0
+    assert result.model.params["early_stopping_rounds"] == 100
     assert result.fit_row_count == 2
+
+
+def test_fit_ebm_fold_target_preserves_prediction_positions() -> None:
+    train = pd.DataFrame({"feature_a": [0.0, 1.0], "target_actual_points": [1.0, 2.0]})
+    validation = pd.DataFrame({"feature_a": [2.0], "target_actual_points": [3.0]}, index=[99])
+
+    result = ebm_feature_diagnostic.fit_ebm_fold_target(
+        ebm_class=_SeriesPredictingEbm,
+        train_rows=train,
+        validation_rows=validation,
+        feature_columns=("feature_a",),
+        target_column="target_actual_points",
+        target_type="actual_points",
+        fold_id="A",
+        validation_season=2023,
+        random_seed=123,
+    )
+
+    assert result.predictions.tolist() == [0.75]
+    assert result.predictions.index.tolist() == [99]
 
 
 def test_fit_ebm_fold_target_omits_unsupported_validation_size() -> None:
