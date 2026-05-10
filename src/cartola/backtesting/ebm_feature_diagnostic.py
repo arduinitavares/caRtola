@@ -4,7 +4,7 @@ import html
 import inspect
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -41,6 +41,12 @@ class EbmDiagnosticConfig:
     model_id: str
     feature_pack: str
     fixture_mode: str
+
+
+@dataclass(frozen=True)
+class EbmDiagnosticResult:
+    output_path: Path
+    decision: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -514,6 +520,73 @@ def aggregate_candidate_hypotheses(
     return pd.DataFrame(rows, columns=pd.Index(_CANDIDATE_HYPOTHESIS_COLUMNS))
 
 
+def build_ebm_feature_diagnostic(
+    *,
+    experiment_path: Path,
+    output_path: Path,
+    seasons: tuple[int, ...],
+    model_id: str,
+    feature_pack: str,
+    fixture_mode: str,
+    current_year: int,
+    max_interactions: int,
+    min_validation_rows: int,
+    random_seed: int,
+    progress_callback: Callable[[str], None] | None = None,
+) -> EbmDiagnosticResult:
+    started = perf_counter()
+    _emit_progress(progress_callback, "START EBM diagnostic artifact validation")
+    config = EbmDiagnosticConfig(
+        experiment_path=experiment_path,
+        seasons=seasons,
+        model_id=model_id,
+        feature_pack=feature_pack,
+        fixture_mode=fixture_mode,
+    )
+    contexts, source_report = resolve_source_children(config)
+    source_context = pd.DataFrame([context.as_row() for context in contexts]) if contexts else source_report
+    decision: dict[str, object] = {
+        "discovery_only": True,
+        "diagnostic_status": "diagnostic_complete",
+        "inner_validation_mode": "disabled_full_outer_train",
+        "position_handling": "one_hot",
+        "source_experiment_path": str(experiment_path),
+        "output_path": str(output_path),
+    }
+    manifest: dict[str, object] = {
+        "discovery_only": True,
+        "current_year": current_year,
+        "model_id": model_id,
+        "feature_pack": feature_pack,
+        "fixture_mode": fixture_mode,
+        "position_handling": "one_hot",
+        "inner_validation_mode": "disabled_full_outer_train",
+        "total_wall_clock_seconds": perf_counter() - started,
+        "source_child_count": len(contexts),
+        "max_interactions": max_interactions,
+        "min_validation_rows": min_validation_rows,
+        "random_seed": random_seed,
+    }
+
+    _emit_progress(progress_callback, f"WRITE EBM diagnostic artifacts: output_path={output_path}")
+    write_ebm_diagnostic_artifacts(
+        output_path=output_path,
+        manifest=manifest,
+        source_context=source_context,
+        fold_assignments=pd.DataFrame(),
+        predictive_metrics=pd.DataFrame(),
+        feature_importance=pd.DataFrame(),
+        feature_shape_summary=pd.DataFrame(),
+        pairwise_interactions=pd.DataFrame(),
+        candidate_hypotheses=pd.DataFrame(),
+        invalid_rows=pd.DataFrame(),
+        invalid_report=pd.DataFrame(),
+        decision=decision,
+    )
+    _emit_progress(progress_callback, f"COMPLETE EBM diagnostic metadata-only artifacts: output_path={output_path}")
+    return EbmDiagnosticResult(output_path=output_path, decision=decision)
+
+
 def write_ebm_diagnostic_artifacts(
     *,
     output_path: Path,
@@ -909,6 +982,11 @@ def _html_report(*, decision: dict[str, object], manifest: dict[str, object]) ->
         "</body>"
         "</html>"
     )
+
+
+def _emit_progress(progress_callback: Callable[[str], None] | None, message: str) -> None:
+    if progress_callback is not None:
+        progress_callback(message)
 
 
 def _validate_unique_fold_rows(group: pd.DataFrame, *, term_name: str) -> None:
