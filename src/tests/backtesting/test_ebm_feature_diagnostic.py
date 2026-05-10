@@ -832,7 +832,7 @@ def test_write_ebm_diagnostic_artifacts_adds_discovery_metadata(tmp_path: Path) 
     writer(
         output_path=output,
         manifest={"diagnostic_status": "invalid"},
-        source_context=pd.DataFrame([{"match_status": "missing"}]),
+        source_context=pd.DataFrame([{"discovery_only": False, "match_status": "missing"}]),
         fold_assignments=pd.DataFrame(),
         predictive_metrics=pd.DataFrame(),
         feature_importance=pd.DataFrame(),
@@ -840,7 +840,7 @@ def test_write_ebm_diagnostic_artifacts_adds_discovery_metadata(tmp_path: Path) 
         pairwise_interactions=pd.DataFrame(),
         candidate_hypotheses=pd.DataFrame(),
         invalid_rows=pd.DataFrame(),
-        invalid_report=pd.DataFrame([{"reason_type": "schema", "message": "missing"}]),
+        invalid_report=pd.DataFrame([{"discovery_only": False, "reason_type": "schema", "message": "missing"}]),
         decision={"diagnostic_status": "invalid"},
     )
 
@@ -872,12 +872,37 @@ def test_write_ebm_diagnostic_artifacts_adds_discovery_metadata(tmp_path: Path) 
     }
     for artifact_name in sorted(csv_artifacts):
         frame = pd.read_csv(output / artifact_name)
-        assert "discovery_only" in frame.columns
+        assert frame.columns[0] == "discovery_only"
 
     source_context = pd.read_csv(output / "source_context.csv")
     invalid_report = pd.read_csv(output / "invalid_diagnostic_report.csv")
     assert source_context["discovery_only"].tolist() == [True]
     assert invalid_report["discovery_only"].tolist() == [True]
+    assert list(pd.read_csv(output / "predictive_metrics.csv").columns) == [
+        "discovery_only",
+        "target_type",
+        "prediction_type",
+        "fold_id",
+        "validation_season",
+        "shared_evaluation_row_count",
+        "mae",
+        "rmse",
+        "spearman",
+        "top50_spearman",
+        "calibration_slope",
+        "mean_prediction_bias",
+    ]
+    assert list(pd.read_csv(output / "invalid_ebm_rows.csv").columns) == [
+        "discovery_only",
+        "season",
+        "rodada",
+        "id_atleta",
+        "apelido",
+        "posicao",
+        "invalid_reason",
+        "pontuacao",
+        "entrou_em_campo",
+    ]
 
     html_report = (output / "ebm_feature_diagnostic.html").read_text(encoding="utf-8")
     assert "<!doctype html>" in html_report

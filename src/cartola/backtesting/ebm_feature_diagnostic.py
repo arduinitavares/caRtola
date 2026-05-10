@@ -61,6 +61,7 @@ class SourceChildContext:
     def as_row(self) -> dict[str, object]:
         return {
             "source_experiment_id": self.source_experiment_id,
+            "requested_season": self.season,
             "season": self.season,
             "model_id": self.model_id,
             "feature_pack": self.feature_pack,
@@ -69,7 +70,7 @@ class SourceChildContext:
             "footystats_mode": self.footystats_mode,
             "budget_policy": self.budget_policy,
             "scoring_contract_version": self.scoring_contract_version,
-            "score_column": self.score_column,
+            "primary_score_column": self.score_column,
             "child_path": str(self.child_path),
             "source_prediction_provenance_status": self.source_prediction_provenance_status,
             "discovery_only": True,
@@ -123,6 +124,117 @@ _PREDICTIVE_METRIC_COLUMNS = (
     "mean_prediction_bias",
 )
 
+_SOURCE_CONTEXT_COLUMNS = (
+    "discovery_only",
+    "source_experiment_id",
+    "requested_season",
+    "season",
+    "model_id",
+    "feature_pack",
+    "fixture_mode",
+    "matchup_context_mode",
+    "footystats_mode",
+    "budget_policy",
+    "scoring_contract_version",
+    "primary_score_column",
+    "match_status",
+    "child_path",
+    "conflicting_child_paths",
+    "missing_metadata_fields",
+    "source_prediction_provenance_status",
+)
+
+_FOLD_ASSIGNMENT_COLUMNS = (
+    "discovery_only",
+    "fold_id",
+    "validation_season",
+    "train_seasons",
+    "inner_validation_mode",
+    "train_row_count",
+    "validation_row_count",
+)
+
+_INVALID_EBM_ROW_COLUMNS = (
+    "discovery_only",
+    "season",
+    "rodada",
+    "id_atleta",
+    "apelido",
+    "posicao",
+    "invalid_reason",
+    "pontuacao",
+    "entrou_em_campo",
+)
+
+_INVALID_DIAGNOSTIC_REPORT_COLUMNS = (
+    "discovery_only",
+    "scope",
+    "severity",
+    "reason_type",
+    "message",
+    "artifact_path",
+    "season",
+    "model_id",
+    "feature_pack",
+)
+
+_FEATURE_IMPORTANCE_COLUMNS = (
+    "discovery_only",
+    "target_type",
+    "fold_id",
+    "validation_season",
+    "feature_name",
+    "importance_rank",
+    "importance_score",
+)
+
+_FEATURE_SHAPE_SUMMARY_COLUMNS = (
+    "discovery_only",
+    "target_type",
+    "feature_name",
+    "fold_id",
+    "validation_season",
+    "importance_rank",
+    "importance_score",
+    "effect_min",
+    "effect_max",
+    "effect_range",
+    "term_support_extraction_status",
+    "largest_positive_bin_lower",
+    "largest_positive_bin_upper",
+    "largest_positive_bin_row_support",
+    "largest_positive_bin_round_support",
+    "largest_negative_bin_lower",
+    "largest_negative_bin_upper",
+    "largest_negative_bin_row_support",
+    "largest_negative_bin_round_support",
+    "monotonicity_hint",
+    "row_support",
+    "season_support",
+    "fold_candidate_signal",
+)
+
+_PAIRWISE_INTERACTION_COLUMNS = (
+    "discovery_only",
+    "target_type",
+    "interaction_name",
+    "feature_a",
+    "feature_b",
+    "fold_id",
+    "validation_season",
+    "importance_rank",
+    "importance_score",
+    "effect_range",
+    "term_support_extraction_status",
+    "max_effect_cell_row_support",
+    "max_effect_cell_round_support",
+    "min_effect_cell_row_support",
+    "min_effect_cell_round_support",
+    "row_support",
+    "season_support",
+    "fold_candidate_signal",
+)
+
 _CANDIDATE_HYPOTHESIS_COLUMNS = (
     "discovery_only",
     "target_type",
@@ -141,6 +253,18 @@ _CANDIDATE_HYPOTHESIS_COLUMNS = (
     "candidate_hypothesis_flag",
     "candidate_scope",
 )
+
+_CSV_ARTIFACT_SCHEMAS = {
+    "source_context.csv": _SOURCE_CONTEXT_COLUMNS,
+    "fold_assignments.csv": _FOLD_ASSIGNMENT_COLUMNS,
+    "predictive_metrics.csv": _PREDICTIVE_METRIC_COLUMNS,
+    "feature_importance_by_fold.csv": _FEATURE_IMPORTANCE_COLUMNS,
+    "feature_shape_summary.csv": _FEATURE_SHAPE_SUMMARY_COLUMNS,
+    "pairwise_interactions.csv": _PAIRWISE_INTERACTION_COLUMNS,
+    "candidate_hypotheses.csv": _CANDIDATE_HYPOTHESIS_COLUMNS,
+    "invalid_ebm_rows.csv": _INVALID_EBM_ROW_COLUMNS,
+    "invalid_diagnostic_report.csv": _INVALID_DIAGNOSTIC_REPORT_COLUMNS,
+}
 
 _MAIN_EFFECT_AGGREGATION_COLUMNS = (
     "target_type",
@@ -417,15 +541,19 @@ def write_ebm_diagnostic_artifacts(
         json.dumps(decision_payload, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    _write_csv(output_path / "source_context.csv", source_context)
-    _write_csv(output_path / "fold_assignments.csv", fold_assignments)
-    _write_csv(output_path / "predictive_metrics.csv", predictive_metrics)
-    _write_csv(output_path / "feature_importance_by_fold.csv", feature_importance)
-    _write_csv(output_path / "feature_shape_summary.csv", feature_shape_summary)
-    _write_csv(output_path / "pairwise_interactions.csv", pairwise_interactions)
-    _write_csv(output_path / "candidate_hypotheses.csv", candidate_hypotheses)
-    _write_csv(output_path / "invalid_ebm_rows.csv", invalid_rows)
-    _write_csv(output_path / "invalid_diagnostic_report.csv", invalid_report)
+    csv_artifacts = {
+        "source_context.csv": source_context,
+        "fold_assignments.csv": fold_assignments,
+        "predictive_metrics.csv": predictive_metrics,
+        "feature_importance_by_fold.csv": feature_importance,
+        "feature_shape_summary.csv": feature_shape_summary,
+        "pairwise_interactions.csv": pairwise_interactions,
+        "candidate_hypotheses.csv": candidate_hypotheses,
+        "invalid_ebm_rows.csv": invalid_rows,
+        "invalid_diagnostic_report.csv": invalid_report,
+    }
+    for artifact_name, frame in csv_artifacts.items():
+        _write_csv(output_path / artifact_name, frame, columns=_CSV_ARTIFACT_SCHEMAS[artifact_name])
     (output_path / "ebm_feature_diagnostic.html").write_text(
         _html_report(decision=decision_payload, manifest=manifest_payload),
         encoding="utf-8",
@@ -752,10 +880,14 @@ def _require_dataframe_columns(
         raise EbmDiagnosticInvalid(f"Missing required {artifact_name} columns: {', '.join(missing_columns)}")
 
 
-def _write_csv(path: Path, frame: pd.DataFrame) -> None:
+def _write_csv(path: Path, frame: pd.DataFrame, *, columns: tuple[str, ...]) -> None:
     output = frame.copy()
-    if "discovery_only" not in output.columns:
-        output.insert(0, "discovery_only", True)
+    for column in columns:
+        if column not in output.columns:
+            output[column] = pd.NA
+    output["discovery_only"] = True
+    extra_columns = [column for column in output.columns if column not in columns]
+    output = output.loc[:, [*columns, *extra_columns]]
     output.to_csv(path, index=False)
 
 
@@ -1354,6 +1486,7 @@ def _duplicate_row(
 def _requested_row(source_experiment_id: str, *, config: EbmDiagnosticConfig, season: int) -> dict[str, object]:
     return {
         "source_experiment_id": source_experiment_id,
+        "requested_season": season,
         "season": season,
         "model_id": config.model_id,
         "feature_pack": config.feature_pack,
@@ -1362,6 +1495,6 @@ def _requested_row(source_experiment_id: str, *, config: EbmDiagnosticConfig, se
         "footystats_mode": "",
         "budget_policy": "moving",
         "scoring_contract_version": "",
-        "score_column": f"{config.model_id}_score",
+        "primary_score_column": f"{config.model_id}_score",
         "discovery_only": True,
     }
