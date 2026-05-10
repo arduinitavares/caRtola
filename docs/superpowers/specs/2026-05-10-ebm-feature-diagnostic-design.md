@@ -160,6 +160,51 @@ For each analyzed child run, the runner must validate:
 If `season` is absent from `player_predictions.csv`, derive it from validated
 child context. Do not require the CSV itself to carry `season`.
 
+### Child Run Resolution
+
+The CLI context must resolve to exactly one child run per requested season.
+The matching key is:
+
+```text
+season
+model_id
+feature_pack
+fixture_mode
+matchup_context_mode
+footystats_mode
+budget_policy
+scoring_contract_version
+primary_score_column
+```
+
+Resolution may use parent `experiment_metadata.json`, parent index fields, and
+child `run_metadata.json`, but it must not infer model identity from directory
+names alone.
+
+Missing or duplicate matches invalidate the diagnostic before fitting any EBM.
+`source_context.csv` must still be written and must list:
+
+- requested context values;
+- matched child path when exactly one match exists;
+- conflicting child paths when duplicates exist;
+- missing required metadata fields;
+- selected primary score column;
+- `source_prediction_provenance_status`.
+
+`source_prediction_provenance_status` is `verified` only when:
+
+- the parent `experiment_metadata.json` has exactly one `child_runs` entry for
+  the matching key;
+- that child entry's `output_path` resolves to the analyzed child directory;
+- child `run_metadata.json` agrees with the parent child entry for the matching
+  key fields;
+- `player_predictions.csv`, `round_results.csv`, and `run_metadata.json` live
+  under that resolved child directory;
+- the primary score column exists in `player_predictions.csv`.
+
+If provenance cannot be verified from those artifact relationships, the
+diagnostic is invalid.
+
 ### Required Player Prediction Columns
 
 `player_predictions.csv` must contain:
@@ -263,10 +308,11 @@ Outer Fold C:
   external validation: 2025
 ```
 
-Use this mode only when the remaining training rows and seasons are sufficient
-for every fold. The implementation must call EBM fitting with explicit
-validation arrays when the installed InterpretML API supports
-`fit(X, y, X_val=..., y_val=...)`.
+Use this mode only when every fold has at least `1` training season, `1000`
+valid training rows, `500` valid inner-validation rows, and `500` valid
+external-validation rows after DNP/coach/feature filtering. The implementation
+must call EBM fitting with explicit validation arrays when the installed
+InterpretML API supports `fit(X, y, X_val=..., y_val=...)`.
 
 Mode 2, `disabled_full_outer_train`, trains on every outer training season and
 sets internal validation off or equivalent:
@@ -288,6 +334,10 @@ Fold C:
 Use this mode when explicit temporal validation is unsupported or would leave
 too little training evidence. It preserves the season-expanding train sets
 while still preventing random row validation.
+
+This mode requires every fold to have at least `2` outer-training seasons,
+`1500` valid training rows, and `500` valid external-validation rows after
+DNP/coach/feature filtering.
 
 The selected mode must be recorded:
 
@@ -333,6 +383,10 @@ and fit signatures used for the run. A missing or incompatible parameter must
 produce an invalid diagnostic rather than silently changing the validation
 contract.
 
+Before any model fit, a compatibility adapter test must assert the resolved
+constructor parameters, fit keyword arguments, and validation mode for the
+installed InterpretML version.
+
 Main-effect EBMs are the default. Interaction EBMs are a second pass only after
 main effects fit successfully.
 
@@ -352,7 +406,10 @@ diagnostic generation.
 
 ## Feature Set
 
-Use the source model's persisted feature columns from `run_metadata.json`.
+Use only the source model's persisted feature columns from
+`run_metadata.json`, after applying the leakage and identity exclusion list.
+Fail if any retained feature is non-numeric except explicitly generated
+position one-hot columns.
 
 Exclude these columns even if present:
 
@@ -425,6 +482,45 @@ Metrics must aggregate by season first. Do not present row-weighted aggregates
 as the primary result. Primary hypothesis nomination uses the residual target;
 raw-point target metrics are sanity checks and context.
 
+## Term Support Extraction Contract
+
+Candidate flags depend on EBM term support, so support must be computed from
+the fitted EBM's learned term/bin definitions, not from ad hoc raw-value ranges.
+
+For each fitted EBM, the runner must persist these manifest fields:
+
+- `term_support_extraction_method`;
+- `term_support_extraction_status`;
+- EBM metadata attributes used for bin assignment;
+- fallback reason when exact assignment is unavailable.
+
+Accepted support extraction:
+
+- Continuous features: map each external-validation row to the exact learned
+  continuous bin used by the fitted EBM, including explicit missing-value bins
+  if the fitted EBM exposes them.
+- Position one-hot features: use the generated one-hot column value as the
+  term bin. The support for an active position bin is the rows where that
+  one-hot column is `1`; the support for the inactive/reference bin is rows
+  where it is `0`.
+- Missing values: count missing-value rows in the fitted EBM's missing bin when
+  exposed. If missing-bin assignment cannot be reproduced exactly, support is
+  unavailable for that term.
+- Pairwise interactions: map each external-validation row to the ordered pair
+  of learned bin IDs for `feature_a` and `feature_b`. Cell support is counted
+  on those learned bin ID pairs, not on raw feature ranges.
+
+If exact bin/cell assignment cannot be reproduced for a term, write the term
+with `term_support_extraction_status=unavailable`, set all support-dependent
+candidate fields to false, and record the reason. Importance and effect values
+may still be reported, but unavailable support must block
+`fold_candidate_signal` and aggregated `candidate_hypothesis_flag`.
+
+The implementation plan must include a synthetic end-to-end test with known
+bins, known missing-value rows, one-hot position rows, and known interaction
+cells. The test must assert the row and round support values used for candidate
+gating.
+
 ## Feature Shape Summaries
 
 The HTML report must show EBM feature curves, but CSV artifacts must also
@@ -441,6 +537,7 @@ capture deterministic summaries:
 - `effect_min`;
 - `effect_max`;
 - `effect_range`;
+- `term_support_extraction_status`;
 - `largest_positive_bin_lower`;
 - `largest_positive_bin_upper`;
 - `largest_positive_bin_row_support`;
@@ -511,6 +608,16 @@ The aggregated `candidate_hypothesis_flag` is true only when:
   distinct rounds;
 - directions are not contradictory across signaled folds.
 
+Direction compatibility is strict:
+
+- `increasing` and `decreasing` contradict each other;
+- `u_shaped` and `inverted_u` contradict each other and contradict monotone
+  directions;
+- `mixed` and `unstable` cannot produce an aggregated candidate;
+- interaction terms must use `direction_summary=interaction_mixed` unless a
+  later generation defines a tested interaction direction classifier, and may
+  become candidates only through repeated high-support effect ranges.
+
 `candidate_scope` must be `human_review_only`. A flagged candidate is not a
 feature, policy, model candidate, promotion signal, or experiment-index value.
 
@@ -529,6 +636,7 @@ For interaction EBMs, write:
 - `importance_rank`;
 - `importance_score`;
 - `effect_range`;
+- `term_support_extraction_status`;
 - `max_effect_cell_row_support`;
 - `max_effect_cell_round_support`;
 - `min_effect_cell_row_support`;
@@ -620,6 +728,13 @@ The manifest must include:
 - final feature list;
 - excluded feature list;
 - excluded identity-column list.
+- child-run matching key;
+- resolved child paths by season;
+- `source_prediction_provenance_status`;
+- `term_support_extraction_method`;
+- `term_support_extraction_status`;
+
+Every CSV artifact must include a `discovery_only` column with value `true`.
 
 If the diagnostic is invalid, still write:
 
@@ -643,18 +758,29 @@ Rules:
 - `invalid`: source context, schema, dependency, or row validity checks failed.
 - `candidate_hypotheses_found`: at least one aggregated
   `candidate_hypothesis_flag` is true for `target_type=source_residual` and
-  predictive metrics do not materially regress the source model on 2025.
+  residual-corrected EBM predictive metrics do not materially regress the
+  source model on 2025.
 - `diagnostic_complete`: model fit and report succeeded, but aggregated
   candidate flags are absent or mixed.
-- `insufficient_signal`: EBM underperforms the source model in at least 2 of 3
-  validation seasons by MAE and no aggregated candidate flags are true.
+- `insufficient_signal`: residual-corrected EBM predictions underperform the
+  source model in at least 2 of 3 validation seasons by MAE and no aggregated
+  residual-target candidate flags are true.
+
+Candidate-related decisions use residual-corrected point predictions only:
+
+```text
+residual_corrected_prediction = source_model_score + predicted_source_residual
+```
+
+Raw-point EBM metrics are reported for context but do not produce
+`candidate_hypotheses_found` or `insufficient_signal`.
 
 Material 2025 regression for the diagnostic is:
 
 ```text
-EBM MAE_2025 - source_model MAE_2025 > 0.15
+residual_corrected_EBM MAE_2025 - source_model MAE_2025 > 0.15
 or
-EBM top50_spearman_2025 - source_model top50_spearman_2025 < -0.02
+residual_corrected_EBM top50_spearman_2025 - source_model top50_spearman_2025 < -0.02
 ```
 
 This status is not a promotion status. It only tells us whether to write a
@@ -704,6 +830,9 @@ but the report must still include deterministic CSV-backed summaries.
 ## Acceptance Criteria
 
 - The runner rejects missing required source columns with explicit names.
+- The runner requires exactly one validated child run per requested
+  season/context and writes duplicate/missing matches to `source_context.csv`.
+- Source prediction provenance is validated from metadata before fitting.
 - The runner rejects unsupported broad AutoML libraries in V1; only EBM is
   implemented.
 - The runner never uses random row-level CV.
@@ -720,14 +849,22 @@ but the report must still include deterministic CSV-backed summaries.
 - Raw-point and residual-target artifacts are both written.
 - Main-effect EBM output writes feature importance and shape summaries.
 - Interaction EBM output writes pairwise interaction summaries.
+- Term-support extraction uses fitted EBM learned bins/cells or marks support
+  unavailable and blocks candidate flags.
 - Bin/cell-level support thresholds are enforced before any candidate flag.
 - Cross-fold `candidate_hypothesis_flag` appears only in
   `candidate_hypotheses.csv`.
+- Decision-status metrics use residual-corrected predictions for candidate
+  decisions.
 - Invalid diagnostics write incomplete-but-readable artifacts.
 - CLI prints progress and output path.
 - All artifacts include `discovery_only=true`.
+- CSV artifacts include a `discovery_only` column.
 - InterpretML version and inspected signatures are recorded.
 - The holdout ledger records 2025 diagnostic exposure.
+- Synthetic tests cover bin support, missing-bin support, one-hot position
+  support, interaction cell support, duplicate child detection, and
+  residual-corrected metric selection.
 - No existing experiment promotion/index fields are modified.
 
 ## Next Step After This Spec
