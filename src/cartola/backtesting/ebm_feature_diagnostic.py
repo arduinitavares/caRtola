@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 
 
@@ -21,6 +22,14 @@ class EbmDiagnosticInvalid(RuntimeError):
     def __init__(self, message: str, *, report: pd.DataFrame | None = None) -> None:
         super().__init__(message)
         self.report = report
+
+
+@dataclass(frozen=True)
+class SeasonFold:
+    fold_id: str
+    train_seasons: tuple[int, ...]
+    validation_season: int
+    inner_validation_mode: str = "disabled_full_outer_train"
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,86 @@ class EbmRuntimeInfo:
     constructor_signature: str
     fit_signature: str
     supports_explicit_validation: bool
+
+
+_PREDICTIVE_METRIC_COLUMNS = (
+    "discovery_only",
+    "target_type",
+    "prediction_type",
+    "fold_id",
+    "validation_season",
+    "shared_evaluation_row_count",
+    "mae",
+    "rmse",
+    "spearman",
+    "top50_spearman",
+    "calibration_slope",
+    "mean_prediction_bias",
+)
+
+
+def build_season_folds(seasons: tuple[int, ...]) -> tuple[SeasonFold, ...]:
+    sorted_seasons = tuple(sorted(seasons))
+    if len(sorted_seasons) < 3:
+        raise EbmDiagnosticInvalid("At least three seasons are required to build EBM diagnostic folds")
+
+    folds: list[SeasonFold] = []
+    for fold_index, validation_index in enumerate(range(2, len(sorted_seasons))):
+        folds.append(
+            SeasonFold(
+                fold_id=_season_fold_id(fold_index),
+                train_seasons=sorted_seasons[:validation_index],
+                validation_season=sorted_seasons[validation_index],
+            )
+        )
+    return tuple(folds)
+
+
+def compute_predictive_metrics(rows: pd.DataFrame, *, fold_id: str, validation_season: int) -> pd.DataFrame:
+    required_columns = (
+        "rodada",
+        "target_actual_points",
+        "source_model_score",
+        "predicted_actual_points",
+        "predicted_source_residual",
+    )
+    missing_columns = tuple(column for column in required_columns if column not in rows.columns)
+    if missing_columns:
+        raise EbmDiagnosticInvalid(f"Missing required metric columns: {', '.join(missing_columns)}")
+
+    source_model_score = _numeric_series(rows, "source_model_score")
+    prediction_specs = (
+        ("actual_points", "source_model", source_model_score),
+        ("actual_points", "actual_points", _numeric_series(rows, "predicted_actual_points")),
+        (
+            "source_residual",
+            "residual_corrected",
+            source_model_score + _numeric_series(rows, "predicted_source_residual"),
+        ),
+    )
+
+    metric_rows: list[dict[str, object]] = []
+    for target_type, prediction_type, predicted in prediction_specs:
+        paired_rows = _paired_predictive_metric_rows(rows, predicted)
+        errors = paired_rows["predicted"] - paired_rows["actual"]
+        metric_rows.append(
+            {
+                "discovery_only": True,
+                "target_type": target_type,
+                "prediction_type": prediction_type,
+                "fold_id": fold_id,
+                "validation_season": validation_season,
+                "shared_evaluation_row_count": len(paired_rows),
+                "mae": _mean_absolute_error(errors),
+                "rmse": _root_mean_squared_error(errors),
+                "spearman": _spearman(paired_rows["actual"], paired_rows["predicted"]),
+                "top50_spearman": _top50_spearman(paired_rows),
+                "calibration_slope": _calibration_slope(paired_rows),
+                "mean_prediction_bias": _mean_prediction_bias(errors),
+            }
+        )
+
+    return pd.DataFrame(metric_rows, columns=pd.Index(_PREDICTIVE_METRIC_COLUMNS))
 
 
 def inspect_ebm_runtime(
@@ -270,6 +359,80 @@ def _prepare_diagnostic_features(
         valid_rows[column] = numeric_feature
         resolved_columns.append(column)
     return tuple(resolved_columns)
+
+
+def _season_fold_id(index: int) -> str:
+    if index < 26:
+        return chr(ord("A") + index)
+    return f"fold_{index + 1}"
+
+
+def _numeric_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    return pd.to_numeric(frame[column], errors="coerce").astype("float64")
+
+
+def _paired_predictive_metric_rows(rows: pd.DataFrame, predicted: pd.Series) -> pd.DataFrame:
+    actual = _numeric_series(rows, "target_actual_points")
+    valid_mask = actual.map(_is_finite_number) & predicted.map(_is_finite_number)
+    return pd.DataFrame(
+        {
+            "rodada": rows["rodada"],
+            "actual": actual,
+            "predicted": predicted,
+        }
+    ).loc[valid_mask].reset_index(drop=True)
+
+
+def _mean_absolute_error(errors: pd.Series) -> float:
+    if errors.empty:
+        return float("nan")
+    return float(errors.abs().mean())
+
+
+def _root_mean_squared_error(errors: pd.Series) -> float:
+    if errors.empty:
+        return float("nan")
+    return float(np.sqrt((errors**2).mean()))
+
+
+def _spearman(actual: pd.Series, predicted: pd.Series) -> float:
+    if len(actual) < 2 or actual.nunique(dropna=True) < 2 or predicted.nunique(dropna=True) < 2:
+        return float("nan")
+    correlation = actual.corr(predicted, method="spearman")
+    if pd.isna(correlation):
+        return float("nan")
+    return float(correlation)
+
+
+def _top50_spearman(paired_rows: pd.DataFrame) -> float:
+    round_spearman_values: list[float] = []
+    for _, round_rows in paired_rows.groupby("rodada"):
+        if len(round_rows) < 50:
+            continue
+        top_rows = round_rows.sort_values("predicted", ascending=False).head(50)
+        spearman = _spearman(top_rows["actual"], top_rows["predicted"])
+        if not math.isnan(spearman):
+            round_spearman_values.append(spearman)
+    if not round_spearman_values:
+        return float("nan")
+    return float(sum(round_spearman_values) / len(round_spearman_values))
+
+
+def _calibration_slope(paired_rows: pd.DataFrame) -> float:
+    if len(paired_rows) < 2 or paired_rows["predicted"].nunique(dropna=True) < 2:
+        return float("nan")
+    coefficients = np.polyfit(
+        paired_rows["predicted"].to_numpy(dtype=float),
+        paired_rows["actual"].to_numpy(dtype=float),
+        1,
+    )
+    return float(coefficients[0])
+
+
+def _mean_prediction_bias(errors: pd.Series) -> float:
+    if errors.empty:
+        return float("nan")
+    return float(errors.mean())
 
 
 def _is_finite_number(value: object) -> bool:

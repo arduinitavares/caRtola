@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from cartola.backtesting import ebm_feature_diagnostic
 from cartola.backtesting.ebm_feature_diagnostic import (
     EbmDependencyError,
     EbmDiagnosticConfig,
@@ -121,6 +123,70 @@ def _source_context(tmp_path: Path) -> SourceChildContext:
         child_path=tmp_path / "child-1",
         source_prediction_provenance_status="verified",
     )
+
+
+def test_build_season_folds_uses_whole_validation_seasons() -> None:
+    folds = ebm_feature_diagnostic.build_season_folds((2025, 2021, 2023, 2024, 2022))
+
+    assert folds == (
+        ebm_feature_diagnostic.SeasonFold(
+            fold_id="A",
+            train_seasons=(2021, 2022),
+            validation_season=2023,
+        ),
+        ebm_feature_diagnostic.SeasonFold(
+            fold_id="B",
+            train_seasons=(2021, 2022, 2023),
+            validation_season=2024,
+        ),
+        ebm_feature_diagnostic.SeasonFold(
+            fold_id="C",
+            train_seasons=(2021, 2022, 2023, 2024),
+            validation_season=2025,
+        ),
+    )
+    assert {fold.inner_validation_mode for fold in folds} == {"disabled_full_outer_train"}
+
+
+def test_compute_predictive_metrics_uses_residual_corrected_predictions() -> None:
+    metrics = ebm_feature_diagnostic.compute_predictive_metrics(
+        pd.DataFrame(
+            {
+                "rodada": [5, 5, 5],
+                "target_actual_points": [10.0, 20.0, 30.0],
+                "source_model_score": [9.0, 19.0, 29.0],
+                "predicted_actual_points": [8.0, 22.0, 34.0],
+                "predicted_source_residual": [1.0, 1.0, 2.0],
+            }
+        ),
+        fold_id="A",
+        validation_season=2023,
+    )
+
+    by_prediction = metrics.set_index("prediction_type")
+    assert by_prediction.loc["residual_corrected", "mae"] == pytest.approx(1 / 3)
+    assert by_prediction.loc["actual_points", "mae"] == pytest.approx(8 / 3)
+    assert metrics["discovery_only"].tolist() == [True, True, True]
+
+
+def test_compute_predictive_metrics_computes_top50_spearman_by_round() -> None:
+    metrics = ebm_feature_diagnostic.compute_predictive_metrics(
+        pd.DataFrame(
+            {
+                "rodada": [7] * 50,
+                "target_actual_points": list(range(50)),
+                "source_model_score": list(range(50)),
+                "predicted_actual_points": list(range(50)),
+                "predicted_source_residual": [0.0] * 50,
+            }
+        ),
+        fold_id="A",
+        validation_season=2023,
+    )
+
+    source_row = metrics.set_index("prediction_type").loc["source_model"]
+    assert math.isfinite(float(source_row["top50_spearman"]))
+    assert source_row["top50_spearman"] == pytest.approx(1.0)
 
 
 def test_inspect_ebm_runtime_records_constructor_and_fit_signatures() -> None:
