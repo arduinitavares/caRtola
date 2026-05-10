@@ -10,7 +10,9 @@ from cartola.backtesting.ebm_feature_diagnostic import (
     EbmDependencyError,
     EbmDiagnosticConfig,
     EbmDiagnosticInvalid,
+    SourceChildContext,
     inspect_ebm_runtime,
+    prepare_diagnostic_dataset,
     resolve_source_children,
 )
 
@@ -101,6 +103,23 @@ def _write_parent(experiment_path: Path, child_runs: list[dict[str, object]]) ->
     (experiment_path / "experiment_metadata.json").write_text(
         json.dumps({"experiment_id": "exp-1", "child_runs": child_runs}),
         encoding="utf-8",
+    )
+
+
+def _source_context(tmp_path: Path) -> SourceChildContext:
+    return SourceChildContext(
+        source_experiment_id="exp-1",
+        season=2025,
+        model_id="ridge",
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        matchup_context_mode="none",
+        footystats_mode="ppg_xg",
+        budget_policy="moving",
+        scoring_contract_version="cartola_standard_2026_v1",
+        score_column="ridge_score",
+        child_path=tmp_path / "child-1",
+        source_prediction_provenance_status="verified",
     )
 
 
@@ -275,4 +294,85 @@ def test_resolve_source_children_rejects_non_object_matching_metadata(tmp_path: 
                 feature_pack="ppg_xg",
                 fixture_mode="none",
             )
+        )
+
+
+def test_prepare_diagnostic_dataset_maps_dnp_nulls_to_zero_and_excludes_coaches(tmp_path: Path) -> None:
+    dataset = prepare_diagnostic_dataset(
+        _source_context(tmp_path),
+        pd.DataFrame(
+            {
+                "season": [2025, 2025, 2025],
+                "rodada": [5, 5, 5],
+                "id_atleta": [10, 11, 12],
+                "apelido": ["Played", "DNP", "Coach"],
+                "id_clube": [1, 2, 3],
+                "posicao": ["ata", "lat", "tec"],
+                "status": ["Provavel", "Provavel", "Provavel"],
+                "pontuacao": [7.0, None, 5.0],
+                "entrou_em_campo": [True, False, True],
+                "preco_pre_rodada": [10.0, 8.0, 12.0],
+                "ridge_score": [6.0, 2.0, 4.0],
+                "numeric_feature": [1.5, 2.5, 3.5],
+            }
+        ),
+        feature_columns=("season", "rodada", "id_atleta", "id_clube", "apelido", "posicao", "numeric_feature"),
+    )
+
+    assert dataset.valid_rows["target_actual_points"].tolist() == [7.0, 0.0]
+    assert dataset.valid_rows["target_source_residual"].tolist() == [1.0, -2.0]
+    assert "posicao_ata" in dataset.feature_columns
+    assert "posicao_lat" in dataset.feature_columns
+    assert "posicao" not in dataset.feature_columns
+    assert "numeric_feature" in dataset.feature_columns
+    assert dataset.coach_row_count == 1
+    assert dataset.invalid_rows.empty
+
+
+def test_prepare_diagnostic_dataset_keeps_null_played_points_as_invalid(tmp_path: Path) -> None:
+    dataset = prepare_diagnostic_dataset(
+        _source_context(tmp_path),
+        pd.DataFrame(
+            {
+                "rodada": [5],
+                "id_atleta": [10],
+                "apelido": ["Null Played"],
+                "id_clube": [1],
+                "posicao": ["ata"],
+                "status": ["Provavel"],
+                "pontuacao": [None],
+                "entrou_em_campo": [True],
+                "preco_pre_rodada": [10.0],
+                "ridge_score": [6.0],
+                "numeric_feature": [1.5],
+            }
+        ),
+        feature_columns=("posicao", "numeric_feature"),
+    )
+
+    assert dataset.valid_rows.empty
+    assert dataset.invalid_rows["id_atleta"].tolist() == [10]
+    assert dataset.invalid_rows["invalid_reason"].tolist() == ["missing_actual_points_for_entered_player"]
+
+
+def test_prepare_diagnostic_dataset_rejects_nonnumeric_retained_feature(tmp_path: Path) -> None:
+    with pytest.raises(EbmDiagnosticInvalid, match="Feature column text_feature must be numeric and finite"):
+        prepare_diagnostic_dataset(
+            _source_context(tmp_path),
+            pd.DataFrame(
+                {
+                    "rodada": [5],
+                    "id_atleta": [10],
+                    "apelido": ["Played"],
+                    "id_clube": [1],
+                    "posicao": ["ata"],
+                    "status": ["Provavel"],
+                    "pontuacao": [7.0],
+                    "entrou_em_campo": [True],
+                    "preco_pre_rodada": [10.0],
+                    "ridge_score": [6.0],
+                    "text_feature": ["bad"],
+                }
+            ),
+            feature_columns=("posicao", "text_feature"),
         )

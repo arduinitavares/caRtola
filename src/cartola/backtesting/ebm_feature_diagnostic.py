@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,15 @@ class SourceChildContext:
             "conflicting_child_paths": [],
             "missing_metadata_fields": [],
         }
+
+
+@dataclass(frozen=True)
+class DiagnosticDataset:
+    context: SourceChildContext
+    valid_rows: pd.DataFrame
+    invalid_rows: pd.DataFrame
+    feature_columns: tuple[str, ...]
+    coach_row_count: int
 
 
 @dataclass(frozen=True)
@@ -154,6 +164,132 @@ def resolve_source_children(config: EbmDiagnosticConfig) -> tuple[tuple[SourceCh
             raise EbmDiagnosticInvalid("Duplicate source child matches", report=report)
         raise EbmDiagnosticInvalid("Missing source child matches", report=report)
     return tuple(contexts), pd.DataFrame()
+
+
+def prepare_diagnostic_dataset(
+    context: SourceChildContext,
+    predictions: pd.DataFrame,
+    *,
+    feature_columns: tuple[str, ...],
+) -> DiagnosticDataset:
+    required_columns = (
+        "rodada",
+        "id_atleta",
+        "apelido",
+        "id_clube",
+        "posicao",
+        "status",
+        "pontuacao",
+        "entrou_em_campo",
+        "preco_pre_rodada",
+        context.score_column,
+    )
+    missing_columns = tuple(column for column in required_columns if column not in predictions.columns)
+    if missing_columns:
+        raise EbmDiagnosticInvalid(f"Missing required prediction columns: {', '.join(missing_columns)}")
+
+    prepared = predictions.copy()
+    prepared["source_model_score"] = pd.to_numeric(prepared[context.score_column], errors="coerce")
+    prepared["target_actual_points"] = pd.NA
+    prepared["invalid_reason"] = ""
+
+    coach_mask = prepared["posicao"] == "tec"
+    coach_row_count = int(coach_mask.sum())
+    player_rows = prepared.loc[~coach_mask].copy()
+
+    actual_points = pd.to_numeric(player_rows["pontuacao"], errors="coerce")
+    source_scores = pd.to_numeric(player_rows["source_model_score"], errors="coerce")
+    target_values: list[float | None] = []
+    invalid_reasons: list[str] = []
+    for index, row in player_rows.iterrows():
+        row_actual_points = actual_points.loc[index]
+        source_score = source_scores.loc[index]
+        reasons: list[str] = []
+        if not _is_finite_number(source_score):
+            reasons.append("invalid_source_model_score")
+
+        raw_points = row["pontuacao"]
+        if _is_finite_number(row_actual_points):
+            target_values.append(float(row_actual_points))
+        elif pd.isna(raw_points) and _entered_field_is_false(row["entrou_em_campo"]):
+            target_values.append(0.0)
+        else:
+            target_values.append(None)
+            if pd.isna(raw_points):
+                reasons.append("missing_actual_points_for_entered_player")
+            else:
+                reasons.append("invalid_actual_points")
+        invalid_reasons.append(";".join(reasons))
+
+    player_rows["source_model_score"] = source_scores
+    player_rows["target_actual_points"] = target_values
+    player_rows["invalid_reason"] = invalid_reasons
+    player_rows["target_source_residual"] = (
+        pd.to_numeric(player_rows["target_actual_points"], errors="coerce") - player_rows["source_model_score"]
+    )
+    invalid_rows = player_rows.loc[player_rows["invalid_reason"] != ""].reset_index(drop=True)
+    valid_rows = player_rows.loc[player_rows["invalid_reason"] == ""].copy()
+    valid_rows["target_actual_points"] = pd.to_numeric(valid_rows["target_actual_points"], errors="raise")
+    valid_rows["source_model_score"] = pd.to_numeric(valid_rows["source_model_score"], errors="raise")
+
+    resolved_feature_columns = _prepare_diagnostic_features(valid_rows, feature_columns)
+    return DiagnosticDataset(
+        context=context,
+        valid_rows=valid_rows.reset_index(drop=True),
+        invalid_rows=invalid_rows,
+        feature_columns=resolved_feature_columns,
+        coach_row_count=coach_row_count,
+    )
+
+
+def _prepare_diagnostic_features(
+    valid_rows: pd.DataFrame,
+    feature_columns: tuple[str, ...],
+) -> tuple[str, ...]:
+    identity_columns = frozenset(("id_atleta", "id_clube", "apelido", "season", "rodada"))
+    missing_feature_columns = tuple(
+        column for column in feature_columns if column not in identity_columns and column not in valid_rows.columns
+    )
+    if missing_feature_columns:
+        raise EbmDiagnosticInvalid(f"Missing feature columns: {', '.join(missing_feature_columns)}")
+
+    resolved_columns: list[str] = []
+    for column in feature_columns:
+        if column in identity_columns:
+            continue
+        if column == "posicao":
+            for position in sorted(valid_rows["posicao"].dropna().astype(str).unique()):
+                dummy_column = f"posicao_{position}"
+                valid_rows[dummy_column] = (valid_rows["posicao"].astype(str) == position).astype(float)
+                resolved_columns.append(dummy_column)
+            continue
+
+        numeric_feature = pd.to_numeric(valid_rows[column], errors="coerce")
+        if not numeric_feature.map(_is_finite_number).all():
+            raise EbmDiagnosticInvalid(f"Feature column {column} must be numeric and finite for valid rows")
+        valid_rows[column] = numeric_feature
+        resolved_columns.append(column)
+    return tuple(resolved_columns)
+
+
+def _is_finite_number(value: object) -> bool:
+    try:
+        return math.isfinite(float(cast("Any", value)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _entered_field_is_false(value: object) -> bool:
+    if pd.isna(value):
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "no", "n"}
+    if isinstance(value, bool):
+        return not value
+    try:
+        return float(cast("Any", value)) == 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 def _child_run_entries(child_runs: Sequence[object]) -> list[dict[str, Any]]:
