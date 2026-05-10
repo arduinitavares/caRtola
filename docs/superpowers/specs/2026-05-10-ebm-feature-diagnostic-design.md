@@ -61,13 +61,24 @@ This spec accepts that correction. FLAML remains a possible later bounded
 candidate generator, but only after the EBM diagnostic and only inside our
 temporal validation harness.
 
+A later implementation review adds four binding constraints:
+
+- EBM may not use random internal validation for early stopping.
+- Raw identity-like fields must be excluded unless categorical handling is
+  explicitly implemented and tested.
+- Residual diagnostics are required because raw-point EBMs mostly rediscover
+  existing predictive structure.
+- Candidate flags must be aggregated across folds and must include bin/cell
+  support checks, not only total row support.
+
 ## Goals
 
 - Read completed experiment artifacts without rerunning backtests.
 - Validate source context before loading player rows.
 - Build a cutoff-safe diagnostic dataset from persisted `player_predictions.csv`
   artifacts.
-- Fit one or more EBMs on pre-round features and raw realized player points.
+- Fit EBMs on pre-round features for both raw realized points and source-model
+  residuals.
 - Produce feature importance, shape, interaction, and stability artifacts.
 - Compare EBM predictive diagnostics against the source model's persisted
   predictions.
@@ -174,12 +185,23 @@ column names and do not fit an EBM.
 
 ## Outcome Policy
 
-The diagnostic target is raw realized player points, not captain-adjusted squad
-points:
+The diagnostic uses two supervised targets. The raw-point target is a sanity
+check. The residual target is the primary discovery target because it asks what
+the source model missed. Neither target uses captain-adjusted squad points.
 
 ```text
 target_actual_points = pontuacao after DNP/null policy
+target_source_residual = target_actual_points - source_model_score
 ```
+
+For predictive comparisons:
+
+- actual-point EBM predictions are compared directly against
+  `target_actual_points`;
+- residual EBM predictions are converted to corrected point predictions:
+  `source_model_score + predicted_source_residual`;
+- raw predicted residuals are still persisted for diagnostics, but MAE/RMSE
+  comparisons against the source model use the corrected point prediction.
 
 DNP/null policy:
 
@@ -214,6 +236,70 @@ primary evidence unit and avoids player-row shuffling.
 The runner may compute additional within-season descriptive metrics by round,
 but these are diagnostics only. They are not extra validation folds.
 
+### EBM Inner Validation
+
+InterpretML's internal validation must not randomly split player rows.
+
+V1 allows exactly two non-random EBM validation modes. The implementation plan
+must choose one after checking the installed API and fold row counts.
+
+Mode 1, `temporal_inner_validation`, uses the latest training season as the
+EBM validation set:
+
+```text
+Outer Fold A:
+  train: 2021
+  EBM inner validation: 2022
+  external validation: 2023
+
+Outer Fold B:
+  train: 2021,2022
+  EBM inner validation: 2023
+  external validation: 2024
+
+Outer Fold C:
+  train: 2021,2022,2023
+  EBM inner validation: 2024
+  external validation: 2025
+```
+
+Use this mode only when the remaining training rows and seasons are sufficient
+for every fold. The implementation must call EBM fitting with explicit
+validation arrays when the installed InterpretML API supports
+`fit(X, y, X_val=..., y_val=...)`.
+
+Mode 2, `disabled_full_outer_train`, trains on every outer training season and
+sets internal validation off or equivalent:
+
+```text
+Fold A:
+  train: 2021,2022
+  external validation: 2023
+
+Fold B:
+  train: 2021,2022,2023
+  external validation: 2024
+
+Fold C:
+  train: 2021,2022,2023,2024
+  external validation: 2025
+```
+
+Use this mode when explicit temporal validation is unsupported or would leave
+too little training evidence. It preserves the season-expanding train sets
+while still preventing random row validation.
+
+The selected mode must be recorded:
+
+```text
+inner_validation_mode=temporal_inner_validation | disabled_full_outer_train
+early_stopping_mode=explicit_temporal_validation | disabled_or_no_random_split
+```
+
+The implementation plan must verify the installed API with `inspect.signature`
+before coding the adapter. Tests must prove that no external validation-season
+rows and no future inner-validation rows enter the training set.
+
 ### Holdout Semantics
 
 The 2025 fold is a diagnostic holdout within this runner. Once viewed, it is no
@@ -233,11 +319,19 @@ outer_bags=8
 inner_bags=0
 max_rounds=20000
 early_stopping_rounds=100
-validation_size=0.15
+validation_size_or_validation_fraction=0.0 when explicit X_val/y_val is unavailable
 random_state=123
 n_jobs=-1
 objective="rmse"
 ```
+
+InterpretML parameter names have changed across versions. The implementation
+must inspect the installed `ExplainableBoostingRegressor` constructor and
+`fit()` signatures, then map these semantic settings to the installed API.
+The manifest must record the installed InterpretML version plus the constructor
+and fit signatures used for the run. A missing or incompatible parameter must
+produce an invalid diagnostic rather than silently changing the validation
+contract.
 
 Main-effect EBMs are the default. Interaction EBMs are a second pass only after
 main effects fit successfully.
@@ -265,35 +359,49 @@ Exclude these columns even if present:
 - target/outcome columns;
 - captain columns;
 - actual scout result columns for the target round;
-- IDs that create memorization risk:
+- IDs and identity-like fields that create memorization risk:
   - `id_atleta`;
+  - `id_clube`;
   - raw `apelido`;
   - raw club/opponent names;
+  - raw club/opponent IDs;
 - direct round labels that can create season/round memorization:
   - `season`;
   - `rodada`.
 
-Allow numeric encoded fields already used by current models, such as:
+Allow numeric fields whose distance is football-meaningful, such as:
 
 - `preco_pre_rodada`;
-- `id_clube` only if the source model already used it;
-- `posicao`;
 - prior rolling point/scout features;
 - FootyStats PPG/xG fields;
 - matchup context fields.
 
-The manifest must record the final EBM feature list and excluded columns.
+`posicao` must not be treated as an arbitrary ordinal number. V1 must either
+one-hot encode position or run separate position-specific diagnostics. The
+manifest must record `position_handling`.
+
+Raw categorical identifiers may be admitted only in a later diagnostic
+generation with explicit categorical feature handling, a stable category
+contract, and tests proving that the resulting shapes are not numeric-ID
+artifacts.
+
+The manifest must record the final EBM feature list, excluded columns, and
+excluded identity columns.
 
 ## Metrics
 
-Compute metrics for both source model predictions and EBM predictions.
+Compute metrics for both source model predictions and EBM predictions on the
+exact same valid, non-coach external-validation rows. Each fold must write
+`shared_evaluation_row_count`; a row-set mismatch between source and EBM metrics
+invalidates that fold.
 
 Prediction metrics:
 
 - MAE;
 - RMSE;
 - Spearman correlation by season;
-- top-50 Spearman by season and round where enough rows exist;
+- top-50 Spearman by season and round when the round has at least `50` valid
+  non-coach candidates;
 - calibration slope by season;
 - mean prediction bias by season.
 
@@ -303,21 +411,28 @@ Ranking metrics:
 - top-10 actual scorer recall inside top-20 predicted by position;
 - top-50 candidate Spearman averaged by round, then season.
 
+Ranking uses descending ranks with average tie handling. Spearman metrics are
+null when either side has fewer than two distinct values.
+
 Stability metrics:
 
-- feature-importance rank by fold;
-- pairwise interaction rank by fold;
+- feature-importance rank by fold and target type;
+- pairwise interaction rank by fold and target type;
 - sign consistency for feature shape summaries;
 - number of seasons where each top feature appears in top 10.
 
 Metrics must aggregate by season first. Do not present row-weighted aggregates
-as the primary result.
+as the primary result. Primary hypothesis nomination uses the residual target;
+raw-point target metrics are sanity checks and context.
 
 ## Feature Shape Summaries
 
 The HTML report must show EBM feature curves, but CSV artifacts must also
 capture deterministic summaries:
 
+- `target_type`:
+  - `actual_points`;
+  - `source_residual`;
 - `feature_name`;
 - `fold_id`;
 - `validation_season`;
@@ -328,8 +443,14 @@ capture deterministic summaries:
 - `effect_range`;
 - `largest_positive_bin_lower`;
 - `largest_positive_bin_upper`;
+- `largest_positive_bin_row_support`;
+- `largest_positive_bin_round_support`;
+- `largest_positive_bin_season_support`;
 - `largest_negative_bin_lower`;
 - `largest_negative_bin_upper`;
+- `largest_negative_bin_row_support`;
+- `largest_negative_bin_round_support`;
+- `largest_negative_bin_season_support`;
 - `monotonicity_hint`:
   - `increasing`;
   - `decreasing`;
@@ -339,21 +460,67 @@ capture deterministic summaries:
   - `unstable`;
 - `row_support`;
 - `season_support`;
-- `candidate_hypothesis_flag`.
+- `fold_candidate_signal`.
 
-The `candidate_hypothesis_flag` is true only when:
+The per-fold `fold_candidate_signal` is true only when:
 
-- the term is in the top 10 by importance in at least 2 validation folds;
-- the term has at least `500` validation rows total;
-- its effect range is at least `0.50` points in at least 2 folds;
+- the term is in the top 10 by importance for that target type in that fold;
+- the term has at least `500` validation rows in that fold;
+- the bins defining `effect_min` and `effect_max` each have at least `50`
+  rows;
+- the bins defining `effect_min` and `effect_max` each span at least `5`
+  distinct rounds;
+- its effect range is at least `0.50` points;
 - its shape direction is not `unstable`.
 
-These flags nominate human review candidates only.
+These per-fold signals do not nominate a hypothesis by themselves.
+
+## Aggregated Candidate Hypotheses
+
+Write `candidate_hypotheses.csv` after all folds and target types complete.
+This is the only artifact allowed to contain cross-fold
+`candidate_hypothesis_flag`.
+
+Required columns:
+
+- `target_type`;
+- `candidate_type`:
+  - `main_effect`;
+  - `interaction`;
+- `term_name`;
+- `feature_a`;
+- `feature_b`;
+- `fold_signal_count`;
+- `validation_seasons_with_signal`;
+- `total_row_support`;
+- `min_bin_or_cell_row_support`;
+- `min_bin_or_cell_round_support`;
+- `effect_range_median`;
+- `direction_summary`;
+- `failed_validation_seasons`;
+- `candidate_hypothesis_flag`;
+- `candidate_scope`.
+
+The aggregated `candidate_hypothesis_flag` is true only when:
+
+- `target_type == "source_residual"`;
+- `fold_signal_count >= 2`;
+- total validation row support is at least `1000`;
+- every effect-defining bin or cell used by the signal has at least `50` rows;
+- every effect-defining bin or cell used by the signal spans at least `5`
+  distinct rounds;
+- directions are not contradictory across signaled folds.
+
+`candidate_scope` must be `human_review_only`. A flagged candidate is not a
+feature, policy, model candidate, promotion signal, or experiment-index value.
 
 ## Pairwise Interaction Summaries
 
 For interaction EBMs, write:
 
+- `target_type`:
+  - `actual_points`;
+  - `source_residual`;
 - `interaction_name`;
 - `feature_a`;
 - `feature_b`;
@@ -362,18 +529,25 @@ For interaction EBMs, write:
 - `importance_rank`;
 - `importance_score`;
 - `effect_range`;
+- `max_effect_cell_row_support`;
+- `max_effect_cell_round_support`;
+- `min_effect_cell_row_support`;
+- `min_effect_cell_round_support`;
 - `row_support`;
 - `season_support`;
-- `candidate_hypothesis_flag`.
+- `fold_candidate_signal`.
 
-The interaction flag is true only when:
+The per-fold interaction signal is true only when:
 
-- the interaction appears in the top 10 in at least 2 validation folds;
+- the interaction appears in the top 10 for that target type in that fold;
 - both features are pre-round features;
 - total validation row support is at least `500`;
-- effect range is at least `0.50` points in at least 2 folds.
+- the cells defining the effect range each have at least `50` rows;
+- the cells defining the effect range each span at least `5` distinct rounds;
+- effect range is at least `0.50` points.
 
-Do not convert an interaction flag into a feature pack automatically.
+Do not convert an interaction signal or aggregated flag into a feature pack
+automatically.
 
 ## CLI
 
@@ -425,9 +599,27 @@ Required artifacts:
 - `feature_importance_by_fold.csv`;
 - `feature_shape_summary.csv`;
 - `pairwise_interactions.csv`;
+- `candidate_hypotheses.csv`;
 - `invalid_ebm_rows.csv`;
 - `ebm_diagnostic_decision.json`;
 - `ebm_feature_diagnostic.html`.
+
+All JSON artifacts must include `discovery_only=true`.
+
+The manifest must include:
+
+- `discovery_only=true`;
+- `holdout_usage_ledger`, including `2025=diagnostic_exposed` when Fold C is
+  run or inspected;
+- installed InterpretML version;
+- inspected EBM constructor signature;
+- inspected EBM `fit()` signature;
+- `inner_validation_mode`;
+- `early_stopping_mode`;
+- `position_handling`;
+- final feature list;
+- excluded feature list;
+- excluded identity-column list.
 
 If the diagnostic is invalid, still write:
 
@@ -449,18 +641,20 @@ If the diagnostic is invalid, still write:
 Rules:
 
 - `invalid`: source context, schema, dependency, or row validity checks failed.
-- `candidate_hypotheses_found`: at least one main-effect or interaction
-  candidate flag is true and predictive metrics do not materially regress the
-  source model on 2025.
-- `diagnostic_complete`: model fit and report succeeded, but candidate flags
-  are absent or mixed.
+- `candidate_hypotheses_found`: at least one aggregated
+  `candidate_hypothesis_flag` is true for `target_type=source_residual` and
+  predictive metrics do not materially regress the source model on 2025.
+- `diagnostic_complete`: model fit and report succeeded, but aggregated
+  candidate flags are absent or mixed.
 - `insufficient_signal`: EBM underperforms the source model in at least 2 of 3
-  validation seasons by MAE and no candidate flags are true.
+  validation seasons by MAE and no aggregated candidate flags are true.
 
 Material 2025 regression for the diagnostic is:
 
 ```text
 EBM MAE_2025 - source_model MAE_2025 > 0.15
+or
+EBM top50_spearman_2025 - source_model top50_spearman_2025 < -0.02
 ```
 
 This status is not a promotion status. It only tells us whether to write a
@@ -487,6 +681,7 @@ The HTML report must be simple and offline-readable. It must include:
 
 - source experiment summary;
 - warnings and `discovery_only=true`;
+- holdout usage ledger;
 - fold-level predictive comparison table;
 - top feature importance table;
 - top interaction table;
@@ -498,6 +693,10 @@ The HTML report must be simple and offline-readable. It must include:
   - stop if signal is insufficient;
   - fix artifacts if invalid.
 
+Numeric CSV/JSON artifacts are the primary output and must be written before
+HTML rendering starts. HTML rendering failure must not invalidate completed
+numeric artifacts; it should write/report an HTML warning when possible.
+
 Plotly is acceptable for charts. If InterpretML can emit useful HTML snippets
 without adding fragile dependencies, the implementation may embed or link them,
 but the report must still include deterministic CSV-backed summaries.
@@ -508,15 +707,27 @@ but the report must still include deterministic CSV-backed summaries.
 - The runner rejects unsupported broad AutoML libraries in V1; only EBM is
   implemented.
 - The runner never uses random row-level CV.
+- EBM inner validation uses explicit temporal validation arrays or disables
+  internal validation/early stopping; this is tested.
 - Fold assignments are whole-season and persisted.
 - DNP/null target handling is tested.
 - Coach rows are excluded and counted.
+- Raw identity columns are excluded and this is tested.
+- Position handling is categorical or position-specific, never arbitrary
+  ordinal numeric.
 - Feature exclusion rules are tested.
+- Source and EBM metrics use identical shared evaluation rows.
+- Raw-point and residual-target artifacts are both written.
 - Main-effect EBM output writes feature importance and shape summaries.
 - Interaction EBM output writes pairwise interaction summaries.
+- Bin/cell-level support thresholds are enforced before any candidate flag.
+- Cross-fold `candidate_hypothesis_flag` appears only in
+  `candidate_hypotheses.csv`.
 - Invalid diagnostics write incomplete-but-readable artifacts.
 - CLI prints progress and output path.
 - All artifacts include `discovery_only=true`.
+- InterpretML version and inspected signatures are recorded.
+- The holdout ledger records 2025 diagnostic exposure.
 - No existing experiment promotion/index fields are modified.
 
 ## Next Step After This Spec
