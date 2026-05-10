@@ -13,6 +13,8 @@ from cartola.backtesting.ebm_feature_diagnostic import (
     EbmDiagnosticConfig,
     EbmDiagnosticInvalid,
     SourceChildContext,
+    assign_continuous_bins,
+    compute_interaction_cell_support,
     inspect_ebm_runtime,
     prepare_diagnostic_dataset,
     resolve_source_children,
@@ -394,6 +396,34 @@ def test_fit_ebm_fold_target_omits_unsupported_validation_size() -> None:
     assert result.model.params["interactions"] == 0
     assert result.model.params["random_state"] == 123
     assert "validation_size" not in result.model.params
+
+
+def test_assign_continuous_bins_matches_learned_edges_and_missing_bin() -> None:
+    values = pd.Series([None, -1.0, 0.0, 0.5, 2.0])
+
+    bins = assign_continuous_bins(values, learned_edges=(0.0, 1.0))
+
+    assert bins.tolist() == [-1, 0, 1, 1, 2]
+
+
+def test_compute_interaction_cell_support_counts_rows_and_rounds() -> None:
+    frame = pd.DataFrame(
+        {
+            "rodada": [5, 5, 6, 7],
+            "feature_a_bin": [0, 0, 1, 1],
+            "feature_b_bin": [1, 1, 1, 2],
+        }
+    )
+
+    support = compute_interaction_cell_support(
+        frame,
+        feature_a_bin="feature_a_bin",
+        feature_b_bin="feature_b_bin",
+    )
+
+    assert support[(0, 1)] == {"row_support": 2, "round_support": 1}
+    assert support[(1, 1)] == {"row_support": 1, "round_support": 1}
+    assert support[(1, 2)] == {"row_support": 1, "round_support": 1}
 
 
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:

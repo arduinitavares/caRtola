@@ -269,6 +269,36 @@ def fit_ebm_fold_target(
     )
 
 
+def assign_continuous_bins(values: pd.Series, *, learned_edges: tuple[float, ...]) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    result = pd.Series(-1, index=values.index, dtype="int64")
+    non_missing_mask = numeric.notna()
+    non_missing = numeric.loc[non_missing_mask].to_numpy(dtype=float)
+    result.loc[non_missing_mask] = np.searchsorted(
+        np.asarray(learned_edges, dtype=float),
+        non_missing,
+        side="right",
+    )
+    return result.astype("int64")
+
+
+def compute_interaction_cell_support(
+    frame: pd.DataFrame,
+    *,
+    feature_a_bin: str,
+    feature_b_bin: str,
+) -> dict[tuple[int, int], dict[str, int]]:
+    support: dict[tuple[int, int], dict[str, int]] = {}
+    grouped = frame.groupby([feature_a_bin, feature_b_bin], sort=True)
+    for raw_key, group in grouped:
+        bin_a, bin_b = cast("tuple[int, int]", raw_key)
+        support[(int(bin_a), int(bin_b))] = {
+            "row_support": int(len(group)),
+            "round_support": int(group["rodada"].nunique(dropna=True)),
+        }
+    return support
+
+
 def resolve_source_children(config: EbmDiagnosticConfig) -> tuple[tuple[SourceChildContext, ...], pd.DataFrame]:
     metadata_path = config.experiment_path / "experiment_metadata.json"
     parent_metadata = _read_json_object(metadata_path, artifact_name="experiment_metadata.json")
