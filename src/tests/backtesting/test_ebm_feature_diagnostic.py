@@ -148,6 +148,11 @@ def test_build_season_folds_uses_whole_validation_seasons() -> None:
     assert {fold.inner_validation_mode for fold in folds} == {"disabled_full_outer_train"}
 
 
+def test_build_season_folds_rejects_duplicate_seasons() -> None:
+    with pytest.raises(EbmDiagnosticInvalid, match="Duplicate seasons"):
+        ebm_feature_diagnostic.build_season_folds((2021, 2022, 2022))
+
+
 def test_compute_predictive_metrics_uses_residual_corrected_predictions() -> None:
     metrics = ebm_feature_diagnostic.compute_predictive_metrics(
         pd.DataFrame(
@@ -169,6 +174,27 @@ def test_compute_predictive_metrics_uses_residual_corrected_predictions() -> Non
     assert metrics["discovery_only"].tolist() == [True, True, True]
 
 
+def test_compute_predictive_metrics_uses_same_rows_for_all_predictions() -> None:
+    metrics = ebm_feature_diagnostic.compute_predictive_metrics(
+        pd.DataFrame(
+            {
+                "rodada": [5, 5, 5],
+                "target_actual_points": [10.0, 20.0, 100.0],
+                "source_model_score": [10.0, 20.0, 0.0],
+                "predicted_actual_points": [11.0, 21.0, float("nan")],
+                "predicted_source_residual": [0.0, 0.0, 0.0],
+            }
+        ),
+        fold_id="A",
+        validation_season=2023,
+    )
+
+    by_prediction = metrics.set_index("prediction_type")
+    assert by_prediction["shared_evaluation_row_count"].tolist() == [2, 2, 2]
+    assert by_prediction.loc["source_model", "mae"] == pytest.approx(0.0)
+    assert by_prediction.loc["actual_points", "mae"] == pytest.approx(1.0)
+
+
 def test_compute_predictive_metrics_computes_top50_spearman_by_round() -> None:
     metrics = ebm_feature_diagnostic.compute_predictive_metrics(
         pd.DataFrame(
@@ -187,6 +213,46 @@ def test_compute_predictive_metrics_computes_top50_spearman_by_round() -> None:
     source_row = metrics.set_index("prediction_type").loc["source_model"]
     assert math.isfinite(float(source_row["top50_spearman"]))
     assert source_row["top50_spearman"] == pytest.approx(1.0)
+
+
+def test_compute_predictive_metrics_breaks_top50_ties_by_player_id() -> None:
+    high_predicted_rows = [
+        {
+            "rodada": 7,
+            "id_atleta": 100 + index,
+            "target_actual_points": float(index),
+            "source_model_score": 2.0,
+            "predicted_actual_points": 2.0,
+            "predicted_source_residual": 0.0,
+        }
+        for index in range(49)
+    ]
+    tied_cutoff_rows = [
+        {
+            "rodada": 7,
+            "id_atleta": 2,
+            "target_actual_points": 1000.0,
+            "source_model_score": 1.0,
+            "predicted_actual_points": 1.0,
+            "predicted_source_residual": 0.0,
+        },
+        {
+            "rodada": 7,
+            "id_atleta": 1,
+            "target_actual_points": -1000.0,
+            "source_model_score": 1.0,
+            "predicted_actual_points": 1.0,
+            "predicted_source_residual": 0.0,
+        },
+    ]
+    metrics = ebm_feature_diagnostic.compute_predictive_metrics(
+        pd.DataFrame([*high_predicted_rows, *tied_cutoff_rows]),
+        fold_id="A",
+        validation_season=2023,
+    )
+
+    source_row = metrics.set_index("prediction_type").loc["source_model"]
+    assert source_row["top50_spearman"] == pytest.approx(0.24253562503633297)
 
 
 def test_inspect_ebm_runtime_records_constructor_and_fit_signatures() -> None:

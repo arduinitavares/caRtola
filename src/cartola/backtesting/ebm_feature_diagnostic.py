@@ -112,6 +112,10 @@ _PREDICTIVE_METRIC_COLUMNS = (
 
 
 def build_season_folds(seasons: tuple[int, ...]) -> tuple[SeasonFold, ...]:
+    if len(seasons) != len(set(seasons)):
+        duplicate_seasons = tuple(season for season in sorted(set(seasons)) if seasons.count(season) > 1)
+        raise EbmDiagnosticInvalid(f"Duplicate seasons are not allowed: {', '.join(map(str, duplicate_seasons))}")
+
     sorted_seasons = tuple(sorted(seasons))
     if len(sorted_seasons) < 3:
         raise EbmDiagnosticInvalid("At least three seasons are required to build EBM diagnostic folds")
@@ -141,19 +145,31 @@ def compute_predictive_metrics(rows: pd.DataFrame, *, fold_id: str, validation_s
         raise EbmDiagnosticInvalid(f"Missing required metric columns: {', '.join(missing_columns)}")
 
     source_model_score = _numeric_series(rows, "source_model_score")
+    actual_points = _numeric_series(rows, "target_actual_points")
+    predicted_actual_points = _numeric_series(rows, "predicted_actual_points")
+    predicted_source_residual = _numeric_series(rows, "predicted_source_residual")
+    residual_corrected_score = source_model_score + predicted_source_residual
+    shared_valid_mask = (
+        actual_points.map(_is_finite_number)
+        & source_model_score.map(_is_finite_number)
+        & predicted_actual_points.map(_is_finite_number)
+        & predicted_source_residual.map(_is_finite_number)
+        & residual_corrected_score.map(_is_finite_number)
+    )
+    shared_rows = rows.loc[shared_valid_mask]
     prediction_specs = (
         ("actual_points", "source_model", source_model_score),
-        ("actual_points", "actual_points", _numeric_series(rows, "predicted_actual_points")),
+        ("actual_points", "actual_points", predicted_actual_points),
         (
             "source_residual",
             "residual_corrected",
-            source_model_score + _numeric_series(rows, "predicted_source_residual"),
+            residual_corrected_score,
         ),
     )
 
     metric_rows: list[dict[str, object]] = []
     for target_type, prediction_type, predicted in prediction_specs:
-        paired_rows = _paired_predictive_metric_rows(rows, predicted)
+        paired_rows = _paired_predictive_metric_rows(shared_rows, predicted.loc[shared_valid_mask])
         errors = paired_rows["predicted"] - paired_rows["actual"]
         metric_rows.append(
             {
@@ -374,13 +390,16 @@ def _numeric_series(frame: pd.DataFrame, column: str) -> pd.Series:
 def _paired_predictive_metric_rows(rows: pd.DataFrame, predicted: pd.Series) -> pd.DataFrame:
     actual = _numeric_series(rows, "target_actual_points")
     valid_mask = actual.map(_is_finite_number) & predicted.map(_is_finite_number)
-    return pd.DataFrame(
+    paired_rows = pd.DataFrame(
         {
             "rodada": rows["rodada"],
             "actual": actual,
             "predicted": predicted,
         }
-    ).loc[valid_mask].reset_index(drop=True)
+    )
+    if "id_atleta" in rows.columns:
+        paired_rows["id_atleta"] = rows["id_atleta"]
+    return paired_rows.loc[valid_mask].reset_index(drop=True)
 
 
 def _mean_absolute_error(errors: pd.Series) -> float:
@@ -409,7 +428,12 @@ def _top50_spearman(paired_rows: pd.DataFrame) -> float:
     for _, round_rows in paired_rows.groupby("rodada"):
         if len(round_rows) < 50:
             continue
-        top_rows = round_rows.sort_values("predicted", ascending=False).head(50)
+        sort_columns = ["predicted"]
+        ascending = [False]
+        if "id_atleta" in round_rows.columns:
+            sort_columns.append("id_atleta")
+            ascending.append(True)
+        top_rows = round_rows.sort_values(sort_columns, ascending=ascending, kind="mergesort").head(50)
         spearman = _spearman(top_rows["actual"], top_rows["predicted"])
         if not math.isnan(spearman):
             round_spearman_values.append(spearman)
