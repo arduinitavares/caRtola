@@ -406,6 +406,12 @@ def test_assign_continuous_bins_matches_learned_edges_and_missing_bin() -> None:
     assert bins.tolist() == [-1, 0, 1, 1, 2]
 
 
+@pytest.mark.parametrize("learned_edges", [(1.0, 0.0), (0.0, float("nan")), (0.0, float("inf"))])
+def test_assign_continuous_bins_rejects_invalid_learned_edges(learned_edges: tuple[float, ...]) -> None:
+    with pytest.raises(EbmDiagnosticInvalid, match="learned_edges"):
+        assign_continuous_bins(pd.Series([0.5]), learned_edges=learned_edges)
+
+
 def test_compute_interaction_cell_support_counts_rows_and_rounds() -> None:
     frame = pd.DataFrame(
         {
@@ -424,6 +430,58 @@ def test_compute_interaction_cell_support_counts_rows_and_rounds() -> None:
     assert support[(0, 1)] == {"row_support": 2, "round_support": 1}
     assert support[(1, 1)] == {"row_support": 1, "round_support": 1}
     assert support[(1, 2)] == {"row_support": 1, "round_support": 1}
+
+
+@pytest.mark.parametrize("missing_column", ["rodada", "feature_a_bin", "feature_b_bin"])
+def test_compute_interaction_cell_support_rejects_missing_required_columns(missing_column: str) -> None:
+    frame = pd.DataFrame(
+        {
+            "rodada": [5],
+            "feature_a_bin": [0],
+            "feature_b_bin": [1],
+        }
+    ).drop(columns=missing_column)
+
+    with pytest.raises(EbmDiagnosticInvalid, match=missing_column):
+        compute_interaction_cell_support(
+            frame,
+            feature_a_bin="feature_a_bin",
+            feature_b_bin="feature_b_bin",
+        )
+
+
+def test_compute_interaction_cell_support_rejects_nan_bin_values() -> None:
+    frame = pd.DataFrame(
+        {
+            "rodada": [5],
+            "feature_a_bin": [float("nan")],
+            "feature_b_bin": [1],
+        }
+    )
+
+    with pytest.raises(EbmDiagnosticInvalid, match="NaN.*feature_a_bin"):
+        compute_interaction_cell_support(
+            frame,
+            feature_a_bin="feature_a_bin",
+            feature_b_bin="feature_b_bin",
+        )
+
+
+def test_compute_interaction_cell_support_rejects_non_integral_bin_values() -> None:
+    frame = pd.DataFrame(
+        {
+            "rodada": [5],
+            "feature_a_bin": [1.5],
+            "feature_b_bin": [1],
+        }
+    )
+
+    with pytest.raises(EbmDiagnosticInvalid, match="integral.*feature_a_bin"):
+        compute_interaction_cell_support(
+            frame,
+            feature_a_bin="feature_a_bin",
+            feature_b_bin="feature_b_bin",
+        )
 
 
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:

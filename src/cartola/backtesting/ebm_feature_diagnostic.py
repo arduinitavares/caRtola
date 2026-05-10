@@ -270,12 +270,13 @@ def fit_ebm_fold_target(
 
 
 def assign_continuous_bins(values: pd.Series, *, learned_edges: tuple[float, ...]) -> pd.Series:
+    edges = _validated_learned_edges(learned_edges)
     numeric = pd.to_numeric(values, errors="coerce")
     result = pd.Series(-1, index=values.index, dtype="int64")
     non_missing_mask = numeric.notna()
     non_missing = numeric.loc[non_missing_mask].to_numpy(dtype=float)
     result.loc[non_missing_mask] = np.searchsorted(
-        np.asarray(learned_edges, dtype=float),
+        edges,
         non_missing,
         side="right",
     )
@@ -288,11 +289,18 @@ def compute_interaction_cell_support(
     feature_a_bin: str,
     feature_b_bin: str,
 ) -> dict[tuple[int, int], dict[str, int]]:
+    required_columns = tuple(dict.fromkeys(("rodada", feature_a_bin, feature_b_bin)))
+    missing_columns = tuple(column for column in required_columns if column not in frame.columns)
+    if missing_columns:
+        raise EbmDiagnosticInvalid(f"Missing required interaction support columns: {', '.join(missing_columns)}")
+    _validate_interaction_bin_column(frame, feature_a_bin)
+    _validate_interaction_bin_column(frame, feature_b_bin)
+
     support: dict[tuple[int, int], dict[str, int]] = {}
     grouped = frame.groupby([feature_a_bin, feature_b_bin], sort=True)
     for raw_key, group in grouped:
-        bin_a, bin_b = cast("tuple[int, int]", raw_key)
-        support[(int(bin_a), int(bin_b))] = {
+        bin_a, bin_b = cast("tuple[object, object]", raw_key)
+        support[(int(cast("Any", bin_a)), int(cast("Any", bin_b)))] = {
             "row_support": int(len(group)),
             "round_support": int(group["rodada"].nunique(dropna=True)),
         }
@@ -566,6 +574,30 @@ def _filter_constructor_params(ebm_class: type[Any], params: dict[str, object]) 
         if alias is not None and alias in accepted:
             filtered[alias] = value
     return filtered
+
+
+def _validated_learned_edges(learned_edges: tuple[float, ...]) -> np.ndarray:
+    try:
+        edges = np.asarray(learned_edges, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise EbmDiagnosticInvalid("learned_edges must be numeric, finite, and sorted nondecreasing") from exc
+    if not bool(np.isfinite(edges).all()):
+        raise EbmDiagnosticInvalid("learned_edges must contain only finite values")
+    if bool((np.diff(edges) < 0).any()):
+        raise EbmDiagnosticInvalid("learned_edges must be sorted nondecreasing")
+    return edges
+
+
+def _validate_interaction_bin_column(frame: pd.DataFrame, column: str) -> None:
+    values = frame[column]
+    if bool(values.isna().any()):
+        raise EbmDiagnosticInvalid(f"Interaction bin column contains NaN values: {column}")
+    numeric = pd.to_numeric(values, errors="coerce")
+    if bool(numeric.isna().any()):
+        raise EbmDiagnosticInvalid(f"Interaction bin column must contain numeric integral values: {column}")
+    numeric_values = numeric.to_numpy(dtype=float)
+    if not bool(np.isclose(numeric_values, np.round(numeric_values)).all()):
+        raise EbmDiagnosticInvalid(f"Interaction bin column must contain integral values: {column}")
 
 
 def _is_finite_number(value: object) -> bool:
