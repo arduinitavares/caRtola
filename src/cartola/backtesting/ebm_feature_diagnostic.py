@@ -122,6 +122,56 @@ _PREDICTIVE_METRIC_COLUMNS = (
     "mean_prediction_bias",
 )
 
+_CANDIDATE_HYPOTHESIS_COLUMNS = (
+    "discovery_only",
+    "target_type",
+    "candidate_type",
+    "term_name",
+    "feature_a",
+    "feature_b",
+    "fold_signal_count",
+    "validation_seasons_with_signal",
+    "total_row_support",
+    "min_bin_or_cell_row_support",
+    "min_bin_or_cell_round_support",
+    "effect_range_median",
+    "direction_summary",
+    "failed_validation_seasons",
+    "candidate_hypothesis_flag",
+    "candidate_scope",
+)
+
+_MAIN_EFFECT_AGGREGATION_COLUMNS = (
+    "target_type",
+    "feature_name",
+    "fold_id",
+    "validation_season",
+    "effect_range",
+    "largest_positive_bin_row_support",
+    "largest_positive_bin_round_support",
+    "largest_negative_bin_row_support",
+    "largest_negative_bin_round_support",
+    "monotonicity_hint",
+    "row_support",
+    "fold_candidate_signal",
+)
+
+_PAIRWISE_AGGREGATION_COLUMNS = (
+    "target_type",
+    "interaction_name",
+    "feature_a",
+    "feature_b",
+    "fold_id",
+    "validation_season",
+    "effect_range",
+    "max_effect_cell_row_support",
+    "max_effect_cell_round_support",
+    "min_effect_cell_row_support",
+    "min_effect_cell_round_support",
+    "row_support",
+    "fold_candidate_signal",
+)
+
 
 def build_season_folds(seasons: tuple[int, ...]) -> tuple[SeasonFold, ...]:
     if len(seasons) != len(set(seasons)):
@@ -307,6 +357,18 @@ def compute_interaction_cell_support(
     return support
 
 
+def aggregate_candidate_hypotheses(
+    *,
+    feature_shape_summary: pd.DataFrame,
+    pairwise_interactions: pd.DataFrame,
+) -> pd.DataFrame:
+    rows = [
+        *_aggregate_main_effect_hypotheses(feature_shape_summary),
+        *_aggregate_pairwise_hypotheses(pairwise_interactions),
+    ]
+    return pd.DataFrame(rows, columns=pd.Index(_CANDIDATE_HYPOTHESIS_COLUMNS))
+
+
 def resolve_source_children(config: EbmDiagnosticConfig) -> tuple[tuple[SourceChildContext, ...], pd.DataFrame]:
     metadata_path = config.experiment_path / "experiment_metadata.json"
     parent_metadata = _read_json_object(metadata_path, artifact_name="experiment_metadata.json")
@@ -470,6 +532,217 @@ def _prepare_diagnostic_features(
         valid_rows[column] = numeric_feature
         resolved_columns.append(column)
     return tuple(resolved_columns)
+
+
+def _aggregate_main_effect_hypotheses(feature_shape_summary: pd.DataFrame) -> list[dict[str, object]]:
+    if feature_shape_summary.empty:
+        return []
+    _require_dataframe_columns(
+        feature_shape_summary,
+        columns=_MAIN_EFFECT_AGGREGATION_COLUMNS,
+        artifact_name="feature_shape_summary",
+    )
+
+    rows: list[dict[str, object]] = []
+    grouped = feature_shape_summary.groupby(["target_type", "feature_name"], sort=True, dropna=False)
+    for raw_key, group in grouped:
+        target_type, feature_name = cast("tuple[object, object]", raw_key)
+        signal_mask = group["fold_candidate_signal"].eq(True)
+        signals = group.loc[signal_mask]
+        if signals.empty:
+            continue
+
+        direction_values = _normalized_direction_values(signals["monotonicity_hint"])
+        total_row_support = _sum_numeric_int(signals, "row_support")
+        fold_signal_count = _fold_signal_count(signals)
+        candidate_hypothesis_flag = (
+            str(target_type) == "source_residual"
+            and fold_signal_count >= 2
+            and total_row_support >= 1000
+            and _directions_compatible(direction_values)
+        )
+        term_name = str(feature_name)
+        rows.append(
+            {
+                "discovery_only": True,
+                "target_type": str(target_type),
+                "candidate_type": "main_effect",
+                "term_name": term_name,
+                "feature_a": term_name,
+                "feature_b": "",
+                "fold_signal_count": fold_signal_count,
+                "validation_seasons_with_signal": _joined_sorted_values(signals["validation_season"]),
+                "total_row_support": total_row_support,
+                "min_bin_or_cell_row_support": _min_numeric_int(
+                    signals,
+                    (
+                        "largest_positive_bin_row_support",
+                        "largest_negative_bin_row_support",
+                    ),
+                ),
+                "min_bin_or_cell_round_support": _min_numeric_int(
+                    signals,
+                    (
+                        "largest_positive_bin_round_support",
+                        "largest_negative_bin_round_support",
+                    ),
+                ),
+                "effect_range_median": _median_numeric_float(signals, "effect_range"),
+                "direction_summary": ",".join(sorted(direction_values)),
+                "failed_validation_seasons": _joined_sorted_values(group.loc[~signal_mask, "validation_season"]),
+                "candidate_hypothesis_flag": bool(candidate_hypothesis_flag),
+                "candidate_scope": "human_review_only",
+            }
+        )
+    return rows
+
+
+def _aggregate_pairwise_hypotheses(pairwise_interactions: pd.DataFrame) -> list[dict[str, object]]:
+    if pairwise_interactions.empty:
+        return []
+    _require_dataframe_columns(
+        pairwise_interactions,
+        columns=_PAIRWISE_AGGREGATION_COLUMNS,
+        artifact_name="pairwise_interactions",
+    )
+
+    rows: list[dict[str, object]] = []
+    grouped = pairwise_interactions.groupby(
+        ["target_type", "interaction_name", "feature_a", "feature_b"],
+        sort=True,
+        dropna=False,
+    )
+    for raw_key, group in grouped:
+        target_type, interaction_name, feature_a, feature_b = cast("tuple[object, object, object, object]", raw_key)
+        signal_mask = group["fold_candidate_signal"].eq(True)
+        signals = group.loc[signal_mask]
+        if signals.empty:
+            continue
+
+        total_row_support = _sum_numeric_int(signals, "row_support")
+        fold_signal_count = _fold_signal_count(signals)
+        candidate_hypothesis_flag = (
+            str(target_type) == "source_residual" and fold_signal_count >= 2 and total_row_support >= 1000
+        )
+        rows.append(
+            {
+                "discovery_only": True,
+                "target_type": str(target_type),
+                "candidate_type": "pairwise_interaction",
+                "term_name": str(interaction_name),
+                "feature_a": str(feature_a),
+                "feature_b": str(feature_b),
+                "fold_signal_count": fold_signal_count,
+                "validation_seasons_with_signal": _joined_sorted_values(signals["validation_season"]),
+                "total_row_support": total_row_support,
+                "min_bin_or_cell_row_support": _min_numeric_int(
+                    signals,
+                    (
+                        "max_effect_cell_row_support",
+                        "min_effect_cell_row_support",
+                    ),
+                ),
+                "min_bin_or_cell_round_support": _min_numeric_int(
+                    signals,
+                    (
+                        "max_effect_cell_round_support",
+                        "min_effect_cell_round_support",
+                    ),
+                ),
+                "effect_range_median": _median_numeric_float(signals, "effect_range"),
+                "direction_summary": "interaction",
+                "failed_validation_seasons": _joined_sorted_values(group.loc[~signal_mask, "validation_season"]),
+                "candidate_hypothesis_flag": bool(candidate_hypothesis_flag),
+                "candidate_scope": "human_review_only",
+            }
+        )
+    return rows
+
+
+def _require_dataframe_columns(
+    frame: pd.DataFrame,
+    *,
+    columns: tuple[str, ...],
+    artifact_name: str,
+) -> None:
+    missing_columns = tuple(column for column in columns if column not in frame.columns)
+    if missing_columns:
+        raise EbmDiagnosticInvalid(f"Missing required {artifact_name} columns: {', '.join(missing_columns)}")
+
+
+def _fold_signal_count(signals: pd.DataFrame) -> int:
+    return int(signals["fold_id"].nunique(dropna=True))
+
+
+def _sum_numeric_int(frame: pd.DataFrame, column: str) -> int:
+    values = _finite_numeric_values(frame[column])
+    if values.empty:
+        return 0
+    return int(values.sum())
+
+
+def _min_numeric_int(frame: pd.DataFrame, columns: tuple[str, ...]) -> int:
+    values = pd.concat([_finite_numeric_values(frame[column]) for column in columns], ignore_index=True)
+    if values.empty:
+        return 0
+    return int(values.min())
+
+
+def _median_numeric_float(frame: pd.DataFrame, column: str) -> float:
+    values = _finite_numeric_values(frame[column])
+    if values.empty:
+        return float("nan")
+    return float(values.median())
+
+
+def _finite_numeric_values(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    return numeric.loc[numeric.map(_is_finite_number)]
+
+
+def _joined_sorted_values(values: pd.Series) -> str:
+    normalized = {_normalized_sortable_value(value) for value in values.dropna()}
+    sorted_values = sorted(normalized, key=_sortable_value_key)
+    return ",".join(str(value) for value in sorted_values)
+
+
+def _normalized_sortable_value(value: object) -> int | str:
+    try:
+        numeric_value = float(cast("Any", value))
+    except (TypeError, ValueError):
+        return str(value)
+    if math.isfinite(numeric_value) and numeric_value.is_integer():
+        return int(numeric_value)
+    if math.isfinite(numeric_value):
+        return str(numeric_value)
+    return str(value)
+
+
+def _sortable_value_key(value: int | str) -> tuple[int, int | str]:
+    if isinstance(value, int):
+        return (0, value)
+    return (1, value)
+
+
+def _normalized_direction_values(values: pd.Series) -> set[str]:
+    directions: set[str] = set()
+    for value in values.dropna():
+        direction = str(value).strip().lower()
+        if direction and direction != "nan":
+            directions.add(direction)
+    return directions
+
+
+def _directions_compatible(directions: set[str]) -> bool:
+    if not directions:
+        return False
+    if directions & {"mixed", "unstable"}:
+        return False
+    contradictory_direction_sets = (
+        {"increasing", "decreasing"},
+        {"u_shaped", "inverted_u"},
+    )
+    return not any(contradictory_directions.issubset(directions) for contradictory_directions in contradictory_direction_sets)
 
 
 def _season_fold_id(index: int) -> str:

@@ -13,6 +13,7 @@ from cartola.backtesting.ebm_feature_diagnostic import (
     EbmDiagnosticConfig,
     EbmDiagnosticInvalid,
     SourceChildContext,
+    aggregate_candidate_hypotheses,
     assign_continuous_bins,
     compute_interaction_cell_support,
     inspect_ebm_runtime,
@@ -482,6 +483,132 @@ def test_compute_interaction_cell_support_rejects_non_integral_bin_values() -> N
             feature_a_bin="feature_a_bin",
             feature_b_bin="feature_b_bin",
         )
+
+
+def test_aggregate_candidate_hypotheses_flags_residual_two_fold_signal() -> None:
+    summaries = pd.DataFrame(
+        {
+            "discovery_only": [True, True],
+            "target_type": ["source_residual", "source_residual"],
+            "feature_name": ["feature_a", "feature_a"],
+            "fold_id": ["A", "B"],
+            "validation_season": [2023, 2024],
+            "effect_range": [0.6, 0.7],
+            "largest_positive_bin_row_support": [60, 70],
+            "largest_positive_bin_round_support": [5, 6],
+            "largest_negative_bin_row_support": [55, 65],
+            "largest_negative_bin_round_support": [5, 6],
+            "monotonicity_hint": ["increasing", "increasing"],
+            "row_support": [600, 650],
+            "fold_candidate_signal": [True, True],
+        }
+    )
+
+    candidates = aggregate_candidate_hypotheses(
+        feature_shape_summary=summaries,
+        pairwise_interactions=pd.DataFrame(),
+    )
+
+    assert len(candidates) == 1
+    row = candidates.iloc[0]
+    assert row["target_type"] == "source_residual"
+    assert row["candidate_type"] == "main_effect"
+    assert row["term_name"] == "feature_a"
+    assert row["feature_a"] == "feature_a"
+    assert row["feature_b"] == ""
+    assert row["fold_signal_count"] == 2
+    assert row["validation_seasons_with_signal"] == "2023,2024"
+    assert row["total_row_support"] == 1250
+    assert bool(row["candidate_hypothesis_flag"])
+    assert row["candidate_scope"] == "human_review_only"
+
+
+def test_aggregate_candidate_hypotheses_does_not_flag_actual_points_only_signal() -> None:
+    summaries = pd.DataFrame(
+        {
+            "discovery_only": [True, True],
+            "target_type": ["actual_points", "actual_points"],
+            "feature_name": ["feature_a", "feature_a"],
+            "fold_id": ["A", "B"],
+            "validation_season": [2023, 2024],
+            "effect_range": [0.6, 0.7],
+            "largest_positive_bin_row_support": [60, 70],
+            "largest_positive_bin_round_support": [5, 6],
+            "largest_negative_bin_row_support": [55, 65],
+            "largest_negative_bin_round_support": [5, 6],
+            "monotonicity_hint": ["increasing", "increasing"],
+            "row_support": [600, 650],
+            "fold_candidate_signal": [True, True],
+        }
+    )
+
+    candidates = aggregate_candidate_hypotheses(
+        feature_shape_summary=summaries,
+        pairwise_interactions=pd.DataFrame(),
+    )
+
+    assert len(candidates) == 1
+    row = candidates.iloc[0]
+    assert row["target_type"] == "actual_points"
+    assert not bool(row["candidate_hypothesis_flag"])
+    assert row["candidate_scope"] == "human_review_only"
+
+
+def test_aggregate_candidate_hypotheses_does_not_flag_contradictory_directions() -> None:
+    summaries = pd.DataFrame(
+        {
+            "discovery_only": [True, True],
+            "target_type": ["source_residual", "source_residual"],
+            "feature_name": ["feature_a", "feature_a"],
+            "fold_id": ["A", "B"],
+            "validation_season": [2023, 2024],
+            "effect_range": [0.6, 0.7],
+            "largest_positive_bin_row_support": [60, 70],
+            "largest_positive_bin_round_support": [5, 6],
+            "largest_negative_bin_row_support": [55, 65],
+            "largest_negative_bin_round_support": [5, 6],
+            "monotonicity_hint": ["increasing", "decreasing"],
+            "row_support": [600, 650],
+            "fold_candidate_signal": [True, True],
+        }
+    )
+
+    candidates = aggregate_candidate_hypotheses(
+        feature_shape_summary=summaries,
+        pairwise_interactions=pd.DataFrame(),
+    )
+
+    assert len(candidates) == 1
+    row = candidates.iloc[0]
+    assert row["direction_summary"] == "decreasing,increasing"
+    assert not bool(row["candidate_hypothesis_flag"])
+
+
+def test_aggregate_candidate_hypotheses_empty_result_has_expected_columns() -> None:
+    candidates = aggregate_candidate_hypotheses(
+        feature_shape_summary=pd.DataFrame(),
+        pairwise_interactions=pd.DataFrame(),
+    )
+
+    assert candidates.empty
+    assert list(candidates.columns) == [
+        "discovery_only",
+        "target_type",
+        "candidate_type",
+        "term_name",
+        "feature_a",
+        "feature_b",
+        "fold_signal_count",
+        "validation_seasons_with_signal",
+        "total_row_support",
+        "min_bin_or_cell_row_support",
+        "min_bin_or_cell_round_support",
+        "effect_range_median",
+        "direction_summary",
+        "failed_validation_seasons",
+        "candidate_hypothesis_flag",
+        "candidate_scope",
+    ]
 
 
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:
