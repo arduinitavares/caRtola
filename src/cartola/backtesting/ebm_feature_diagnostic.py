@@ -121,7 +121,7 @@ def resolve_source_children(config: EbmDiagnosticConfig) -> tuple[tuple[SourceCh
         matches = [
             (index, child)
             for index, child in enumerate(child_runs)
-            if _child_matches_config(child, config=config, season=season)
+            if _child_matches_config(child, child_index=index, config=config, season=season)
         ]
         if not matches:
             report_rows.append(_unmatched_row(source_experiment_id, config=config, season=season))
@@ -164,17 +164,24 @@ def _child_run_entries(child_runs: list[object]) -> list[dict[str, Any]]:
     return entries
 
 
-def _child_matches_config(child: dict[str, Any], *, config: EbmDiagnosticConfig, season: int) -> bool:
-    metadata = child.get("metadata")
-    if not isinstance(metadata, dict):
-        return False
-    return (
+def _child_matches_config(
+    child: dict[str, Any],
+    *,
+    child_index: int,
+    config: EbmDiagnosticConfig,
+    season: int,
+) -> bool:
+    if not (
         _optional_int(child.get("season")) == season
         and child.get("model_id") == config.model_id
         and child.get("feature_pack") == config.feature_pack
         and child.get("fixture_mode") == config.fixture_mode
-        and metadata.get("budget_policy") == "moving"
-    )
+    ):
+        return False
+    metadata = child.get("metadata")
+    if not isinstance(metadata, dict):
+        raise EbmDiagnosticInvalid(f"experiment_metadata.json child_runs[{child_index}].metadata must be an object")
+    return metadata.get("budget_policy") == "moving"
 
 
 def _source_child_context(
@@ -397,9 +404,17 @@ def _resolve_child_path(experiment_path: Path, output_path: str) -> Path:
     path = Path(output_path)
     if path.is_absolute():
         return path
-    if path.exists():
-        return path
+    project_path = _project_root_from_experiment_path(experiment_path) / path
+    if project_path.exists():
+        return project_path
     return experiment_path / path
+
+
+def _project_root_from_experiment_path(experiment_path: Path) -> Path:
+    for parent in (experiment_path, *experiment_path.parents):
+        if parent.name == "08_reporting" and parent.parent.name == "data":
+            return parent.parent.parent
+    return experiment_path.parent
 
 
 def _unmatched_row(source_experiment_id: str, *, config: EbmDiagnosticConfig, season: int) -> dict[str, object]:

@@ -57,14 +57,17 @@ def _write_source_child(
     tmp_path: Path,
     *,
     child_id: str = "child-1",
+    child_path: Path | None = None,
+    output_path: str | None = None,
     season: int = 2025,
     model_id: str = "ridge",
     feature_pack: str = "ppg_xg",
     fixture_mode: str = "none",
     prediction_score_column: str | None = None,
+    metadata_overrides: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    child_path = tmp_path / "children" / child_id
-    child_path.mkdir(parents=True)
+    resolved_child_path = child_path or tmp_path / "children" / child_id
+    resolved_child_path.mkdir(parents=True)
     parent_metadata: dict[str, object] = {
         "season": season,
         "model_id": model_id,
@@ -75,15 +78,16 @@ def _write_source_child(
         "budget_policy": "moving",
         "scoring_contract_version": "cartola_standard_2026_v1",
     }
-    (child_path / "run_metadata.json").write_text(json.dumps(parent_metadata), encoding="utf-8")
+    child_metadata = {**parent_metadata, **(metadata_overrides or {})}
+    (resolved_child_path / "run_metadata.json").write_text(json.dumps(child_metadata), encoding="utf-8")
     score_column = prediction_score_column or f"{model_id}_score"
     pd.DataFrame({"rodada": [5], "id_atleta": [10], score_column: [6.5]}).to_csv(
-        child_path / "player_predictions.csv",
+        resolved_child_path / "player_predictions.csv",
         index=False,
     )
     return {
         "child_id": child_id,
-        "output_path": str(child_path),
+        "output_path": output_path if output_path is not None else str(resolved_child_path),
         "season": season,
         "model_id": model_id,
         "feature_pack": feature_pack,
@@ -93,7 +97,7 @@ def _write_source_child(
 
 
 def _write_parent(experiment_path: Path, child_runs: list[dict[str, object]]) -> None:
-    experiment_path.mkdir(parents=True)
+    experiment_path.mkdir(parents=True, exist_ok=True)
     (experiment_path / "experiment_metadata.json").write_text(
         json.dumps({"experiment_id": "exp-1", "child_runs": child_runs}),
         encoding="utf-8",
@@ -156,6 +160,54 @@ def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -
     assert context.source_prediction_provenance_status == "verified"
 
 
+def test_resolve_source_children_resolves_project_relative_output_path_outside_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    child_path = project_root / "data" / "08_reporting" / "backtests" / "2025" / "child-1"
+    output_path = str(child_path.relative_to(project_root))
+    child = _write_source_child(project_root, child_path=child_path, output_path=output_path)
+    experiment_path = project_root / "data" / "08_reporting" / "experiments" / "exp-1"
+    _write_parent(experiment_path, [child])
+    outside_cwd = tmp_path / "outside"
+    outside_cwd.mkdir()
+    monkeypatch.chdir(outside_cwd)
+
+    contexts, report = resolve_source_children(
+        EbmDiagnosticConfig(
+            experiment_path=experiment_path,
+            seasons=(2025,),
+            model_id="ridge",
+            feature_pack="ppg_xg",
+            fixture_mode="none",
+        )
+    )
+
+    assert report.empty
+    assert contexts[0].child_path == child_path
+
+
+def test_resolve_source_children_resolves_experiment_relative_output_path(tmp_path: Path) -> None:
+    experiment_path = tmp_path / "experiment"
+    child_path = experiment_path / "runs" / "child-1"
+    child = _write_source_child(tmp_path, child_path=child_path, output_path="runs/child-1")
+    _write_parent(experiment_path, [child])
+
+    contexts, report = resolve_source_children(
+        EbmDiagnosticConfig(
+            experiment_path=experiment_path,
+            seasons=(2025,),
+            model_id="ridge",
+            feature_pack="ppg_xg",
+            fixture_mode="none",
+        )
+    )
+
+    assert report.empty
+    assert contexts[0].child_path == child_path
+
+
 def test_resolve_source_children_reports_duplicate_matches(tmp_path: Path) -> None:
     first = _write_source_child(tmp_path, child_id="child-1")
     second = _write_source_child(tmp_path, child_id="child-2")
@@ -180,6 +232,41 @@ def test_resolve_source_children_rejects_missing_score_column(tmp_path: Path) ->
     _write_parent(experiment_path, [child])
 
     with pytest.raises(EbmDiagnosticInvalid, match="Missing score column.*ridge_score"):
+        resolve_source_children(
+            EbmDiagnosticConfig(
+                experiment_path=experiment_path,
+                seasons=(2025,),
+                model_id="ridge",
+                feature_pack="ppg_xg",
+                fixture_mode="none",
+            )
+        )
+
+
+def test_resolve_source_children_rejects_run_metadata_disagreement(tmp_path: Path) -> None:
+    child = _write_source_child(tmp_path, metadata_overrides={"model_id": "random_forest"})
+    experiment_path = tmp_path / "experiment"
+    _write_parent(experiment_path, [child])
+
+    with pytest.raises(EbmDiagnosticInvalid, match="run_metadata.json field model_id=.*disagrees"):
+        resolve_source_children(
+            EbmDiagnosticConfig(
+                experiment_path=experiment_path,
+                seasons=(2025,),
+                model_id="ridge",
+                feature_pack="ppg_xg",
+                fixture_mode="none",
+            )
+        )
+
+
+def test_resolve_source_children_rejects_non_object_matching_metadata(tmp_path: Path) -> None:
+    child = _write_source_child(tmp_path)
+    child["metadata"] = ["budget_policy", "moving"]
+    experiment_path = tmp_path / "experiment"
+    _write_parent(experiment_path, [child])
+
+    with pytest.raises(EbmDiagnosticInvalid, match=r"child_runs\[0\]\.metadata.*object"):
         resolve_source_children(
             EbmDiagnosticConfig(
                 experiment_path=experiment_path,
