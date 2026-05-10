@@ -1279,6 +1279,46 @@ def test_build_ebm_feature_diagnostic_rejects_inconsistent_raw_feature_columns(t
     assert "feature_columns" in invalid_report["reason_type"].tolist()
 
 
+def test_build_ebm_feature_diagnostic_rejects_duplicate_raw_feature_tuple_drift(tmp_path: Path) -> None:
+    model_id = "ridge"
+    child_runs = [
+        _write_source_child(tmp_path, child_id=f"child-{season}", season=season, model_id=model_id)
+        for season in (2021, 2022, 2023)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023), strict=True):
+        _write_synthetic_player_predictions(
+            child,
+            season=season,
+            model_id=model_id,
+            feature_columns=(
+                ["feature_a", "feature_b", "feature_b", "posicao"]
+                if season == 2022
+                else ["feature_a", "feature_b", "posicao"]
+            ),
+        )
+    experiment_path = tmp_path / "experiment"
+    output_path = tmp_path / "ebm-output"
+    _write_parent(experiment_path, child_runs)
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=output_path,
+        seasons=(2021, 2022, 2023),
+        model_id=model_id,
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        current_year=2026,
+        max_interactions=0,
+        min_validation_rows=50,
+        random_seed=123,
+        ebm_class=_PipelineFakeEbm,
+    )
+
+    invalid_report = pd.read_csv(output_path / "invalid_diagnostic_report.csv")
+    assert result.decision["diagnostic_status"] == "invalid"
+    assert "feature_columns" in invalid_report["reason_type"].tolist()
+
+
 def test_build_ebm_feature_diagnostic_rejects_ebm_without_validation_disable_control(tmp_path: Path) -> None:
     model_id = "ridge"
     child_runs = [
@@ -1538,8 +1578,12 @@ def test_prepare_diagnostic_dataset_excludes_leakage_and_identity_features(tmp_p
                 "preco_pre_rodada": [10.0],
                 "ridge_score": [6.0],
                 "predicted_actual_points": [7.5],
+                "total_predicted_points": [7.6],
                 "capitao": [False],
                 "scout_target_round": [3.0],
+                "target": [9.0],
+                "G": [1.0],
+                "DS": [4.0],
                 "pontuacao_media_mandante": [2.0],
                 "numeric_feature": [1.5],
             }
@@ -1558,8 +1602,12 @@ def test_prepare_diagnostic_dataset_excludes_leakage_and_identity_features(tmp_p
             "source_model_score",
             "ridge_score",
             "predicted_actual_points",
+            "total_predicted_points",
             "capitao",
             "scout_target_round",
+            "target",
+            "G",
+            "DS",
             "pontuacao_media_mandante",
             "preco_pre_rodada",
             "numeric_feature",
@@ -1567,6 +1615,31 @@ def test_prepare_diagnostic_dataset_excludes_leakage_and_identity_features(tmp_p
     )
 
     assert dataset.feature_columns == ("posicao_ata", "preco_pre_rodada", "numeric_feature")
+
+
+def test_prepare_diagnostic_dataset_deduplicates_fit_features_but_preserves_raw_tuple(tmp_path: Path) -> None:
+    dataset = prepare_diagnostic_dataset(
+        _source_context(tmp_path),
+        pd.DataFrame(
+            {
+                "rodada": [5],
+                "id_atleta": [10],
+                "apelido": ["Played"],
+                "id_clube": [1],
+                "posicao": ["ata"],
+                "status": ["Provavel"],
+                "pontuacao": [7.0],
+                "entrou_em_campo": [True],
+                "preco_pre_rodada": [10.0],
+                "ridge_score": [6.0],
+                "numeric_feature": [1.5],
+            }
+        ),
+        feature_columns=("numeric_feature", "numeric_feature", "posicao"),
+    )
+
+    assert dataset.raw_feature_columns == ("numeric_feature", "numeric_feature", "posicao")
+    assert dataset.feature_columns == ("numeric_feature", "posicao_ata")
 
 
 def test_prepare_diagnostic_dataset_keeps_null_played_points_as_invalid(tmp_path: Path) -> None:

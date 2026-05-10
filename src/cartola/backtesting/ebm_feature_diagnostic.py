@@ -1162,12 +1162,10 @@ def _feature_columns_from_metadata(
 ) -> tuple[str, ...]:
     raw_feature_columns = metadata.get("feature_columns")
     if raw_feature_columns:
-        return _deduplicate_feature_columns(
-            _metadata_feature_column_list(
-                raw_feature_columns,
-                field_name="feature_columns",
-                context=context,
-            )
+        return _metadata_feature_column_list(
+            raw_feature_columns,
+            field_name="feature_columns",
+            context=context,
         )
 
     split_columns = [
@@ -1183,7 +1181,7 @@ def _feature_columns_from_metadata(
         ),
     ]
     if split_columns:
-        return _deduplicate_feature_columns(tuple(split_columns))
+        return tuple(split_columns)
     raise EbmDiagnosticInvalid(
         f"run_metadata.json missing usable feature columns for season={context.season}: "
         f"{context.child_path / 'run_metadata.json'}"
@@ -1509,17 +1507,18 @@ def _prepare_diagnostic_features(
     feature_columns: tuple[str, ...],
 ) -> tuple[str, ...]:
     identity_columns = frozenset(("id_atleta", "id_clube", "apelido", "season", "rodada"))
+    fit_feature_columns = _deduplicate_feature_columns(feature_columns)
     excluded_columns = identity_columns | frozenset(
-        column for column in feature_columns if _is_excluded_feature_column(column)
+        column for column in fit_feature_columns if _is_excluded_feature_column(column)
     )
     missing_feature_columns = tuple(
-        column for column in feature_columns if column not in excluded_columns and column not in valid_rows.columns
+        column for column in fit_feature_columns if column not in excluded_columns and column not in valid_rows.columns
     )
     if missing_feature_columns:
         raise EbmDiagnosticInvalid(f"Missing feature columns: {', '.join(missing_feature_columns)}")
 
     resolved_columns: list[str] = []
-    for column in feature_columns:
+    for column in fit_feature_columns:
         if column in excluded_columns:
             continue
         if column == "posicao":
@@ -1540,6 +1539,7 @@ def _prepare_diagnostic_features(
 def _is_excluded_feature_column(column: str) -> bool:
     normalized = column.strip().lower()
     if normalized in {
+        "target",
         "pontuacao",
         "entrou_em_campo",
         "target_actual_points",
@@ -1548,17 +1548,39 @@ def _is_excluded_feature_column(column: str) -> bool:
         "actual_points",
         "actual_points_with_captain",
         "actual_points_with_capitao",
+        "g",
+        "a",
+        "sg",
+        "dd",
+        "dp",
+        "gc",
+        "cv",
+        "ca",
+        "fs",
+        "ff",
+        "fd",
+        "ft",
+        "de",
+        "ds",
+        "gs",
+        "fc",
+        "pc",
+        "pi",
+        "pp",
+        "i",
+        "pe",
+        "rb",
     }:
         return True
     if normalized.endswith("_score"):
         return True
-    if normalized.startswith("predicted_") or normalized.endswith("_prediction"):
+    if "predicted" in normalized or "prediction" in normalized:
         return True
     if "capitao" in normalized or "captain" in normalized:
         return True
     if normalized.startswith("scout_") or normalized.endswith("_scout"):
         return True
-    if normalized.startswith("pontuacao"):
+    if normalized.startswith("pontuacao") or normalized.startswith("target_") or normalized.endswith("_target"):
         return True
     return False
 
