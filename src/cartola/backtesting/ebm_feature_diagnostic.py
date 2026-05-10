@@ -172,6 +172,22 @@ _PAIRWISE_AGGREGATION_COLUMNS = (
     "fold_candidate_signal",
 )
 
+_MAIN_EFFECT_SUPPORT_COLUMNS = (
+    "row_support",
+    "largest_positive_bin_row_support",
+    "largest_negative_bin_row_support",
+    "largest_positive_bin_round_support",
+    "largest_negative_bin_round_support",
+)
+
+_PAIRWISE_SUPPORT_COLUMNS = (
+    "row_support",
+    "max_effect_cell_row_support",
+    "min_effect_cell_row_support",
+    "max_effect_cell_round_support",
+    "min_effect_cell_round_support",
+)
+
 _MIN_CANDIDATE_TOTAL_ROW_SUPPORT = 1000
 _MIN_CANDIDATE_BIN_OR_CELL_ROW_SUPPORT = 50
 _MIN_CANDIDATE_BIN_OR_CELL_ROUND_SUPPORT = 5
@@ -551,13 +567,14 @@ def _aggregate_main_effect_hypotheses(feature_shape_summary: pd.DataFrame) -> li
     grouped = feature_shape_summary.groupby(["target_type", "feature_name"], sort=True, dropna=False)
     for raw_key, group in grouped:
         target_type, feature_name = cast("tuple[object, object]", raw_key)
+        term_name = str(feature_name)
+        _validate_unique_fold_rows(group, term_name=term_name)
         signal_mask = group["fold_candidate_signal"].eq(True)
         signals = group.loc[signal_mask]
         if signals.empty:
             continue
 
-        term_name = str(feature_name)
-        _validate_unique_signal_rows(signals, term_name=term_name)
+        _validate_numeric_signal_support(signals, columns=_MAIN_EFFECT_SUPPORT_COLUMNS, term_name=term_name)
         direction_values = _normalized_direction_values(signals["monotonicity_hint"])
         total_row_support = _sum_numeric_int(signals, "row_support")
         min_bin_or_cell_row_support = _min_numeric_int(
@@ -575,9 +592,11 @@ def _aggregate_main_effect_hypotheses(feature_shape_summary: pd.DataFrame) -> li
             ),
         )
         fold_signal_count = _fold_signal_count(signals)
+        validation_season_signal_count = _validation_season_signal_count(signals)
         candidate_hypothesis_flag = (
             str(target_type) == "source_residual"
             and fold_signal_count >= 2
+            and validation_season_signal_count >= 2
             and total_row_support >= _MIN_CANDIDATE_TOTAL_ROW_SUPPORT
             and min_bin_or_cell_row_support >= _MIN_CANDIDATE_BIN_OR_CELL_ROW_SUPPORT
             and min_bin_or_cell_round_support >= _MIN_CANDIDATE_BIN_OR_CELL_ROUND_SUPPORT
@@ -623,13 +642,14 @@ def _aggregate_pairwise_hypotheses(pairwise_interactions: pd.DataFrame) -> list[
     )
     for raw_key, group in grouped:
         target_type, interaction_name, feature_a, feature_b = cast("tuple[object, object, object, object]", raw_key)
+        term_name = str(interaction_name)
+        _validate_unique_fold_rows(group, term_name=term_name)
         signal_mask = group["fold_candidate_signal"].eq(True)
         signals = group.loc[signal_mask]
         if signals.empty:
             continue
 
-        term_name = str(interaction_name)
-        _validate_unique_signal_rows(signals, term_name=term_name)
+        _validate_numeric_signal_support(signals, columns=_PAIRWISE_SUPPORT_COLUMNS, term_name=term_name)
         total_row_support = _sum_numeric_int(signals, "row_support")
         min_bin_or_cell_row_support = _min_numeric_int(
             signals,
@@ -646,9 +666,11 @@ def _aggregate_pairwise_hypotheses(pairwise_interactions: pd.DataFrame) -> list[
             ),
         )
         fold_signal_count = _fold_signal_count(signals)
+        validation_season_signal_count = _validation_season_signal_count(signals)
         candidate_hypothesis_flag = (
             str(target_type) == "source_residual"
             and fold_signal_count >= 2
+            and validation_season_signal_count >= 2
             and total_row_support >= _MIN_CANDIDATE_TOTAL_ROW_SUPPORT
             and min_bin_or_cell_row_support >= _MIN_CANDIDATE_BIN_OR_CELL_ROW_SUPPORT
             and min_bin_or_cell_round_support >= _MIN_CANDIDATE_BIN_OR_CELL_ROUND_SUPPORT
@@ -687,13 +709,13 @@ def _require_dataframe_columns(
         raise EbmDiagnosticInvalid(f"Missing required {artifact_name} columns: {', '.join(missing_columns)}")
 
 
-def _validate_unique_signal_rows(signals: pd.DataFrame, *, term_name: str) -> None:
-    duplicated_mask = signals.duplicated(subset=["fold_id", "validation_season"], keep=False)
+def _validate_unique_fold_rows(group: pd.DataFrame, *, term_name: str) -> None:
+    duplicated_mask = group.duplicated(subset=["fold_id", "validation_season"], keep=False)
     if not bool(duplicated_mask.any()):
         return
 
     duplicated_pairs = (
-        signals.loc[duplicated_mask, ["fold_id", "validation_season"]]
+        group.loc[duplicated_mask, ["fold_id", "validation_season"]]
         .drop_duplicates()
         .sort_values(["fold_id", "validation_season"], key=lambda values: values.astype(str))
     )
@@ -701,11 +723,47 @@ def _validate_unique_signal_rows(signals: pd.DataFrame, *, term_name: str) -> No
         f"fold_id={row['fold_id']} validation_season={row['validation_season']}"
         for _, row in duplicated_pairs.iterrows()
     ]
-    raise EbmDiagnosticInvalid(f"Duplicate signal rows for {term_name}: {'; '.join(pair_summaries)}")
+    pair_summary = "; ".join(pair_summaries)
+    raise EbmDiagnosticInvalid(
+        f"Duplicate fold rows for {term_name}: {pair_summary}. "
+        f"Duplicate signal rows for {term_name}: {pair_summary}"
+    )
+
+
+def _validate_numeric_signal_support(
+    signals: pd.DataFrame,
+    *,
+    columns: tuple[str, ...],
+    term_name: str,
+) -> None:
+    for column in columns:
+        numeric = pd.to_numeric(signals[column], errors="coerce")
+        invalid_mask = ~numeric.map(_is_finite_number)
+        if bool(invalid_mask.any()):
+            invalid_rows = signals.loc[invalid_mask, ["fold_id", "validation_season"]]
+            invalid_context = _joined_fold_validation_pairs(invalid_rows)
+            raise EbmDiagnosticInvalid(
+                f"Invalid numeric support for {term_name}: {column} contains missing, non-numeric, "
+                f"or non-finite values at {invalid_context}"
+            )
 
 
 def _fold_signal_count(signals: pd.DataFrame) -> int:
     return int(signals["fold_id"].nunique(dropna=True))
+
+
+def _validation_season_signal_count(signals: pd.DataFrame) -> int:
+    return int(signals["validation_season"].nunique(dropna=True))
+
+
+def _joined_fold_validation_pairs(rows: pd.DataFrame) -> str:
+    pair_rows = rows.drop_duplicates().sort_values(
+        ["fold_id", "validation_season"],
+        key=lambda values: values.astype(str),
+    )
+    return "; ".join(
+        f"fold_id={row['fold_id']} validation_season={row['validation_season']}" for _, row in pair_rows.iterrows()
+    )
 
 
 def _sum_numeric_int(frame: pd.DataFrame, column: str) -> int:

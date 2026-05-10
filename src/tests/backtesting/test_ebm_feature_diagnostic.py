@@ -492,11 +492,12 @@ def _main_effect_summary(
     fold_ids: tuple[str, ...] = ("A", "B"),
     validation_seasons: tuple[int, ...] = (2023, 2024),
     monotonicity_hints: tuple[str, ...] = ("increasing", "increasing"),
-    row_support: tuple[int, ...] = (600, 650),
-    positive_bin_row_support: tuple[int, ...] = (60, 70),
-    positive_bin_round_support: tuple[int, ...] = (5, 6),
-    negative_bin_row_support: tuple[int, ...] = (55, 65),
-    negative_bin_round_support: tuple[int, ...] = (5, 6),
+    row_support: tuple[object, ...] = (600, 650),
+    positive_bin_row_support: tuple[object, ...] = (60, 70),
+    positive_bin_round_support: tuple[object, ...] = (5, 6),
+    negative_bin_row_support: tuple[object, ...] = (55, 65),
+    negative_bin_round_support: tuple[object, ...] = (5, 6),
+    fold_candidate_signals: tuple[bool, ...] = (True, True),
 ) -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -512,7 +513,7 @@ def _main_effect_summary(
             "largest_negative_bin_round_support": list(negative_bin_round_support),
             "monotonicity_hint": list(monotonicity_hints),
             "row_support": list(row_support),
-            "fold_candidate_signal": [True] * len(fold_ids),
+            "fold_candidate_signal": list(fold_candidate_signals),
         }
     )
 
@@ -522,11 +523,12 @@ def _pairwise_interactions(
     target_type: str = "source_residual",
     fold_ids: tuple[str, ...] = ("A", "B"),
     validation_seasons: tuple[int, ...] = (2023, 2024),
-    row_support: tuple[int, ...] = (600, 650),
-    max_cell_row_support: tuple[int, ...] = (60, 70),
-    max_cell_round_support: tuple[int, ...] = (5, 6),
-    min_cell_row_support: tuple[int, ...] = (55, 65),
-    min_cell_round_support: tuple[int, ...] = (5, 6),
+    row_support: tuple[object, ...] = (600, 650),
+    max_cell_row_support: tuple[object, ...] = (60, 70),
+    max_cell_round_support: tuple[object, ...] = (5, 6),
+    min_cell_row_support: tuple[object, ...] = (55, 65),
+    min_cell_round_support: tuple[object, ...] = (5, 6),
+    fold_candidate_signals: tuple[bool, ...] = (True, True),
 ) -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -545,7 +547,7 @@ def _pairwise_interactions(
             "min_effect_cell_round_support": list(min_cell_round_support),
             "row_support": list(row_support),
             "season_support": [2] * len(fold_ids),
-            "fold_candidate_signal": [True] * len(fold_ids),
+            "fold_candidate_signal": list(fold_candidate_signals),
         }
     )
 
@@ -618,6 +620,16 @@ def test_aggregate_candidate_hypotheses_does_not_flag_low_main_effect_bin_suppor
     assert not bool(row["candidate_hypothesis_flag"])
 
 
+def test_aggregate_candidate_hypotheses_rejects_nan_main_effect_signal_support() -> None:
+    summaries = _main_effect_summary(positive_bin_row_support=(float("nan"), 70))
+
+    with pytest.raises(EbmDiagnosticInvalid, match=r"feature_a.*largest_positive_bin_row_support"):
+        aggregate_candidate_hypotheses(
+            feature_shape_summary=summaries,
+            pairwise_interactions=pd.DataFrame(),
+        )
+
+
 def test_aggregate_candidate_hypotheses_does_not_flag_monotone_and_shaped_directions() -> None:
     summaries = _main_effect_summary(monotonicity_hints=("increasing", "u_shaped"))
 
@@ -642,6 +654,37 @@ def test_aggregate_candidate_hypotheses_rejects_duplicate_main_effect_signal_row
             feature_shape_summary=summaries,
             pairwise_interactions=pd.DataFrame(),
         )
+
+
+def test_aggregate_candidate_hypotheses_rejects_mixed_signal_duplicate_main_effect_rows() -> None:
+    summaries = _main_effect_summary(
+        fold_ids=("A", "A"),
+        validation_seasons=(2023, 2023),
+        fold_candidate_signals=(True, False),
+    )
+
+    with pytest.raises(EbmDiagnosticInvalid, match=r"Duplicate fold rows.*feature_a.*A.*2023"):
+        aggregate_candidate_hypotheses(
+            feature_shape_summary=summaries,
+            pairwise_interactions=pd.DataFrame(),
+        )
+
+
+def test_aggregate_candidate_hypotheses_requires_distinct_main_effect_validation_seasons() -> None:
+    summaries = _main_effect_summary(
+        fold_ids=("A", "B"),
+        validation_seasons=(2023, 2023),
+    )
+
+    candidates = aggregate_candidate_hypotheses(
+        feature_shape_summary=summaries,
+        pairwise_interactions=pd.DataFrame(),
+    )
+
+    row = candidates.iloc[0]
+    assert row["fold_signal_count"] == 2
+    assert row["validation_seasons_with_signal"] == "2023"
+    assert not bool(row["candidate_hypothesis_flag"])
 
 
 def test_aggregate_candidate_hypotheses_flags_residual_pairwise_signal() -> None:
@@ -700,6 +743,16 @@ def test_aggregate_candidate_hypotheses_does_not_flag_low_pairwise_cell_support(
     assert not bool(row["candidate_hypothesis_flag"])
 
 
+def test_aggregate_candidate_hypotheses_rejects_nonnumeric_pairwise_signal_support() -> None:
+    interactions = _pairwise_interactions(max_cell_row_support=("bad", 70))
+
+    with pytest.raises(EbmDiagnosticInvalid, match=r"feature_a x feature_b.*max_effect_cell_row_support"):
+        aggregate_candidate_hypotheses(
+            feature_shape_summary=pd.DataFrame(),
+            pairwise_interactions=interactions,
+        )
+
+
 def test_aggregate_candidate_hypotheses_rejects_duplicate_pairwise_signal_rows() -> None:
     interactions = _pairwise_interactions(
         fold_ids=("A", "A"),
@@ -711,6 +764,37 @@ def test_aggregate_candidate_hypotheses_rejects_duplicate_pairwise_signal_rows()
             feature_shape_summary=pd.DataFrame(),
             pairwise_interactions=interactions,
         )
+
+
+def test_aggregate_candidate_hypotheses_rejects_mixed_signal_duplicate_pairwise_rows() -> None:
+    interactions = _pairwise_interactions(
+        fold_ids=("A", "A"),
+        validation_seasons=(2023, 2023),
+        fold_candidate_signals=(True, False),
+    )
+
+    with pytest.raises(EbmDiagnosticInvalid, match=r"Duplicate fold rows.*feature_a x feature_b.*A.*2023"):
+        aggregate_candidate_hypotheses(
+            feature_shape_summary=pd.DataFrame(),
+            pairwise_interactions=interactions,
+        )
+
+
+def test_aggregate_candidate_hypotheses_requires_distinct_pairwise_validation_seasons() -> None:
+    interactions = _pairwise_interactions(
+        fold_ids=("A", "B"),
+        validation_seasons=(2023, 2023),
+    )
+
+    candidates = aggregate_candidate_hypotheses(
+        feature_shape_summary=pd.DataFrame(),
+        pairwise_interactions=interactions,
+    )
+
+    row = candidates.iloc[0]
+    assert row["fold_signal_count"] == 2
+    assert row["validation_seasons_with_signal"] == "2023"
+    assert not bool(row["candidate_hypothesis_flag"])
 
 
 def test_aggregate_candidate_hypotheses_empty_result_has_expected_columns() -> None:
