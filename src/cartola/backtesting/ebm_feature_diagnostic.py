@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -155,12 +156,12 @@ def resolve_source_children(config: EbmDiagnosticConfig) -> tuple[tuple[SourceCh
     return tuple(contexts), pd.DataFrame()
 
 
-def _child_run_entries(child_runs: list[object]) -> list[dict[str, Any]]:
+def _child_run_entries(child_runs: Sequence[object]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for index, child_run in enumerate(child_runs):
         if not isinstance(child_run, dict):
             raise EbmDiagnosticInvalid(f"experiment_metadata.json child_runs[{index}] must be an object")
-        entries.append(child_run)
+        entries.append(cast("dict[str, Any]", child_run))
     return entries
 
 
@@ -378,7 +379,7 @@ def _required_object(
     value = _required_field(payload, field, artifact_name=artifact_name, field_path=field_path)
     if not isinstance(value, dict):
         raise EbmDiagnosticInvalid(f"{artifact_name} field {field_path} must be an object")
-    return value
+    return cast("dict[str, Any]", value)
 
 
 def _required_str(
