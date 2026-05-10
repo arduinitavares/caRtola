@@ -24,6 +24,28 @@ class _FakeEbm:
         return self
 
 
+class _FakeEbmWithValidation:
+    def fit(
+        self,
+        x_values: object,
+        y_values: object,
+        X_val: object,
+        y_val: object,
+    ) -> "_FakeEbmWithValidation":
+        return self
+
+
+class _FakeEbmWithValidationNameSubstrings:
+    def fit(
+        self,
+        x_values: object,
+        y_values: object,
+        not_X_val: object,
+        not_y_val: object,
+    ) -> "_FakeEbmWithValidationNameSubstrings":
+        return self
+
+
 def test_inspect_ebm_runtime_records_constructor_and_fit_signatures() -> None:
     info = inspect_ebm_runtime(ebm_class=_FakeEbm, package_version="9.9.9")
 
@@ -31,6 +53,24 @@ def test_inspect_ebm_runtime_records_constructor_and_fit_signatures() -> None:
     assert info.version == "9.9.9"
     assert "validation_size" in info.constructor_signature
     assert "x_values" in info.fit_signature
+    assert info.supports_explicit_validation is False
+
+
+def test_inspect_ebm_runtime_detects_explicit_validation_parameters() -> None:
+    info = inspect_ebm_runtime(
+        ebm_class=_FakeEbmWithValidation,
+        package_version="9.9.9",
+    )
+
+    assert info.supports_explicit_validation is True
+
+
+def test_inspect_ebm_runtime_ignores_validation_name_substrings() -> None:
+    info = inspect_ebm_runtime(
+        ebm_class=_FakeEbmWithValidationNameSubstrings,
+        package_version="9.9.9",
+    )
+
     assert info.supports_explicit_validation is False
 
 

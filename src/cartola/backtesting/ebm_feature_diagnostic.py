@@ -26,8 +26,10 @@ def inspect_ebm_runtime(
             "InterpretML is required for EBM diagnostics. Install the optional diagnostic dependencies."
         )
     constructor_signature = str(inspect.signature(ebm_class))
-    fit_signature = str(inspect.signature(ebm_class.fit))
-    supports_explicit_validation = "X_val" in fit_signature and "y_val" in fit_signature
+    fit_inspection = inspect.signature(ebm_class.fit)
+    fit_signature = str(fit_inspection)
+    fit_parameters = fit_inspection.parameters
+    supports_explicit_validation = "X_val" in fit_parameters and "y_val" in fit_parameters
     return EbmRuntimeInfo(
         available=True,
         version=package_version,
