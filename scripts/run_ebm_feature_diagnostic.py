@@ -13,8 +13,11 @@ from rich.panel import Panel
 
 
 class _DiagnosticResult(Protocol):
-    output_path: Path
-    decision: Mapping[str, object]
+    @property
+    def output_path(self) -> Path: ...
+
+    @property
+    def decision(self) -> Mapping[str, object]: ...
 
 
 build_ebm_feature_diagnostic: Callable[..., _DiagnosticResult] | None = None
