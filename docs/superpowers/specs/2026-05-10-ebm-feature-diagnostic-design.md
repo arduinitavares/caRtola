@@ -388,7 +388,7 @@ constructor parameters, fit keyword arguments, and validation mode for the
 installed InterpretML version.
 
 Main-effect EBMs are the default. Interaction EBMs are a second pass only after
-main effects fit successfully.
+all main-effect folds and both target types fit successfully.
 
 Interaction pass parameters:
 
@@ -403,6 +403,13 @@ n_jobs=-1
 
 Do not tune EBM hyperparameters in V1. Changing these constants creates a new
 diagnostic generation.
+
+If the interaction pass fails after main-effect artifacts are complete, the
+diagnostic remains valid for main-effect outputs. The runner must write
+`pairwise_interactions.csv` with `term_support_extraction_status=unavailable`,
+record `interaction_pass_status=failed`, include the error message in the
+manifest and invalid diagnostic report, and block all interaction candidate
+flags.
 
 ## Feature Set
 
@@ -433,9 +440,10 @@ Allow numeric fields whose distance is football-meaningful, such as:
 - FootyStats PPG/xG fields;
 - matchup context fields.
 
-`posicao` must not be treated as an arbitrary ordinal number. V1 must either
-one-hot encode position or run separate position-specific diagnostics. The
-manifest must record `position_handling`.
+`posicao` must not be treated as an arbitrary ordinal number. V1 uses one-hot
+position columns generated from the persisted `posicao` values. Separate
+position-specific diagnostics are deferred. The manifest must record
+`position_handling=one_hot`.
 
 Raw categorical identifiers may be admitted only in a later diagnostic
 generation with explicit categorical feature handling, a stable category
@@ -684,7 +692,7 @@ The CLI must print:
 - start timestamp;
 - source experiment path;
 - selected child count;
-- fold progress;
+- one progress/log line per fold, target type, and EBM pass;
 - output path;
 - final diagnostic status.
 
@@ -709,6 +717,7 @@ Required artifacts:
 - `pairwise_interactions.csv`;
 - `candidate_hypotheses.csv`;
 - `invalid_ebm_rows.csv`;
+- `invalid_diagnostic_report.csv`;
 - `ebm_diagnostic_decision.json`;
 - `ebm_feature_diagnostic.html`.
 
@@ -733,6 +742,11 @@ The manifest must include:
 - `source_prediction_provenance_status`;
 - `term_support_extraction_method`;
 - `term_support_extraction_status`;
+- per-fold fit seconds;
+- per-target fit seconds;
+- interaction-pass seconds;
+- total wall-clock seconds;
+- `interaction_pass_status`.
 
 Every CSV artifact must include a `discovery_only` column with value `true`.
 
@@ -741,6 +755,7 @@ If the diagnostic is invalid, still write:
 - manifest;
 - source context when available;
 - invalid row/schema report;
+- `invalid_diagnostic_report.csv`;
 - decision JSON;
 - incomplete HTML page explaining why no model was fit.
 
@@ -849,6 +864,8 @@ but the report must still include deterministic CSV-backed summaries.
 - Raw-point and residual-target artifacts are both written.
 - Main-effect EBM output writes feature importance and shape summaries.
 - Interaction EBM output writes pairwise interaction summaries.
+- Interaction-pass failure preserves completed main-effect outputs and records
+  `interaction_pass_status=failed`.
 - Term-support extraction uses fitted EBM learned bins/cells or marks support
   unavailable and blocks candidate flags.
 - Bin/cell-level support thresholds are enforced before any candidate flag.
@@ -857,10 +874,14 @@ but the report must still include deterministic CSV-backed summaries.
 - Decision-status metrics use residual-corrected predictions for candidate
   decisions.
 - Invalid diagnostics write incomplete-but-readable artifacts.
-- CLI prints progress and output path.
+- Invalid schema/provenance failures write `invalid_diagnostic_report.csv`.
+- CLI prints one progress/log line per fold, target type, and EBM pass plus the
+  output path.
 - All artifacts include `discovery_only=true`.
 - CSV artifacts include a `discovery_only` column.
 - InterpretML version and inspected signatures are recorded.
+- Runtime metadata records per-fold, per-target, interaction-pass, and total
+  wall-clock seconds.
 - The holdout ledger records 2025 diagnostic exposure.
 - Synthetic tests cover bin support, missing-bin support, one-hot position
   support, interaction cell support, duplicate child detection, and
