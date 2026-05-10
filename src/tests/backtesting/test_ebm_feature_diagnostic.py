@@ -83,7 +83,15 @@ class _RecordingEbm:
         return [0.25 for _ in range(len(x_values))]
 
 
-class _SeriesPredictingEbm(_RecordingEbm):
+class _SeriesPredictingEbm:
+    def __init__(self, **params: object) -> None:
+        self.params = params
+        self.fit_rows = 0
+
+    def fit(self, x_values: pd.DataFrame, y_values: pd.Series) -> "_SeriesPredictingEbm":
+        self.fit_rows = len(x_values)
+        return self
+
     def predict(self, x_values: pd.DataFrame) -> pd.Series:
         return pd.Series([0.75 for _ in range(len(x_values))], index=range(len(x_values)))
 
@@ -104,6 +112,18 @@ class _RecordingEbmWithoutValidationSize:
         return [0.5 for _ in range(len(x_values))]
 
 
+class _PipelineFakeEbmWithoutValidationControl:
+    def __init__(self, *, interactions: int = 0, random_state: int | None = None) -> None:
+        self.interactions = interactions
+        self.random_state = random_state
+
+    def fit(self, x_values: pd.DataFrame, y_values: pd.Series) -> "_PipelineFakeEbmWithoutValidationControl":
+        return self
+
+    def predict(self, x_values: pd.DataFrame) -> list[float]:
+        return [0.0 for _ in range(len(x_values))]
+
+
 class _PipelineFakeEbm:
     fit_calls: ClassVar[list[dict[str, object]]] = []
 
@@ -118,6 +138,7 @@ class _PipelineFakeEbm:
             {
                 "row_count": len(x_values),
                 "target_name": str(y_values.name),
+                "feature_columns": tuple(str(column) for column in x_values.columns),
                 "validation_size": self.params.get("validation_size"),
             }
         )
@@ -159,6 +180,10 @@ def _write_source_child(
         resolved_child_path / "player_predictions.csv",
         index=False,
     )
+    pd.DataFrame({"rodada": [5], "actual_points_with_captain": [60.0]}).to_csv(
+        resolved_child_path / "round_results.csv",
+        index=False,
+    )
     return {
         "child_id": child_id,
         "output_path": output_path if output_path is not None else str(resolved_child_path),
@@ -175,15 +200,27 @@ def _write_synthetic_player_predictions(
     *,
     season: int,
     model_id: str,
+    feature_columns: list[str] | None = None,
+    use_split_feature_metadata: bool = False,
+    invalid_player_count: int = 0,
+    row_count: int = 60,
 ) -> None:
     child_path = Path(str(child["output_path"]))
     metadata_path = child_path / "run_metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    metadata["feature_columns"] = ["feature_a", "feature_b", "posicao"]
+    resolved_feature_columns = feature_columns or ["feature_a", "feature_b", "posicao"]
+    metadata.pop("feature_columns", None)
+    metadata.pop("footystats_feature_columns", None)
+    metadata.pop("matchup_context_feature_columns", None)
+    if use_split_feature_metadata:
+        metadata["footystats_feature_columns"] = resolved_feature_columns[:1]
+        metadata["matchup_context_feature_columns"] = resolved_feature_columns[1:]
+    else:
+        metadata["feature_columns"] = resolved_feature_columns
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     score_column = f"{model_id}_score"
     rows = []
-    for index in range(60):
+    for index in range(row_count):
         source_score = 2.0 + float(index % 12) * 0.25 + float(season - 2021) * 0.1
         rows.append(
             {
@@ -195,11 +232,15 @@ def _write_synthetic_player_predictions(
                 "posicao": "ata" if index < 30 else "lat",
                 "status": "Provavel",
                 "preco_pre_rodada": 8.0 + float(index % 5),
-                "pontuacao": source_score + float((index % 7) - 3) * 0.2,
+                "pontuacao": None
+                if index < invalid_player_count
+                else source_score + float((index % 7) - 3) * 0.2,
                 "entrou_em_campo": True,
                 score_column: source_score,
                 "feature_a": float(index),
                 "feature_b": float(index % 6),
+                "scout_target_round": float(index % 3),
+                "pontuacao_media_mandante": float(index % 4),
             }
         )
     pd.DataFrame(rows).to_csv(child_path / "player_predictions.csv", index=False)
@@ -210,6 +251,10 @@ def _write_parent(experiment_path: Path, child_runs: list[dict[str, object]]) ->
     (experiment_path / "experiment_metadata.json").write_text(
         json.dumps({"experiment_id": "exp-1", "child_runs": child_runs}),
         encoding="utf-8",
+    )
+    pd.DataFrame({"model_id": ["ridge"], "mean_actual_points": [60.0]}).to_csv(
+        experiment_path / "ranked_summary.csv",
+        index=False,
     )
 
 
@@ -395,7 +440,7 @@ def test_inspect_ebm_runtime_raises_clear_error_when_missing() -> None:
 
 def test_fit_ebm_fold_target_disables_internal_validation() -> None:
     train = pd.DataFrame({"feature_a": [0.0, 1.0], "target_actual_points": [1.0, 2.0]})
-    validation = pd.DataFrame({"feature_a": [2.0], "target_actual_points": [3.0]}, index=[99])
+    validation = pd.DataFrame({"feature_a": [2.0], "target_actual_points": [3.0]}, index=pd.Index([99]))
 
     result = ebm_feature_diagnostic.fit_ebm_fold_target(
         ebm_class=_RecordingEbm,
@@ -419,7 +464,7 @@ def test_fit_ebm_fold_target_disables_internal_validation() -> None:
 
 def test_fit_ebm_fold_target_preserves_prediction_positions() -> None:
     train = pd.DataFrame({"feature_a": [0.0, 1.0], "target_actual_points": [1.0, 2.0]})
-    validation = pd.DataFrame({"feature_a": [2.0], "target_actual_points": [3.0]}, index=[99])
+    validation = pd.DataFrame({"feature_a": [2.0], "target_actual_points": [3.0]}, index=pd.Index([99]))
 
     result = ebm_feature_diagnostic.fit_ebm_fold_target(
         ebm_class=_SeriesPredictingEbm,
@@ -1085,6 +1130,187 @@ def test_build_ebm_feature_diagnostic_writes_invalid_dependency_report(
     assert any("artifact write" in event for event in events)
 
 
+def test_build_ebm_feature_diagnostic_uses_split_feature_metadata(tmp_path: Path) -> None:
+    model_id = "ridge"
+    child_runs = [
+        _write_source_child(tmp_path, child_id=f"child-{season}", season=season, model_id=model_id)
+        for season in (2021, 2022, 2023)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023), strict=True):
+        _write_synthetic_player_predictions(
+            child,
+            season=season,
+            model_id=model_id,
+            feature_columns=["feature_a", "feature_b", "feature_a", "posicao"],
+            use_split_feature_metadata=True,
+        )
+    experiment_path = tmp_path / "experiment"
+    _write_parent(experiment_path, child_runs)
+    _PipelineFakeEbm.fit_calls = []
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=tmp_path / "ebm-output",
+        seasons=(2021, 2022, 2023),
+        model_id=model_id,
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        current_year=2026,
+        max_interactions=0,
+        min_validation_rows=50,
+        random_seed=123,
+        ebm_class=_PipelineFakeEbm,
+    )
+
+    assert result.decision["diagnostic_status"] == "diagnostic_complete"
+    feature_columns = _PipelineFakeEbm.fit_calls[0]["feature_columns"]
+    assert feature_columns == ("feature_a", "feature_b", "posicao_ata", "posicao_lat")
+
+
+def test_build_ebm_feature_diagnostic_invalidates_any_insufficient_fold(tmp_path: Path) -> None:
+    model_id = "ridge"
+    child_runs = [
+        _write_source_child(tmp_path, child_id=f"child-{season}", season=season, model_id=model_id)
+        for season in (2021, 2022, 2023, 2024)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023, 2024), strict=True):
+        _write_synthetic_player_predictions(
+            child,
+            season=season,
+            model_id=model_id,
+            row_count=40 if season == 2024 else 60,
+        )
+    experiment_path = tmp_path / "experiment"
+    output_path = tmp_path / "ebm-output"
+    _write_parent(experiment_path, child_runs)
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=output_path,
+        seasons=(2021, 2022, 2023, 2024),
+        model_id=model_id,
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        current_year=2026,
+        max_interactions=0,
+        min_validation_rows=50,
+        random_seed=123,
+        ebm_class=_PipelineFakeEbm,
+    )
+
+    invalid_report = pd.read_csv(output_path / "invalid_diagnostic_report.csv")
+    predictive_metrics = pd.read_csv(output_path / "predictive_metrics.csv")
+    assert result.decision["diagnostic_status"] == "invalid"
+    assert not predictive_metrics.empty
+    assert "insufficient_rows" in invalid_report["reason_type"].tolist()
+
+
+def test_build_ebm_feature_diagnostic_invalidates_high_child_invalid_row_rate(tmp_path: Path) -> None:
+    model_id = "ridge"
+    child_runs = [
+        _write_source_child(tmp_path, child_id=f"child-{season}", season=season, model_id=model_id)
+        for season in (2021, 2022, 2023)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023), strict=True):
+        _write_synthetic_player_predictions(
+            child,
+            season=season,
+            model_id=model_id,
+            invalid_player_count=1 if season == 2022 else 0,
+        )
+    experiment_path = tmp_path / "experiment"
+    output_path = tmp_path / "ebm-output"
+    _write_parent(experiment_path, child_runs)
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=output_path,
+        seasons=(2021, 2022, 2023),
+        model_id=model_id,
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        current_year=2026,
+        max_interactions=0,
+        min_validation_rows=50,
+        random_seed=123,
+        ebm_class=_PipelineFakeEbm,
+    )
+
+    invalid_rows = pd.read_csv(output_path / "invalid_ebm_rows.csv")
+    invalid_report = pd.read_csv(output_path / "invalid_diagnostic_report.csv")
+    assert result.decision["diagnostic_status"] == "invalid"
+    assert not invalid_rows.empty
+    assert "invalid_row_rate" in invalid_report["reason_type"].tolist()
+
+
+def test_build_ebm_feature_diagnostic_rejects_inconsistent_raw_feature_columns(tmp_path: Path) -> None:
+    model_id = "ridge"
+    child_runs = [
+        _write_source_child(tmp_path, child_id=f"child-{season}", season=season, model_id=model_id)
+        for season in (2021, 2022, 2023)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023), strict=True):
+        _write_synthetic_player_predictions(
+            child,
+            season=season,
+            model_id=model_id,
+            feature_columns=["feature_a", "posicao"] if season == 2022 else ["feature_a", "feature_b", "posicao"],
+        )
+    experiment_path = tmp_path / "experiment"
+    output_path = tmp_path / "ebm-output"
+    _write_parent(experiment_path, child_runs)
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=output_path,
+        seasons=(2021, 2022, 2023),
+        model_id=model_id,
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        current_year=2026,
+        max_interactions=0,
+        min_validation_rows=50,
+        random_seed=123,
+        ebm_class=_PipelineFakeEbm,
+    )
+
+    invalid_report = pd.read_csv(output_path / "invalid_diagnostic_report.csv")
+    assert result.decision["diagnostic_status"] == "invalid"
+    assert "feature_columns" in invalid_report["reason_type"].tolist()
+
+
+def test_build_ebm_feature_diagnostic_rejects_ebm_without_validation_disable_control(tmp_path: Path) -> None:
+    model_id = "ridge"
+    child_runs = [
+        _write_source_child(tmp_path, child_id=f"child-{season}", season=season, model_id=model_id)
+        for season in (2021, 2022, 2023)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023), strict=True):
+        _write_synthetic_player_predictions(child, season=season, model_id=model_id)
+    experiment_path = tmp_path / "experiment"
+    output_path = tmp_path / "ebm-output"
+    _write_parent(experiment_path, child_runs)
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=output_path,
+        seasons=(2021, 2022, 2023),
+        model_id=model_id,
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        current_year=2026,
+        max_interactions=0,
+        min_validation_rows=50,
+        random_seed=123,
+        ebm_class=_PipelineFakeEbmWithoutValidationControl,
+    )
+
+    invalid_report = pd.read_csv(output_path / "invalid_diagnostic_report.csv")
+    assert result.decision["diagnostic_status"] == "invalid"
+    assert invalid_report["reason_type"].tolist() == ["dependency"]
+    assert "validation" in str(invalid_report.loc[0, "message"])
+
+
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:
     child = _write_source_child(tmp_path)
     experiment_path = tmp_path / "experiment"
@@ -1106,6 +1332,43 @@ def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -
     assert context.season == 2025
     assert context.score_column == "ridge_score"
     assert context.source_prediction_provenance_status == "verified"
+
+
+def test_resolve_source_children_rejects_missing_child_round_results(tmp_path: Path) -> None:
+    child = _write_source_child(tmp_path)
+    child_path = Path(str(child["output_path"]))
+    (child_path / "round_results.csv").unlink()
+    experiment_path = tmp_path / "experiment"
+    _write_parent(experiment_path, [child])
+
+    with pytest.raises(EbmDiagnosticInvalid, match="round_results.csv"):
+        resolve_source_children(
+            EbmDiagnosticConfig(
+                experiment_path=experiment_path,
+                seasons=(2025,),
+                model_id="ridge",
+                feature_pack="ppg_xg",
+                fixture_mode="none",
+            )
+        )
+
+
+def test_resolve_source_children_rejects_missing_parent_ranked_summary(tmp_path: Path) -> None:
+    child = _write_source_child(tmp_path)
+    experiment_path = tmp_path / "experiment"
+    _write_parent(experiment_path, [child])
+    (experiment_path / "ranked_summary.csv").unlink()
+
+    with pytest.raises(EbmDiagnosticInvalid, match="ranked_summary.csv"):
+        resolve_source_children(
+            EbmDiagnosticConfig(
+                experiment_path=experiment_path,
+                seasons=(2025,),
+                model_id="ridge",
+                feature_pack="ppg_xg",
+                fixture_mode="none",
+            )
+        )
 
 
 def test_resolve_source_children_resolves_project_relative_output_path_outside_cwd(
@@ -1256,6 +1519,54 @@ def test_prepare_diagnostic_dataset_maps_dnp_nulls_to_zero_and_excludes_coaches(
     assert "numeric_feature" in dataset.feature_columns
     assert dataset.coach_row_count == 1
     assert dataset.invalid_rows.empty
+
+
+def test_prepare_diagnostic_dataset_excludes_leakage_and_identity_features(tmp_path: Path) -> None:
+    dataset = prepare_diagnostic_dataset(
+        _source_context(tmp_path),
+        pd.DataFrame(
+            {
+                "season": [2025],
+                "rodada": [5],
+                "id_atleta": [10],
+                "apelido": ["Played"],
+                "id_clube": [1],
+                "posicao": ["ata"],
+                "status": ["Provavel"],
+                "pontuacao": [7.0],
+                "entrou_em_campo": [True],
+                "preco_pre_rodada": [10.0],
+                "ridge_score": [6.0],
+                "predicted_actual_points": [7.5],
+                "capitao": [False],
+                "scout_target_round": [3.0],
+                "pontuacao_media_mandante": [2.0],
+                "numeric_feature": [1.5],
+            }
+        ),
+        feature_columns=(
+            "season",
+            "rodada",
+            "id_atleta",
+            "id_clube",
+            "apelido",
+            "posicao",
+            "pontuacao",
+            "entrou_em_campo",
+            "target_actual_points",
+            "target_source_residual",
+            "source_model_score",
+            "ridge_score",
+            "predicted_actual_points",
+            "capitao",
+            "scout_target_round",
+            "pontuacao_media_mandante",
+            "preco_pre_rodada",
+            "numeric_feature",
+        ),
+    )
+
+    assert dataset.feature_columns == ("posicao_ata", "preco_pre_rodada", "numeric_feature")
 
 
 def test_prepare_diagnostic_dataset_keeps_null_played_points_as_invalid(tmp_path: Path) -> None:

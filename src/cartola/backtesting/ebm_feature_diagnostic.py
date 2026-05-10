@@ -92,6 +92,7 @@ class DiagnosticDataset:
     context: SourceChildContext
     valid_rows: pd.DataFrame
     invalid_rows: pd.DataFrame
+    raw_feature_columns: tuple[str, ...]
     feature_columns: tuple[str, ...]
     coach_row_count: int
 
@@ -642,6 +643,51 @@ def build_ebm_feature_diagnostic(
             completion_message=f"COMPLETE invalid EBM diagnostic dependency unavailable: output_path={output_path}",
         )
     active_ebm_class = cast("type[Any]", resolved_ebm_class)
+    if not _ebm_class_supports_validation_disable(active_ebm_class):
+        message = (
+            "Selected EBM class does not expose a supported validation disable constructor parameter "
+            "or **kwargs for disabled_full_outer_train mode"
+        )
+        progress(f"INVALID dependency compatibility: {message}")
+        return _write_build_result(
+            output_path=output_path,
+            started=started,
+            diagnostic_status="invalid",
+            diagnostic_phase="dependency_unavailable",
+            current_year=current_year,
+            model_id=model_id,
+            feature_pack=feature_pack,
+            fixture_mode=fixture_mode,
+            experiment_path=experiment_path,
+            max_interactions=max_interactions,
+            min_validation_rows=min_validation_rows,
+            random_seed=random_seed,
+            profile_runtime=profile_runtime,
+            source_child_count=len(contexts),
+            ebm_runtime=ebm_runtime,
+            runtime_error=message,
+            source_context=source_context,
+            fold_assignments=pd.DataFrame(),
+            predictive_metrics=pd.DataFrame(),
+            feature_importance=pd.DataFrame(),
+            feature_shape_summary=pd.DataFrame(),
+            pairwise_interactions=pd.DataFrame(),
+            candidate_hypotheses=pd.DataFrame(),
+            invalid_rows=pd.DataFrame(),
+            invalid_report=_invalid_report_frame(
+                _invalid_report_row(
+                    reason_type="dependency",
+                    message=message,
+                    artifact_path="interpret.glassbox.ExplainableBoostingRegressor",
+                    model_id=model_id,
+                    feature_pack=feature_pack,
+                )
+            ),
+            candidate_count=0,
+            progress_callback=progress_callback,
+            progress_messages=progress_messages,
+            completion_message=f"COMPLETE invalid EBM diagnostic dependency compatibility: output_path={output_path}",
+        )
 
     datasets: list[DiagnosticDataset] = []
     for context in contexts:
@@ -699,8 +745,68 @@ def build_ebm_feature_diagnostic(
                 completion_message=f"COMPLETE invalid EBM diagnostic dataset load: output_path={output_path}",
             )
 
-    combined_rows = _combined_valid_rows(datasets)
     invalid_rows = _combined_invalid_rows(datasets)
+    invalid_report_rows = [
+        _invalid_report_row(
+            reason_type="invalid_row_rate",
+            message=(
+                f"Child season={dataset.context.season} has invalid_row_rate="
+                f"{_child_invalid_row_rate(dataset):.6f}, above threshold=0.005000"
+            ),
+            artifact_path=str(dataset.context.child_path / "player_predictions.csv"),
+            season=dataset.context.season,
+            model_id=model_id,
+            feature_pack=feature_pack,
+        )
+        for dataset in datasets
+        if _child_invalid_row_rate(dataset) > 0.005
+    ]
+    try:
+        _require_consistent_raw_feature_columns(datasets)
+    except EbmDiagnosticInvalid as exc:
+        invalid_report_rows.append(
+            _invalid_report_row(
+                reason_type="feature_columns",
+                message=str(exc),
+                artifact_path=str(experiment_path),
+                model_id=model_id,
+                feature_pack=feature_pack,
+            )
+        )
+    if invalid_report_rows:
+        return _write_build_result(
+            output_path=output_path,
+            started=started,
+            diagnostic_status="invalid",
+            diagnostic_phase="full_pipeline",
+            current_year=current_year,
+            model_id=model_id,
+            feature_pack=feature_pack,
+            fixture_mode=fixture_mode,
+            experiment_path=experiment_path,
+            max_interactions=max_interactions,
+            min_validation_rows=min_validation_rows,
+            random_seed=random_seed,
+            profile_runtime=profile_runtime,
+            source_child_count=len(contexts),
+            ebm_runtime=ebm_runtime,
+            runtime_error=None,
+            source_context=source_context,
+            fold_assignments=pd.DataFrame(),
+            predictive_metrics=pd.DataFrame(),
+            feature_importance=pd.DataFrame(),
+            feature_shape_summary=pd.DataFrame(),
+            pairwise_interactions=pd.DataFrame(),
+            candidate_hypotheses=pd.DataFrame(),
+            invalid_rows=invalid_rows,
+            invalid_report=_invalid_report_frame(*invalid_report_rows),
+            candidate_count=0,
+            progress_callback=progress_callback,
+            progress_messages=progress_messages,
+            completion_message=f"COMPLETE invalid EBM diagnostic dataset validation: output_path={output_path}",
+        )
+
+    combined_rows = _combined_valid_rows(datasets)
     feature_columns = _combined_feature_columns(datasets)
     if combined_rows.empty or not feature_columns:
         return _write_build_result(
@@ -788,7 +894,6 @@ def build_ebm_feature_diagnostic(
 
     fold_rows: list[dict[str, object]] = []
     metric_frames: list[pd.DataFrame] = []
-    invalid_report_rows: list[dict[str, object]] = []
     for fold in folds:
         train_rows = combined_rows.loc[combined_rows["season"].isin(fold.train_seasons)].copy()
         validation_rows = combined_rows.loc[combined_rows["season"].eq(fold.validation_season)].copy()
@@ -861,7 +966,7 @@ def build_ebm_feature_diagnostic(
         feature_shape_summary=feature_shape_summary,
         pairwise_interactions=pairwise_interactions,
     )
-    diagnostic_status = "diagnostic_complete" if not predictive_metrics.empty else "invalid"
+    diagnostic_status = "diagnostic_complete" if not invalid_report_rows and not predictive_metrics.empty else "invalid"
     if predictive_metrics.empty and not invalid_report_rows:
         invalid_report_rows.append(
             _invalid_report_row(
@@ -1019,6 +1124,13 @@ def _module_version(module: object) -> str | None:
     return str(version)
 
 
+def _ebm_class_supports_validation_disable(ebm_class: type[Any]) -> bool:
+    constructor_parameters = inspect.signature(ebm_class).parameters
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in constructor_parameters.values()):
+        return True
+    return any(parameter in constructor_parameters for parameter in ("validation_size", "validation_fraction"))
+
+
 def _ebm_runtime_manifest(
     runtime_info: EbmRuntimeInfo | None,
     *,
@@ -1049,12 +1161,65 @@ def _feature_columns_from_metadata(
     context: SourceChildContext,
 ) -> tuple[str, ...]:
     raw_feature_columns = metadata.get("feature_columns")
-    if not isinstance(raw_feature_columns, list) or not raw_feature_columns:
+    if raw_feature_columns:
+        return _deduplicate_feature_columns(
+            _metadata_feature_column_list(
+                raw_feature_columns,
+                field_name="feature_columns",
+                context=context,
+            )
+        )
+
+    split_columns = [
+        *_metadata_feature_column_list(
+            metadata.get("footystats_feature_columns"),
+            field_name="footystats_feature_columns",
+            context=context,
+        ),
+        *_metadata_feature_column_list(
+            metadata.get("matchup_context_feature_columns"),
+            field_name="matchup_context_feature_columns",
+            context=context,
+        ),
+    ]
+    if split_columns:
+        return _deduplicate_feature_columns(tuple(split_columns))
+    raise EbmDiagnosticInvalid(
+        f"run_metadata.json missing usable feature columns for season={context.season}: "
+        f"{context.child_path / 'run_metadata.json'}"
+    )
+
+
+def _metadata_feature_column_list(
+    value: object,
+    *,
+    field_name: str,
+    context: SourceChildContext,
+) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
         raise EbmDiagnosticInvalid(
-            f"run_metadata.json missing non-empty feature_columns for season={context.season}: "
+            f"run_metadata.json field {field_name} must be a list for season={context.season}: "
             f"{context.child_path / 'run_metadata.json'}"
         )
-    return tuple(str(column) for column in raw_feature_columns)
+    columns: list[str] = []
+    for index, column in enumerate(value):
+        if not isinstance(column, str) or not column.strip():
+            raise EbmDiagnosticInvalid(
+                f"run_metadata.json field {field_name}[{index}] must be a non-empty string "
+                f"for season={context.season}: {context.child_path / 'run_metadata.json'}"
+            )
+        columns.append(column)
+    return tuple(columns)
+
+
+def _deduplicate_feature_columns(columns: tuple[str, ...]) -> tuple[str, ...]:
+    deduplicated: list[str] = []
+    for column in columns:
+        if column not in deduplicated:
+            deduplicated.append(column)
+    return tuple(deduplicated)
 
 
 def _read_player_predictions(path: Path) -> pd.DataFrame:
@@ -1080,6 +1245,10 @@ def _combined_valid_rows(datasets: Sequence[DiagnosticDataset]) -> pd.DataFrame:
         rows = dataset.valid_rows.copy()
         for column in feature_columns:
             if column not in rows.columns:
+                if not column.startswith("posicao_"):
+                    raise EbmDiagnosticInvalid(
+                        f"Feature column {column} missing from prepared child rows for season={dataset.context.season}"
+                    )
                 rows[column] = 0.0
         frames.append(rows)
     if not frames:
@@ -1120,6 +1289,30 @@ def _invalid_report_row(
 
 def _invalid_report_frame(*rows: dict[str, object]) -> pd.DataFrame:
     return pd.DataFrame(list(rows), columns=pd.Index(_INVALID_DIAGNOSTIC_REPORT_COLUMNS))
+
+
+def _child_invalid_row_rate(dataset: DiagnosticDataset) -> float:
+    loaded_rows = len(dataset.valid_rows) + len(dataset.invalid_rows)
+    if loaded_rows == 0:
+        return 0.0
+    return float(len(dataset.invalid_rows) / loaded_rows)
+
+
+def _require_consistent_raw_feature_columns(datasets: Sequence[DiagnosticDataset]) -> None:
+    if not datasets:
+        return
+    expected_columns = datasets[0].raw_feature_columns
+    mismatches = [
+        f"season={dataset.context.season} columns={','.join(dataset.raw_feature_columns)}"
+        for dataset in datasets[1:]
+        if dataset.raw_feature_columns != expected_columns
+    ]
+    if not mismatches:
+        return
+    raise EbmDiagnosticInvalid(
+        "Source child raw feature columns must be identical across seasons. "
+        f"expected={','.join(expected_columns)} mismatches={'; '.join(mismatches)}"
+    )
 
 
 def write_ebm_diagnostic_artifacts(
@@ -1170,6 +1363,9 @@ def write_ebm_diagnostic_artifacts(
 
 def resolve_source_children(config: EbmDiagnosticConfig) -> tuple[tuple[SourceChildContext, ...], pd.DataFrame]:
     metadata_path = config.experiment_path / "experiment_metadata.json"
+    ranked_summary_path = config.experiment_path / "ranked_summary.csv"
+    if not ranked_summary_path.is_file():
+        raise EbmDiagnosticInvalid(f"Missing source experiment ranked_summary.csv: {ranked_summary_path}")
     parent_metadata = _read_json_object(metadata_path, artifact_name="experiment_metadata.json")
     source_experiment_id = _required_str(
         parent_metadata,
@@ -1302,6 +1498,7 @@ def prepare_diagnostic_dataset(
         context=context,
         valid_rows=valid_rows.reset_index(drop=True),
         invalid_rows=invalid_rows,
+        raw_feature_columns=feature_columns,
         feature_columns=resolved_feature_columns,
         coach_row_count=coach_row_count,
     )
@@ -1312,15 +1509,18 @@ def _prepare_diagnostic_features(
     feature_columns: tuple[str, ...],
 ) -> tuple[str, ...]:
     identity_columns = frozenset(("id_atleta", "id_clube", "apelido", "season", "rodada"))
+    excluded_columns = identity_columns | frozenset(
+        column for column in feature_columns if _is_excluded_feature_column(column)
+    )
     missing_feature_columns = tuple(
-        column for column in feature_columns if column not in identity_columns and column not in valid_rows.columns
+        column for column in feature_columns if column not in excluded_columns and column not in valid_rows.columns
     )
     if missing_feature_columns:
         raise EbmDiagnosticInvalid(f"Missing feature columns: {', '.join(missing_feature_columns)}")
 
     resolved_columns: list[str] = []
     for column in feature_columns:
-        if column in identity_columns:
+        if column in excluded_columns:
             continue
         if column == "posicao":
             for position in sorted(valid_rows["posicao"].dropna().astype(str).unique()):
@@ -1335,6 +1535,32 @@ def _prepare_diagnostic_features(
         valid_rows[column] = numeric_feature
         resolved_columns.append(column)
     return tuple(resolved_columns)
+
+
+def _is_excluded_feature_column(column: str) -> bool:
+    normalized = column.strip().lower()
+    if normalized in {
+        "pontuacao",
+        "entrou_em_campo",
+        "target_actual_points",
+        "target_source_residual",
+        "source_model_score",
+        "actual_points",
+        "actual_points_with_captain",
+        "actual_points_with_capitao",
+    }:
+        return True
+    if normalized.endswith("_score"):
+        return True
+    if normalized.startswith("predicted_") or normalized.endswith("_prediction"):
+        return True
+    if "capitao" in normalized or "captain" in normalized:
+        return True
+    if normalized.startswith("scout_") or normalized.endswith("_scout"):
+        return True
+    if normalized.startswith("pontuacao"):
+        return True
+    return False
 
 
 def _aggregate_main_effect_hypotheses(feature_shape_summary: pd.DataFrame) -> list[dict[str, object]]:
@@ -1938,10 +2164,13 @@ def _verify_source_prediction_provenance(
 ) -> None:
     metadata_path = child_path / "run_metadata.json"
     predictions_path = child_path / "player_predictions.csv"
+    round_results_path = child_path / "round_results.csv"
     if not metadata_path.is_file():
         raise EbmDiagnosticInvalid(f"Missing source child run_metadata.json: {metadata_path}")
     if not predictions_path.is_file():
         raise EbmDiagnosticInvalid(f"Missing source child player_predictions.csv: {predictions_path}")
+    if not round_results_path.is_file():
+        raise EbmDiagnosticInvalid(f"Missing source child round_results.csv: {round_results_path}")
 
     child_metadata = _read_json_object(metadata_path, artifact_name="run_metadata.json")
     _require_child_metadata_matches_parent(child_metadata, parent_values, metadata_path=metadata_path)
