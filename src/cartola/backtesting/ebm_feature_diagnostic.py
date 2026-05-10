@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import importlib
 import inspect
 import json
 import math
@@ -532,11 +533,18 @@ def build_ebm_feature_diagnostic(
     max_interactions: int,
     min_validation_rows: int,
     random_seed: int,
-    profile_runtime: bool,
+    profile_runtime: bool = False,
     progress_callback: Callable[[str], None] | None = None,
+    ebm_class: type[Any] | None = None,
 ) -> EbmDiagnosticResult:
     started = perf_counter()
-    _emit_progress(progress_callback, "START EBM diagnostic artifact validation")
+    progress_messages: list[str] = []
+
+    def progress(message: str) -> None:
+        progress_messages.append(message)
+        _emit_progress(progress_callback, message)
+
+    progress("START source validation")
     config = EbmDiagnosticConfig(
         experiment_path=experiment_path,
         seasons=seasons,
@@ -544,20 +552,410 @@ def build_ebm_feature_diagnostic(
         feature_pack=feature_pack,
         fixture_mode=fixture_mode,
     )
-    contexts, source_report = resolve_source_children(config)
+    try:
+        contexts, source_report = resolve_source_children(config)
+    except EbmDiagnosticInvalid as exc:
+        source_context = exc.report if exc.report is not None else pd.DataFrame()
+        return _write_build_result(
+            output_path=output_path,
+            started=started,
+            diagnostic_status="invalid",
+            diagnostic_phase="source_validation_failed",
+            current_year=current_year,
+            model_id=model_id,
+            feature_pack=feature_pack,
+            fixture_mode=fixture_mode,
+            experiment_path=experiment_path,
+            max_interactions=max_interactions,
+            min_validation_rows=min_validation_rows,
+            random_seed=random_seed,
+            profile_runtime=profile_runtime,
+            source_child_count=0,
+            ebm_runtime=None,
+            runtime_error=None,
+            source_context=source_context,
+            fold_assignments=pd.DataFrame(),
+            predictive_metrics=pd.DataFrame(),
+            feature_importance=pd.DataFrame(),
+            feature_shape_summary=pd.DataFrame(),
+            pairwise_interactions=pd.DataFrame(),
+            candidate_hypotheses=pd.DataFrame(),
+            invalid_rows=pd.DataFrame(),
+            invalid_report=_invalid_report_frame(
+                _invalid_report_row(
+                    reason_type="source_context",
+                    message=str(exc),
+                    artifact_path=str(experiment_path / "experiment_metadata.json"),
+                    model_id=model_id,
+                    feature_pack=feature_pack,
+                )
+            ),
+            candidate_count=0,
+            progress_callback=progress_callback,
+            progress_messages=progress_messages,
+            completion_message=f"COMPLETE invalid EBM diagnostic source validation: output_path={output_path}",
+        )
+
     source_context = pd.DataFrame([context.as_row() for context in contexts]) if contexts else source_report
+    resolved_ebm_class, package_version = _resolve_ebm_class(ebm_class)
+    try:
+        ebm_runtime = inspect_ebm_runtime(ebm_class=resolved_ebm_class, package_version=package_version)
+    except EbmDependencyError as exc:
+        progress(f"INVALID dependency unavailable: {exc}")
+        return _write_build_result(
+            output_path=output_path,
+            started=started,
+            diagnostic_status="invalid",
+            diagnostic_phase="dependency_unavailable",
+            current_year=current_year,
+            model_id=model_id,
+            feature_pack=feature_pack,
+            fixture_mode=fixture_mode,
+            experiment_path=experiment_path,
+            max_interactions=max_interactions,
+            min_validation_rows=min_validation_rows,
+            random_seed=random_seed,
+            profile_runtime=profile_runtime,
+            source_child_count=len(contexts),
+            ebm_runtime=None,
+            runtime_error=str(exc),
+            source_context=source_context,
+            fold_assignments=pd.DataFrame(),
+            predictive_metrics=pd.DataFrame(),
+            feature_importance=pd.DataFrame(),
+            feature_shape_summary=pd.DataFrame(),
+            pairwise_interactions=pd.DataFrame(),
+            candidate_hypotheses=pd.DataFrame(),
+            invalid_rows=pd.DataFrame(),
+            invalid_report=_invalid_report_frame(
+                _invalid_report_row(
+                    reason_type="dependency",
+                    message=str(exc),
+                    artifact_path="interpret.glassbox.ExplainableBoostingRegressor",
+                    model_id=model_id,
+                    feature_pack=feature_pack,
+                )
+            ),
+            candidate_count=0,
+            progress_callback=progress_callback,
+            progress_messages=progress_messages,
+            completion_message=f"COMPLETE invalid EBM diagnostic dependency unavailable: output_path={output_path}",
+        )
+    active_ebm_class = cast("type[Any]", resolved_ebm_class)
+
+    datasets: list[DiagnosticDataset] = []
+    for context in contexts:
+        progress(f"START dataset load: season={context.season} child_path={context.child_path}")
+        try:
+            metadata = _read_json_object(context.child_path / "run_metadata.json", artifact_name="run_metadata.json")
+            feature_columns = _feature_columns_from_metadata(metadata, context=context)
+            predictions = _read_player_predictions(context.child_path / "player_predictions.csv")
+            datasets.append(
+                prepare_diagnostic_dataset(
+                    context,
+                    predictions,
+                    feature_columns=feature_columns,
+                )
+            )
+        except EbmDiagnosticInvalid as exc:
+            return _write_build_result(
+                output_path=output_path,
+                started=started,
+                diagnostic_status="invalid",
+                diagnostic_phase="full_pipeline",
+                current_year=current_year,
+                model_id=model_id,
+                feature_pack=feature_pack,
+                fixture_mode=fixture_mode,
+                experiment_path=experiment_path,
+                max_interactions=max_interactions,
+                min_validation_rows=min_validation_rows,
+                random_seed=random_seed,
+                profile_runtime=profile_runtime,
+                source_child_count=len(contexts),
+                ebm_runtime=ebm_runtime,
+                runtime_error=None,
+                source_context=source_context,
+                fold_assignments=pd.DataFrame(),
+                predictive_metrics=pd.DataFrame(),
+                feature_importance=pd.DataFrame(),
+                feature_shape_summary=pd.DataFrame(),
+                pairwise_interactions=pd.DataFrame(),
+                candidate_hypotheses=pd.DataFrame(),
+                invalid_rows=_combined_invalid_rows(datasets),
+                invalid_report=_invalid_report_frame(
+                    _invalid_report_row(
+                        reason_type="schema",
+                        message=str(exc),
+                        artifact_path=str(context.child_path),
+                        season=context.season,
+                        model_id=model_id,
+                        feature_pack=feature_pack,
+                    )
+                ),
+                candidate_count=0,
+                progress_callback=progress_callback,
+                progress_messages=progress_messages,
+                completion_message=f"COMPLETE invalid EBM diagnostic dataset load: output_path={output_path}",
+            )
+
+    combined_rows = _combined_valid_rows(datasets)
+    invalid_rows = _combined_invalid_rows(datasets)
+    feature_columns = _combined_feature_columns(datasets)
+    if combined_rows.empty or not feature_columns:
+        return _write_build_result(
+            output_path=output_path,
+            started=started,
+            diagnostic_status="invalid",
+            diagnostic_phase="full_pipeline",
+            current_year=current_year,
+            model_id=model_id,
+            feature_pack=feature_pack,
+            fixture_mode=fixture_mode,
+            experiment_path=experiment_path,
+            max_interactions=max_interactions,
+            min_validation_rows=min_validation_rows,
+            random_seed=random_seed,
+            profile_runtime=profile_runtime,
+            source_child_count=len(contexts),
+            ebm_runtime=ebm_runtime,
+            runtime_error=None,
+            source_context=source_context,
+            fold_assignments=pd.DataFrame(),
+            predictive_metrics=pd.DataFrame(),
+            feature_importance=pd.DataFrame(),
+            feature_shape_summary=pd.DataFrame(),
+            pairwise_interactions=pd.DataFrame(),
+            candidate_hypotheses=pd.DataFrame(),
+            invalid_rows=invalid_rows,
+            invalid_report=_invalid_report_frame(
+                _invalid_report_row(
+                    reason_type="data",
+                    message="No valid EBM diagnostic rows or feature columns were available after dataset preparation",
+                    artifact_path=str(experiment_path),
+                    model_id=model_id,
+                    feature_pack=feature_pack,
+                )
+            ),
+            candidate_count=0,
+            progress_callback=progress_callback,
+            progress_messages=progress_messages,
+            completion_message=f"COMPLETE invalid EBM diagnostic empty dataset: output_path={output_path}",
+        )
+
+    try:
+        folds = build_season_folds(seasons)
+    except EbmDiagnosticInvalid as exc:
+        return _write_build_result(
+            output_path=output_path,
+            started=started,
+            diagnostic_status="invalid",
+            diagnostic_phase="full_pipeline",
+            current_year=current_year,
+            model_id=model_id,
+            feature_pack=feature_pack,
+            fixture_mode=fixture_mode,
+            experiment_path=experiment_path,
+            max_interactions=max_interactions,
+            min_validation_rows=min_validation_rows,
+            random_seed=random_seed,
+            profile_runtime=profile_runtime,
+            source_child_count=len(contexts),
+            ebm_runtime=ebm_runtime,
+            runtime_error=None,
+            source_context=source_context,
+            fold_assignments=pd.DataFrame(),
+            predictive_metrics=pd.DataFrame(),
+            feature_importance=pd.DataFrame(),
+            feature_shape_summary=pd.DataFrame(),
+            pairwise_interactions=pd.DataFrame(),
+            candidate_hypotheses=pd.DataFrame(),
+            invalid_rows=invalid_rows,
+            invalid_report=_invalid_report_frame(
+                _invalid_report_row(
+                    reason_type="folds",
+                    message=str(exc),
+                    artifact_path=str(experiment_path),
+                    model_id=model_id,
+                    feature_pack=feature_pack,
+                )
+            ),
+            candidate_count=0,
+            progress_callback=progress_callback,
+            progress_messages=progress_messages,
+            completion_message=f"COMPLETE invalid EBM diagnostic folds unavailable: output_path={output_path}",
+        )
+
+    fold_rows: list[dict[str, object]] = []
+    metric_frames: list[pd.DataFrame] = []
+    invalid_report_rows: list[dict[str, object]] = []
+    for fold in folds:
+        train_rows = combined_rows.loc[combined_rows["season"].isin(fold.train_seasons)].copy()
+        validation_rows = combined_rows.loc[combined_rows["season"].eq(fold.validation_season)].copy()
+        fold_rows.append(
+            {
+                "discovery_only": True,
+                "fold_id": fold.fold_id,
+                "validation_season": fold.validation_season,
+                "train_seasons": ",".join(str(value) for value in fold.train_seasons),
+                "inner_validation_mode": fold.inner_validation_mode,
+                "train_row_count": int(len(train_rows)),
+                "validation_row_count": int(len(validation_rows)),
+            }
+        )
+        if len(train_rows) < min_validation_rows or len(validation_rows) < min_validation_rows:
+            progress(
+                f"SKIP fold={fold.fold_id} pass=main_effect train_rows={len(train_rows)} "
+                f"validation_rows={len(validation_rows)}"
+            )
+            invalid_report_rows.append(
+                _invalid_report_row(
+                    reason_type="insufficient_rows",
+                    message=(
+                        f"Fold {fold.fold_id} has train_rows={len(train_rows)} and "
+                        f"validation_rows={len(validation_rows)}, below min_validation_rows={min_validation_rows}"
+                    ),
+                    artifact_path=str(experiment_path),
+                    season=fold.validation_season,
+                    model_id=model_id,
+                    feature_pack=feature_pack,
+                )
+            )
+            continue
+
+        for target_type, target_column, prediction_column in (
+            ("actual_points", "target_actual_points", "predicted_actual_points"),
+            ("source_residual", "target_source_residual", "predicted_source_residual"),
+        ):
+            progress(f"START fold={fold.fold_id} target={target_type} pass=main_effect")
+            fit_result = fit_ebm_fold_target(
+                ebm_class=active_ebm_class,
+                train_rows=train_rows,
+                validation_rows=validation_rows,
+                feature_columns=feature_columns,
+                target_column=target_column,
+                target_type=target_type,
+                fold_id=fold.fold_id,
+                validation_season=fold.validation_season,
+                random_seed=random_seed,
+            )
+            validation_rows.loc[:, prediction_column] = fit_result.predictions
+        metric_frames.append(
+            compute_predictive_metrics(
+                validation_rows,
+                fold_id=fold.fold_id,
+                validation_season=fold.validation_season,
+            )
+        )
+
+    fold_assignments = pd.DataFrame(fold_rows, columns=pd.Index(_FOLD_ASSIGNMENT_COLUMNS))
+    predictive_metrics = (
+        pd.concat(metric_frames, ignore_index=True)
+        if metric_frames
+        else pd.DataFrame(columns=pd.Index(_PREDICTIVE_METRIC_COLUMNS))
+    )
+    feature_importance = pd.DataFrame(columns=pd.Index(_FEATURE_IMPORTANCE_COLUMNS))
+    feature_shape_summary = pd.DataFrame(columns=pd.Index(_FEATURE_SHAPE_SUMMARY_COLUMNS))
+    pairwise_interactions = pd.DataFrame(columns=pd.Index(_PAIRWISE_INTERACTION_COLUMNS))
+    candidate_hypotheses = aggregate_candidate_hypotheses(
+        feature_shape_summary=feature_shape_summary,
+        pairwise_interactions=pairwise_interactions,
+    )
+    diagnostic_status = "diagnostic_complete" if not predictive_metrics.empty else "invalid"
+    if predictive_metrics.empty and not invalid_report_rows:
+        invalid_report_rows.append(
+            _invalid_report_row(
+                reason_type="metrics",
+                message="No predictive metrics were produced by the EBM diagnostic pipeline",
+                artifact_path=str(experiment_path),
+                model_id=model_id,
+                feature_pack=feature_pack,
+            )
+        )
+
+    return _write_build_result(
+        output_path=output_path,
+        started=started,
+        diagnostic_status=diagnostic_status,
+        diagnostic_phase="full_pipeline",
+        current_year=current_year,
+        model_id=model_id,
+        feature_pack=feature_pack,
+        fixture_mode=fixture_mode,
+        experiment_path=experiment_path,
+        max_interactions=max_interactions,
+        min_validation_rows=min_validation_rows,
+        random_seed=random_seed,
+        profile_runtime=profile_runtime,
+        source_child_count=len(contexts),
+        ebm_runtime=ebm_runtime,
+        runtime_error=None,
+        source_context=source_context,
+        fold_assignments=fold_assignments,
+        predictive_metrics=predictive_metrics,
+        feature_importance=feature_importance,
+        feature_shape_summary=feature_shape_summary,
+        pairwise_interactions=pairwise_interactions,
+        candidate_hypotheses=candidate_hypotheses,
+        invalid_rows=invalid_rows,
+        invalid_report=_invalid_report_frame(*invalid_report_rows),
+        candidate_count=len(candidate_hypotheses),
+        progress_callback=progress_callback,
+        progress_messages=progress_messages,
+        completion_message=f"COMPLETE EBM diagnostic full pipeline: output_path={output_path}",
+    )
+
+
+def _write_build_result(
+    *,
+    output_path: Path,
+    started: float,
+    diagnostic_status: str,
+    diagnostic_phase: str,
+    current_year: int,
+    model_id: str,
+    feature_pack: str,
+    fixture_mode: str,
+    experiment_path: Path,
+    max_interactions: int,
+    min_validation_rows: int,
+    random_seed: int,
+    profile_runtime: bool,
+    source_child_count: int,
+    ebm_runtime: EbmRuntimeInfo | None,
+    runtime_error: str | None,
+    source_context: pd.DataFrame,
+    fold_assignments: pd.DataFrame,
+    predictive_metrics: pd.DataFrame,
+    feature_importance: pd.DataFrame,
+    feature_shape_summary: pd.DataFrame,
+    pairwise_interactions: pd.DataFrame,
+    candidate_hypotheses: pd.DataFrame,
+    invalid_rows: pd.DataFrame,
+    invalid_report: pd.DataFrame,
+    candidate_count: int,
+    progress_callback: Callable[[str], None] | None,
+    progress_messages: list[str],
+    completion_message: str,
+) -> EbmDiagnosticResult:
+    write_message = f"START artifact write: output_path={output_path}"
+    progress_messages.append(write_message)
+    _emit_progress(progress_callback, write_message)
+    manifest_progress_messages = [*progress_messages, completion_message]
     decision: dict[str, object] = {
         "discovery_only": True,
-        "diagnostic_status": "diagnostic_complete",
-        "diagnostic_phase": "metadata_only",
+        "diagnostic_status": diagnostic_status,
+        "diagnostic_phase": diagnostic_phase,
         "inner_validation_mode": "disabled_full_outer_train",
         "position_handling": "one_hot",
+        "candidate_count": candidate_count,
         "source_experiment_path": str(experiment_path),
         "output_path": str(output_path),
     }
     manifest: dict[str, object] = {
         "discovery_only": True,
-        "diagnostic_phase": "metadata_only",
+        "diagnostic_status": diagnostic_status,
+        "diagnostic_phase": diagnostic_phase,
         "current_year": current_year,
         "model_id": model_id,
         "feature_pack": feature_pack,
@@ -565,30 +963,163 @@ def build_ebm_feature_diagnostic(
         "position_handling": "one_hot",
         "inner_validation_mode": "disabled_full_outer_train",
         "total_wall_clock_seconds": perf_counter() - started,
-        "source_child_count": len(contexts),
+        "source_child_count": source_child_count,
         "max_interactions": max_interactions,
         "min_validation_rows": min_validation_rows,
         "random_seed": random_seed,
         "profile_runtime": profile_runtime,
+        "progress_logging": {
+            "enabled": progress_callback is not None,
+            "event_count": len(manifest_progress_messages),
+            "messages": manifest_progress_messages,
+        },
+        "ebm_runtime": _ebm_runtime_manifest(ebm_runtime, runtime_error=runtime_error),
     }
-
-    _emit_progress(progress_callback, f"WRITE EBM diagnostic artifacts: output_path={output_path}")
     write_ebm_diagnostic_artifacts(
         output_path=output_path,
         manifest=manifest,
         source_context=source_context,
-        fold_assignments=pd.DataFrame(),
-        predictive_metrics=pd.DataFrame(),
-        feature_importance=pd.DataFrame(),
-        feature_shape_summary=pd.DataFrame(),
-        pairwise_interactions=pd.DataFrame(),
-        candidate_hypotheses=pd.DataFrame(),
-        invalid_rows=pd.DataFrame(),
-        invalid_report=pd.DataFrame(),
+        fold_assignments=fold_assignments,
+        predictive_metrics=predictive_metrics,
+        feature_importance=feature_importance,
+        feature_shape_summary=feature_shape_summary,
+        pairwise_interactions=pairwise_interactions,
+        candidate_hypotheses=candidate_hypotheses,
+        invalid_rows=invalid_rows,
+        invalid_report=invalid_report,
         decision=decision,
     )
-    _emit_progress(progress_callback, f"COMPLETE EBM diagnostic metadata-only artifacts: output_path={output_path}")
+    progress_messages.append(completion_message)
+    _emit_progress(progress_callback, completion_message)
     return EbmDiagnosticResult(output_path=output_path, decision=decision)
+
+
+def _resolve_ebm_class(ebm_class: type[Any] | None) -> tuple[type[Any] | None, str | None]:
+    if ebm_class is not None:
+        return ebm_class, "injected"
+    return _load_default_ebm_class()
+
+
+def _load_default_ebm_class() -> tuple[type[Any] | None, str | None]:
+    try:
+        interpret_module = importlib.import_module("interpret")
+        glassbox_module = importlib.import_module("interpret.glassbox")
+    except ImportError:
+        return None, None
+    loaded_ebm_class = getattr(glassbox_module, "ExplainableBoostingRegressor", None)
+    if not isinstance(loaded_ebm_class, type):
+        return None, _module_version(interpret_module)
+    return loaded_ebm_class, _module_version(interpret_module)
+
+
+def _module_version(module: object) -> str | None:
+    version = getattr(module, "__version__", None)
+    if version is None:
+        return None
+    return str(version)
+
+
+def _ebm_runtime_manifest(
+    runtime_info: EbmRuntimeInfo | None,
+    *,
+    runtime_error: str | None,
+) -> dict[str, object]:
+    if runtime_info is None:
+        return {
+            "available": False,
+            "version": None,
+            "constructor_signature": "",
+            "fit_signature": "",
+            "supports_explicit_validation": False,
+            "error": runtime_error or "",
+        }
+    return {
+        "available": runtime_info.available,
+        "version": runtime_info.version,
+        "constructor_signature": runtime_info.constructor_signature,
+        "fit_signature": runtime_info.fit_signature,
+        "supports_explicit_validation": runtime_info.supports_explicit_validation,
+        "error": runtime_error or "",
+    }
+
+
+def _feature_columns_from_metadata(
+    metadata: dict[str, Any],
+    *,
+    context: SourceChildContext,
+) -> tuple[str, ...]:
+    raw_feature_columns = metadata.get("feature_columns")
+    if not isinstance(raw_feature_columns, list) or not raw_feature_columns:
+        raise EbmDiagnosticInvalid(
+            f"run_metadata.json missing non-empty feature_columns for season={context.season}: "
+            f"{context.child_path / 'run_metadata.json'}"
+        )
+    return tuple(str(column) for column in raw_feature_columns)
+
+
+def _read_player_predictions(path: Path) -> pd.DataFrame:
+    try:
+        return pd.read_csv(path)
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise EbmDiagnosticInvalid(f"Unable to read source child player_predictions.csv: {path}") from exc
+
+
+def _combined_feature_columns(datasets: Sequence[DiagnosticDataset]) -> tuple[str, ...]:
+    feature_columns: list[str] = []
+    for dataset in datasets:
+        for column in dataset.feature_columns:
+            if column not in feature_columns:
+                feature_columns.append(column)
+    return tuple(feature_columns)
+
+
+def _combined_valid_rows(datasets: Sequence[DiagnosticDataset]) -> pd.DataFrame:
+    feature_columns = _combined_feature_columns(datasets)
+    frames: list[pd.DataFrame] = []
+    for dataset in datasets:
+        rows = dataset.valid_rows.copy()
+        for column in feature_columns:
+            if column not in rows.columns:
+                rows[column] = 0.0
+        frames.append(rows)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _combined_invalid_rows(datasets: Sequence[DiagnosticDataset]) -> pd.DataFrame:
+    frames = [dataset.invalid_rows for dataset in datasets if not dataset.invalid_rows.empty]
+    if not frames:
+        return pd.DataFrame(columns=pd.Index(_INVALID_EBM_ROW_COLUMNS))
+    return pd.concat(frames, ignore_index=True)
+
+
+def _invalid_report_row(
+    *,
+    reason_type: str,
+    message: str,
+    artifact_path: str,
+    severity: str = "error",
+    scope: str = "diagnostic",
+    season: int | str = "",
+    model_id: str = "",
+    feature_pack: str = "",
+) -> dict[str, object]:
+    return {
+        "discovery_only": True,
+        "scope": scope,
+        "severity": severity,
+        "reason_type": reason_type,
+        "message": message,
+        "artifact_path": artifact_path,
+        "season": season,
+        "model_id": model_id,
+        "feature_pack": feature_pack,
+    }
+
+
+def _invalid_report_frame(*rows: dict[str, object]) -> pd.DataFrame:
+    return pd.DataFrame(list(rows), columns=pd.Index(_INVALID_DIAGNOSTIC_REPORT_COLUMNS))
 
 
 def write_ebm_diagnostic_artifacts(
@@ -719,6 +1250,10 @@ def prepare_diagnostic_dataset(
         raise EbmDiagnosticInvalid(f"Missing required prediction columns: {', '.join(missing_columns)}")
 
     prepared = predictions.copy()
+    if "season" not in prepared.columns:
+        prepared["season"] = context.season
+    else:
+        prepared["season"] = prepared["season"].fillna(context.season)
     prepared["source_model_score"] = pd.to_numeric(prepared[context.score_column], errors="coerce")
     prepared["target_actual_points"] = pd.NA
     prepared["invalid_reason"] = ""

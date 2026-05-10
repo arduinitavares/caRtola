@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import ClassVar
 
 import pandas as pd
 import pytest
@@ -103,6 +104,29 @@ class _RecordingEbmWithoutValidationSize:
         return [0.5 for _ in range(len(x_values))]
 
 
+class _PipelineFakeEbm:
+    fit_calls: ClassVar[list[dict[str, object]]] = []
+
+    def __init__(self, **params: object) -> None:
+        self.params = params
+        self.prediction = 0.0
+
+    def fit(self, x_values: pd.DataFrame, y_values: pd.Series) -> "_PipelineFakeEbm":
+        numeric_target = pd.to_numeric(y_values, errors="raise")
+        self.prediction = float(numeric_target.mean())
+        type(self).fit_calls.append(
+            {
+                "row_count": len(x_values),
+                "target_name": str(y_values.name),
+                "validation_size": self.params.get("validation_size"),
+            }
+        )
+        return self
+
+    def predict(self, x_values: pd.DataFrame) -> list[float]:
+        return [self.prediction for _ in range(len(x_values))]
+
+
 def _write_source_child(
     tmp_path: Path,
     *,
@@ -144,6 +168,41 @@ def _write_source_child(
         "fixture_mode": fixture_mode,
         "metadata": parent_metadata,
     }
+
+
+def _write_synthetic_player_predictions(
+    child: dict[str, object],
+    *,
+    season: int,
+    model_id: str,
+) -> None:
+    child_path = Path(str(child["output_path"]))
+    metadata_path = child_path / "run_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["feature_columns"] = ["feature_a", "feature_b", "posicao"]
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    score_column = f"{model_id}_score"
+    rows = []
+    for index in range(60):
+        source_score = 2.0 + float(index % 12) * 0.25 + float(season - 2021) * 0.1
+        rows.append(
+            {
+                "season": season,
+                "rodada": 5,
+                "id_atleta": season * 1000 + index,
+                "apelido": f"A{season}-{index}",
+                "id_clube": 1 + index % 4,
+                "posicao": "ata" if index < 30 else "lat",
+                "status": "Provavel",
+                "preco_pre_rodada": 8.0 + float(index % 5),
+                "pontuacao": source_score + float((index % 7) - 3) * 0.2,
+                "entrou_em_campo": True,
+                score_column: source_score,
+                "feature_a": float(index),
+                "feature_b": float(index % 6),
+            }
+        )
+    pd.DataFrame(rows).to_csv(child_path / "player_predictions.csv", index=False)
 
 
 def _write_parent(experiment_path: Path, child_runs: list[dict[str, object]]) -> None:
@@ -911,36 +970,119 @@ def test_write_ebm_diagnostic_artifacts_adds_discovery_metadata(tmp_path: Path) 
     assert "diagnostic_status=invalid" in html_report
 
 
-def test_build_ebm_feature_diagnostic_writes_metadata_only_scope(tmp_path: Path) -> None:
-    child = _write_source_child(tmp_path)
+def test_build_ebm_feature_diagnostic_runs_full_pipeline_with_injected_ebm(tmp_path: Path) -> None:
+    model_id = "xgboost_depth2_slow"
+    child_runs = [
+        _write_source_child(
+            tmp_path,
+            child_id=f"child-{season}",
+            season=season,
+            model_id=model_id,
+            feature_pack="ppg_xg_matchup",
+            fixture_mode="exploratory",
+        )
+        for season in (2021, 2022, 2023)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023), strict=True):
+        _write_synthetic_player_predictions(child, season=season, model_id=model_id)
     experiment_path = tmp_path / "experiment"
     output_path = tmp_path / "ebm-output"
-    _write_parent(experiment_path, [child])
+    _write_parent(experiment_path, child_runs)
     events: list[str] = []
+    _PipelineFakeEbm.fit_calls = []
 
     result = build_ebm_feature_diagnostic(
         experiment_path=experiment_path,
         output_path=output_path,
-        seasons=(2025,),
-        model_id="ridge",
+        seasons=(2021, 2022, 2023),
+        model_id=model_id,
+        feature_pack="ppg_xg_matchup",
+        fixture_mode="exploratory",
+        current_year=2026,
+        max_interactions=10,
+        min_validation_rows=50,
+        random_seed=123,
+        profile_runtime=True,
+        progress_callback=events.append,
+        ebm_class=_PipelineFakeEbm,
+    )
+
+    manifest = json.loads((output_path / "ebm_diagnostic_manifest.json").read_text(encoding="utf-8"))
+    decision = json.loads((output_path / "ebm_diagnostic_decision.json").read_text(encoding="utf-8"))
+    fold_assignments = pd.read_csv(output_path / "fold_assignments.csv")
+    predictive_metrics = pd.read_csv(output_path / "predictive_metrics.csv")
+    assert result.decision["diagnostic_status"] == "diagnostic_complete"
+    assert manifest["diagnostic_phase"] == "full_pipeline"
+    assert decision["diagnostic_phase"] == "full_pipeline"
+    assert manifest["source_child_count"] == 3
+    assert manifest["profile_runtime"] is True
+    assert manifest["max_interactions"] == 10
+    assert manifest["min_validation_rows"] == 50
+    assert not fold_assignments.empty
+    assert not predictive_metrics.empty
+    assert (output_path / "invalid_ebm_rows.csv").is_file()
+    assert (output_path / "invalid_diagnostic_report.csv").is_file()
+    assert {call["target_name"] for call in _PipelineFakeEbm.fit_calls} == {
+        "target_actual_points",
+        "target_source_residual",
+    }
+    assert any("source validation" in event for event in events)
+    assert any("dataset load" in event for event in events)
+    assert any("fold=A target=actual_points pass=main_effect" in event for event in events)
+    assert any("fold=A target=source_residual pass=main_effect" in event for event in events)
+    assert any("artifact write" in event for event in events)
+    assert any("complete" in event.lower() for event in events)
+
+
+def test_build_ebm_feature_diagnostic_writes_invalid_dependency_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_id = "ridge"
+    child_runs = [
+        _write_source_child(
+            tmp_path,
+            child_id=f"child-{season}",
+            season=season,
+            model_id=model_id,
+            feature_pack="ppg_xg",
+            fixture_mode="none",
+        )
+        for season in (2021, 2022, 2023)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023), strict=True):
+        _write_synthetic_player_predictions(child, season=season, model_id=model_id)
+    experiment_path = tmp_path / "experiment"
+    output_path = tmp_path / "ebm-output"
+    _write_parent(experiment_path, child_runs)
+    events: list[str] = []
+    monkeypatch.setattr(ebm_feature_diagnostic, "_load_default_ebm_class", lambda: (None, None))
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=output_path,
+        seasons=(2021, 2022, 2023),
+        model_id=model_id,
         feature_pack="ppg_xg",
         fixture_mode="none",
         current_year=2026,
         max_interactions=10,
-        min_validation_rows=500,
+        min_validation_rows=50,
         random_seed=123,
-        profile_runtime=True,
+        profile_runtime=False,
         progress_callback=events.append,
     )
 
     manifest = json.loads((output_path / "ebm_diagnostic_manifest.json").read_text(encoding="utf-8"))
     decision = json.loads((output_path / "ebm_diagnostic_decision.json").read_text(encoding="utf-8"))
-    assert result.decision["diagnostic_status"] == "diagnostic_complete"
-    assert manifest["diagnostic_phase"] == "metadata_only"
-    assert decision["diagnostic_phase"] == "metadata_only"
-    assert manifest["profile_runtime"] is True
-    assert any("artifact validation" in event for event in events)
-    assert any("metadata-only" in event for event in events)
+    invalid_report = pd.read_csv(output_path / "invalid_diagnostic_report.csv")
+    assert result.decision["diagnostic_status"] == "invalid"
+    assert decision["diagnostic_status"] == "invalid"
+    assert manifest["diagnostic_status"] == "invalid"
+    assert manifest["diagnostic_phase"] in {"dependency_unavailable", "full_pipeline"}
+    assert invalid_report["reason_type"].tolist() == ["dependency"]
+    assert any("dependency" in event for event in events)
+    assert any("artifact write" in event for event in events)
 
 
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:
