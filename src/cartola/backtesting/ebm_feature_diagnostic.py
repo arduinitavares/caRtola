@@ -6,6 +6,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, cast
 
 import numpy as np
@@ -93,6 +94,17 @@ class EbmRuntimeInfo:
     constructor_signature: str
     fit_signature: str
     supports_explicit_validation: bool
+
+
+@dataclass(frozen=True)
+class EBMFitResult:
+    model: Any
+    predictions: pd.Series
+    fit_seconds: float
+    fit_row_count: int
+    target_type: str
+    fold_id: str
+    validation_season: int
 
 
 _PREDICTIVE_METRIC_COLUMNS = (
@@ -209,6 +221,52 @@ def inspect_ebm_runtime(
         constructor_signature=constructor_signature,
         fit_signature=fit_signature,
         supports_explicit_validation=supports_explicit_validation,
+    )
+
+
+def fit_ebm_fold_target(
+    *,
+    ebm_class: type[Any],
+    train_rows: pd.DataFrame,
+    validation_rows: pd.DataFrame,
+    feature_columns: tuple[str, ...],
+    target_column: str,
+    target_type: str,
+    fold_id: str,
+    validation_season: int,
+    random_seed: int,
+) -> EBMFitResult:
+    constructor_params: dict[str, object] = {
+        "interactions": 0,
+        "outer_bags": 8,
+        "inner_bags": 0,
+        "max_rounds": 20000,
+        "random_state": random_seed,
+        "n_jobs": -1,
+        "objective": "rmse",
+        "validation_size": 0.0,
+    }
+    model = ebm_class(**_filter_constructor_params(ebm_class, constructor_params))
+    training_features = train_rows.loc[:, feature_columns]
+    training_target = train_rows[target_column]
+    validation_features = validation_rows.loc[:, feature_columns]
+
+    started = perf_counter()
+    model.fit(training_features, training_target)
+    fit_seconds = perf_counter() - started
+    predictions = pd.Series(
+        model.predict(validation_features),
+        index=validation_rows.index,
+        dtype="float64",
+    )
+    return EBMFitResult(
+        model=model,
+        predictions=predictions,
+        fit_seconds=fit_seconds,
+        fit_row_count=int(len(train_rows)),
+        target_type=target_type,
+        fold_id=fold_id,
+        validation_season=validation_season,
     )
 
 
@@ -457,6 +515,28 @@ def _mean_prediction_bias(errors: pd.Series) -> float:
     if errors.empty:
         return float("nan")
     return float(errors.mean())
+
+
+def _filter_constructor_params(ebm_class: type[Any], params: dict[str, object]) -> dict[str, object]:
+    signature = inspect.signature(ebm_class)
+    parameters = signature.parameters
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return dict(params)
+
+    accepted = set(parameters)
+    aliases = {
+        "validation_size": "validation_fraction",
+        "early_stopping_rounds": "early_stopping_run_length",
+    }
+    filtered: dict[str, object] = {}
+    for key, value in params.items():
+        if key in accepted:
+            filtered[key] = value
+            continue
+        alias = aliases.get(key)
+        if alias is not None and alias in accepted:
+            filtered[alias] = value
+    return filtered
 
 
 def _is_finite_number(value: object) -> bool:

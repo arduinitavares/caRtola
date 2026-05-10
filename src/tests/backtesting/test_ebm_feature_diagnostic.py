@@ -57,6 +57,43 @@ class _FakeEbmWithValidationNameSubstrings:
         return self
 
 
+class _RecordingEbm:
+    def __init__(self, **params: object) -> None:
+        self.params = params
+        self.fit_rows = 0
+        self.feature_names_in_: list[str] = []
+        self.term_names_: list[str] = []
+        self.term_scores_: list[list[float]] = []
+        self.bins_: list[list[list[float]]] = []
+
+    def fit(self, x_values: pd.DataFrame, y_values: pd.Series) -> "_RecordingEbm":
+        self.fit_rows = len(x_values)
+        self.feature_names_in_ = list(x_values.columns)
+        self.term_names_ = list(x_values.columns)
+        self.term_scores_ = [[-0.5, 0.5] for _ in self.term_names_]
+        self.bins_ = [[[0.0]] for _ in self.term_names_]
+        return self
+
+    def predict(self, x_values: pd.DataFrame) -> list[float]:
+        return [0.25 for _ in range(len(x_values))]
+
+
+class _RecordingEbmWithoutValidationSize:
+    def __init__(self, *, interactions: int = 0, random_state: int | None = None) -> None:
+        self.params: dict[str, object] = {
+            "interactions": interactions,
+            "random_state": random_state,
+        }
+        self.fit_rows = 0
+
+    def fit(self, x_values: pd.DataFrame, y_values: pd.Series) -> "_RecordingEbmWithoutValidationSize":
+        self.fit_rows = len(x_values)
+        return self
+
+    def predict(self, x_values: pd.DataFrame) -> list[float]:
+        return [0.5 for _ in range(len(x_values))]
+
+
 def _write_source_child(
     tmp_path: Path,
     *,
@@ -286,6 +323,51 @@ def test_inspect_ebm_runtime_ignores_validation_name_substrings() -> None:
 def test_inspect_ebm_runtime_raises_clear_error_when_missing() -> None:
     with pytest.raises(EbmDependencyError, match="InterpretML is required"):
         inspect_ebm_runtime(ebm_class=None, package_version=None)
+
+
+def test_fit_ebm_fold_target_disables_internal_validation() -> None:
+    train = pd.DataFrame({"feature_a": [0.0, 1.0], "target_actual_points": [1.0, 2.0]})
+    validation = pd.DataFrame({"feature_a": [2.0], "target_actual_points": [3.0]}, index=[99])
+
+    result = ebm_feature_diagnostic.fit_ebm_fold_target(
+        ebm_class=_RecordingEbm,
+        train_rows=train,
+        validation_rows=validation,
+        feature_columns=("feature_a",),
+        target_column="target_actual_points",
+        target_type="actual_points",
+        fold_id="A",
+        validation_season=2023,
+        random_seed=123,
+    )
+
+    assert result.predictions.tolist() == [0.25]
+    assert result.predictions.index.tolist() == [99]
+    assert result.model.params["interactions"] == 0
+    assert result.model.params["validation_size"] == 0.0
+    assert result.fit_row_count == 2
+
+
+def test_fit_ebm_fold_target_omits_unsupported_validation_size() -> None:
+    train = pd.DataFrame({"feature_a": [0.0, 1.0], "target_actual_points": [1.0, 2.0]})
+    validation = pd.DataFrame({"feature_a": [2.0], "target_actual_points": [3.0]})
+
+    result = ebm_feature_diagnostic.fit_ebm_fold_target(
+        ebm_class=_RecordingEbmWithoutValidationSize,
+        train_rows=train,
+        validation_rows=validation,
+        feature_columns=("feature_a",),
+        target_column="target_actual_points",
+        target_type="actual_points",
+        fold_id="A",
+        validation_season=2023,
+        random_seed=123,
+    )
+
+    assert result.predictions.tolist() == [0.5]
+    assert result.model.params["interactions"] == 0
+    assert result.model.params["random_state"] == 123
+    assert "validation_size" not in result.model.params
 
 
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:
