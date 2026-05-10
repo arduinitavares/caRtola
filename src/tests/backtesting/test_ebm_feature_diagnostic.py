@@ -824,6 +824,67 @@ def test_aggregate_candidate_hypotheses_empty_result_has_expected_columns() -> N
     ]
 
 
+def test_write_ebm_diagnostic_artifacts_adds_discovery_metadata(tmp_path: Path) -> None:
+    writer = getattr(ebm_feature_diagnostic, "write_ebm_diagnostic_artifacts", None)
+    assert writer is not None
+
+    output = tmp_path / "out"
+    writer(
+        output_path=output,
+        manifest={"diagnostic_status": "invalid"},
+        source_context=pd.DataFrame([{"match_status": "missing"}]),
+        fold_assignments=pd.DataFrame(),
+        predictive_metrics=pd.DataFrame(),
+        feature_importance=pd.DataFrame(),
+        feature_shape_summary=pd.DataFrame(),
+        pairwise_interactions=pd.DataFrame(),
+        candidate_hypotheses=pd.DataFrame(),
+        invalid_rows=pd.DataFrame(),
+        invalid_report=pd.DataFrame([{"reason_type": "schema", "message": "missing"}]),
+        decision={"diagnostic_status": "invalid"},
+    )
+
+    expected_files = {
+        "ebm_diagnostic_manifest.json",
+        "ebm_diagnostic_decision.json",
+        "source_context.csv",
+        "fold_assignments.csv",
+        "predictive_metrics.csv",
+        "feature_importance_by_fold.csv",
+        "feature_shape_summary.csv",
+        "pairwise_interactions.csv",
+        "candidate_hypotheses.csv",
+        "invalid_ebm_rows.csv",
+        "invalid_diagnostic_report.csv",
+        "ebm_feature_diagnostic.html",
+    }
+    assert {path.name for path in output.iterdir()} == expected_files
+
+    manifest = json.loads((output / "ebm_diagnostic_manifest.json").read_text(encoding="utf-8"))
+    decision = json.loads((output / "ebm_diagnostic_decision.json").read_text(encoding="utf-8"))
+    assert manifest == {"diagnostic_status": "invalid", "discovery_only": True}
+    assert decision == {"diagnostic_status": "invalid", "discovery_only": True}
+
+    csv_artifacts = expected_files - {
+        "ebm_diagnostic_manifest.json",
+        "ebm_diagnostic_decision.json",
+        "ebm_feature_diagnostic.html",
+    }
+    for artifact_name in sorted(csv_artifacts):
+        frame = pd.read_csv(output / artifact_name)
+        assert "discovery_only" in frame.columns
+
+    source_context = pd.read_csv(output / "source_context.csv")
+    invalid_report = pd.read_csv(output / "invalid_diagnostic_report.csv")
+    assert source_context["discovery_only"].tolist() == [True]
+    assert invalid_report["discovery_only"].tolist() == [True]
+
+    html_report = (output / "ebm_feature_diagnostic.html").read_text(encoding="utf-8")
+    assert "<!doctype html>" in html_report
+    assert "discovery_only=true" in html_report
+    assert "diagnostic_status=invalid" in html_report
+
+
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:
     child = _write_source_child(tmp_path)
     experiment_path = tmp_path / "experiment"

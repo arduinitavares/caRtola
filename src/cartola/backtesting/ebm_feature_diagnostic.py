@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import inspect
 import json
 import math
@@ -389,6 +390,48 @@ def aggregate_candidate_hypotheses(
     return pd.DataFrame(rows, columns=pd.Index(_CANDIDATE_HYPOTHESIS_COLUMNS))
 
 
+def write_ebm_diagnostic_artifacts(
+    *,
+    output_path: Path,
+    manifest: dict[str, object],
+    source_context: pd.DataFrame,
+    fold_assignments: pd.DataFrame,
+    predictive_metrics: pd.DataFrame,
+    feature_importance: pd.DataFrame,
+    feature_shape_summary: pd.DataFrame,
+    pairwise_interactions: pd.DataFrame,
+    candidate_hypotheses: pd.DataFrame,
+    invalid_rows: pd.DataFrame,
+    invalid_report: pd.DataFrame,
+    decision: dict[str, object],
+) -> None:
+    output_path.mkdir(parents=True, exist_ok=True)
+    manifest_payload = {**manifest, "discovery_only": True}
+    decision_payload = {**decision, "discovery_only": True}
+
+    (output_path / "ebm_diagnostic_manifest.json").write_text(
+        json.dumps(manifest_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    (output_path / "ebm_diagnostic_decision.json").write_text(
+        json.dumps(decision_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    _write_csv(output_path / "source_context.csv", source_context)
+    _write_csv(output_path / "fold_assignments.csv", fold_assignments)
+    _write_csv(output_path / "predictive_metrics.csv", predictive_metrics)
+    _write_csv(output_path / "feature_importance_by_fold.csv", feature_importance)
+    _write_csv(output_path / "feature_shape_summary.csv", feature_shape_summary)
+    _write_csv(output_path / "pairwise_interactions.csv", pairwise_interactions)
+    _write_csv(output_path / "candidate_hypotheses.csv", candidate_hypotheses)
+    _write_csv(output_path / "invalid_ebm_rows.csv", invalid_rows)
+    _write_csv(output_path / "invalid_diagnostic_report.csv", invalid_report)
+    (output_path / "ebm_feature_diagnostic.html").write_text(
+        _html_report(decision=decision_payload, manifest=manifest_payload),
+        encoding="utf-8",
+    )
+
+
 def resolve_source_children(config: EbmDiagnosticConfig) -> tuple[tuple[SourceChildContext, ...], pd.DataFrame]:
     metadata_path = config.experiment_path / "experiment_metadata.json"
     parent_metadata = _read_json_object(metadata_path, artifact_name="experiment_metadata.json")
@@ -707,6 +750,33 @@ def _require_dataframe_columns(
     missing_columns = tuple(column for column in columns if column not in frame.columns)
     if missing_columns:
         raise EbmDiagnosticInvalid(f"Missing required {artifact_name} columns: {', '.join(missing_columns)}")
+
+
+def _write_csv(path: Path, frame: pd.DataFrame) -> None:
+    output = frame.copy()
+    if "discovery_only" not in output.columns:
+        output.insert(0, "discovery_only", True)
+    output.to_csv(path, index=False)
+
+
+def _html_report(*, decision: dict[str, object], manifest: dict[str, object]) -> str:
+    decision_status = str(decision.get("diagnostic_status", "unknown"))
+    decision_json = html.escape(json.dumps(decision, indent=2, sort_keys=True))
+    manifest_json = html.escape(json.dumps(manifest, indent=2, sort_keys=True))
+    escaped_status = html.escape(decision_status)
+    return (
+        "<!doctype html>"
+        "<html>"
+        "<head><meta charset='utf-8'><title>EBM Feature Diagnostic</title></head>"
+        "<body>"
+        "<h1>EBM Feature Diagnostic</h1>"
+        "<p><strong>discovery_only=true</strong></p>"
+        f"<p><strong>diagnostic_status={escaped_status}</strong></p>"
+        f"<h2>Decision</h2><pre>{decision_json}</pre>"
+        f"<h2>Manifest</h2><pre>{manifest_json}</pre>"
+        "</body>"
+        "</html>"
+    )
 
 
 def _validate_unique_fold_rows(group: pd.DataFrame, *, term_name: str) -> None:
