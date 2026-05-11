@@ -124,16 +124,35 @@ class _PipelineFakeEbmWithoutValidationControl:
         return [0.0 for _ in range(len(x_values))]
 
 
+class _PipelineFakeEbmWithoutTermDiagnostics:
+    def __init__(self, **params: object) -> None:
+        self.params = params
+
+    def fit(self, x_values: pd.DataFrame, y_values: pd.Series) -> "_PipelineFakeEbmWithoutTermDiagnostics":
+        return self
+
+    def predict(self, x_values: pd.DataFrame) -> list[float]:
+        return [0.0 for _ in range(len(x_values))]
+
+
 class _PipelineFakeEbm:
     fit_calls: ClassVar[list[dict[str, object]]] = []
 
     def __init__(self, **params: object) -> None:
         self.params = params
         self.prediction = 0.0
+        self.term_names_: list[str] = []
+        self.term_scores_: list[list[float]] = []
+        self.bins_: list[list[list[float]]] = []
 
     def fit(self, x_values: pd.DataFrame, y_values: pd.Series) -> "_PipelineFakeEbm":
         numeric_target = pd.to_numeric(y_values, errors="raise")
         self.prediction = float(numeric_target.mean())
+        self.term_names_ = [str(column) for column in x_values.columns]
+        self.term_scores_ = [
+            [-0.75 + (index * 0.05), 0.75 + (index * 0.05)] for index, _column in enumerate(self.term_names_)
+        ]
+        self.bins_ = [[[float(pd.to_numeric(x_values[column], errors="coerce").median())]] for column in x_values]
         type(self).fit_calls.append(
             {
                 "row_count": len(x_values),
@@ -1056,6 +1075,8 @@ def test_build_ebm_feature_diagnostic_runs_full_pipeline_with_injected_ebm(tmp_p
     decision = json.loads((output_path / "ebm_diagnostic_decision.json").read_text(encoding="utf-8"))
     fold_assignments = pd.read_csv(output_path / "fold_assignments.csv")
     predictive_metrics = pd.read_csv(output_path / "predictive_metrics.csv")
+    feature_importance = pd.read_csv(output_path / "feature_importance_by_fold.csv")
+    feature_shape_summary = pd.read_csv(output_path / "feature_shape_summary.csv")
     assert result.decision["diagnostic_status"] == "diagnostic_complete"
     assert manifest["diagnostic_phase"] == "full_pipeline"
     assert decision["diagnostic_phase"] == "full_pipeline"
@@ -1065,6 +1086,10 @@ def test_build_ebm_feature_diagnostic_runs_full_pipeline_with_injected_ebm(tmp_p
     assert manifest["min_validation_rows"] == 50
     assert not fold_assignments.empty
     assert not predictive_metrics.empty
+    assert not feature_importance.empty
+    assert not feature_shape_summary.empty
+    assert set(feature_importance["target_type"]) == {"actual_points", "source_residual"}
+    assert set(feature_shape_summary["term_support_extraction_status"]) == {"learned_bins"}
     assert (output_path / "invalid_ebm_rows.csv").is_file()
     assert (output_path / "invalid_diagnostic_report.csv").is_file()
     assert {call["target_name"] for call in _PipelineFakeEbm.fit_calls} == {
@@ -1349,6 +1374,39 @@ def test_build_ebm_feature_diagnostic_rejects_ebm_without_validation_disable_con
     assert result.decision["diagnostic_status"] == "invalid"
     assert invalid_report["reason_type"].tolist() == ["dependency"]
     assert "validation" in str(invalid_report.loc[0, "message"])
+
+
+def test_build_ebm_feature_diagnostic_invalidates_missing_term_diagnostics(tmp_path: Path) -> None:
+    model_id = "ridge"
+    child_runs = [
+        _write_source_child(tmp_path, child_id=f"child-{season}", season=season, model_id=model_id)
+        for season in (2021, 2022, 2023)
+    ]
+    for child, season in zip(child_runs, (2021, 2022, 2023), strict=True):
+        _write_synthetic_player_predictions(child, season=season, model_id=model_id)
+    experiment_path = tmp_path / "experiment"
+    output_path = tmp_path / "ebm-output"
+    _write_parent(experiment_path, child_runs)
+
+    result = build_ebm_feature_diagnostic(
+        experiment_path=experiment_path,
+        output_path=output_path,
+        seasons=(2021, 2022, 2023),
+        model_id=model_id,
+        feature_pack="ppg_xg",
+        fixture_mode="none",
+        current_year=2026,
+        max_interactions=0,
+        min_validation_rows=50,
+        random_seed=123,
+        ebm_class=_PipelineFakeEbmWithoutTermDiagnostics,
+    )
+
+    invalid_report = pd.read_csv(output_path / "invalid_diagnostic_report.csv")
+    feature_importance = pd.read_csv(output_path / "feature_importance_by_fold.csv")
+    assert result.decision["diagnostic_status"] == "invalid"
+    assert feature_importance.empty
+    assert "feature_extraction" in invalid_report["reason_type"].tolist()
 
 
 def test_resolve_source_children_requires_one_match_per_season(tmp_path: Path) -> None:

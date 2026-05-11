@@ -117,6 +117,13 @@ class EBMFitResult:
     validation_season: int
 
 
+@dataclass(frozen=True)
+class EBMTermSummary:
+    feature_importance: pd.DataFrame
+    feature_shape_summary: pd.DataFrame
+    pairwise_interactions: pd.DataFrame
+
+
 _PREDICTIVE_METRIC_COLUMNS = (
     "discovery_only",
     "target_type",
@@ -469,6 +476,88 @@ def fit_ebm_fold_target(
         target_type=target_type,
         fold_id=fold_id,
         validation_season=validation_season,
+    )
+
+
+def extract_ebm_term_summaries(
+    *,
+    fit_result: EBMFitResult,
+    validation_rows: pd.DataFrame,
+    feature_columns: tuple[str, ...],
+) -> EBMTermSummary:
+    term_scores = _model_term_scores(fit_result.model)
+    if not term_scores:
+        return EBMTermSummary(
+            feature_importance=pd.DataFrame(columns=pd.Index(_FEATURE_IMPORTANCE_COLUMNS)),
+            feature_shape_summary=pd.DataFrame(columns=pd.Index(_FEATURE_SHAPE_SUMMARY_COLUMNS)),
+            pairwise_interactions=pd.DataFrame(columns=pd.Index(_PAIRWISE_INTERACTION_COLUMNS)),
+        )
+
+    term_names = _model_term_names(fit_result.model, feature_columns=feature_columns, term_count=len(term_scores))
+    importance_candidates: list[dict[str, object]] = []
+    shape_candidates: list[dict[str, object]] = []
+    for term_index, term_score_values in enumerate(term_scores):
+        feature_name = term_names[term_index] if term_index < len(term_names) else ""
+        if feature_name not in feature_columns:
+            continue
+        scores = _finite_term_scores(term_score_values)
+        if scores.size == 0:
+            continue
+        importance_score = float(np.nanmean(np.abs(scores)))
+        effect_min = float(np.nanmin(scores))
+        effect_max = float(np.nanmax(scores))
+        effect_range = effect_max - effect_min
+        support_summary = _main_effect_support_summary(
+            fit_result.model,
+            validation_rows,
+            feature_name=feature_name,
+            feature_index=feature_columns.index(feature_name),
+            scores=scores,
+        )
+        importance_candidates.append(
+            {
+                "discovery_only": True,
+                "target_type": fit_result.target_type,
+                "fold_id": fit_result.fold_id,
+                "validation_season": fit_result.validation_season,
+                "feature_name": feature_name,
+                "importance_score": importance_score,
+            }
+        )
+        shape_candidates.append(
+            {
+                "discovery_only": True,
+                "target_type": fit_result.target_type,
+                "feature_name": feature_name,
+                "fold_id": fit_result.fold_id,
+                "validation_season": fit_result.validation_season,
+                "importance_score": importance_score,
+                "effect_min": effect_min,
+                "effect_max": effect_max,
+                "effect_range": effect_range,
+                "term_support_extraction_status": support_summary["term_support_extraction_status"],
+                "largest_positive_bin_lower": support_summary["largest_positive_bin_lower"],
+                "largest_positive_bin_upper": support_summary["largest_positive_bin_upper"],
+                "largest_positive_bin_row_support": support_summary["largest_positive_bin_row_support"],
+                "largest_positive_bin_round_support": support_summary["largest_positive_bin_round_support"],
+                "largest_negative_bin_lower": support_summary["largest_negative_bin_lower"],
+                "largest_negative_bin_upper": support_summary["largest_negative_bin_upper"],
+                "largest_negative_bin_row_support": support_summary["largest_negative_bin_row_support"],
+                "largest_negative_bin_round_support": support_summary["largest_negative_bin_round_support"],
+                "monotonicity_hint": _monotonicity_hint(scores),
+                "row_support": support_summary["row_support"],
+                "season_support": support_summary["season_support"],
+                "fold_candidate_signal": False,
+            }
+        )
+
+    importance = _rank_feature_importance(importance_candidates)
+    shapes = _rank_feature_shapes(shape_candidates, importance)
+    shapes = _apply_main_effect_fold_signal(shapes)
+    return EBMTermSummary(
+        feature_importance=importance,
+        feature_shape_summary=shapes,
+        pairwise_interactions=pd.DataFrame(columns=pd.Index(_PAIRWISE_INTERACTION_COLUMNS)),
     )
 
 
@@ -894,6 +983,9 @@ def build_ebm_feature_diagnostic(
 
     fold_rows: list[dict[str, object]] = []
     metric_frames: list[pd.DataFrame] = []
+    feature_importance_frames: list[pd.DataFrame] = []
+    feature_shape_frames: list[pd.DataFrame] = []
+    pairwise_interaction_frames: list[pd.DataFrame] = []
     for fold in folds:
         train_rows = combined_rows.loc[combined_rows["season"].isin(fold.train_seasons)].copy()
         validation_rows = combined_rows.loc[combined_rows["season"].eq(fold.validation_season)].copy()
@@ -945,6 +1037,30 @@ def build_ebm_feature_diagnostic(
                 random_seed=random_seed,
             )
             validation_rows.loc[:, prediction_column] = fit_result.predictions
+            term_summary = extract_ebm_term_summaries(
+                fit_result=fit_result,
+                validation_rows=validation_rows,
+                feature_columns=feature_columns,
+            )
+            if term_summary.feature_importance.empty or term_summary.feature_shape_summary.empty:
+                invalid_report_rows.append(
+                    _invalid_report_row(
+                        reason_type="feature_extraction",
+                        message=(
+                            f"Fold {fold.fold_id} target={target_type} produced no EBM feature diagnostics "
+                            "from fitted model terms"
+                        ),
+                        artifact_path=str(experiment_path),
+                        season=fold.validation_season,
+                        model_id=model_id,
+                        feature_pack=feature_pack,
+                    )
+                )
+            else:
+                feature_importance_frames.append(term_summary.feature_importance)
+                feature_shape_frames.append(term_summary.feature_shape_summary)
+                if not term_summary.pairwise_interactions.empty:
+                    pairwise_interaction_frames.append(term_summary.pairwise_interactions)
         metric_frames.append(
             compute_predictive_metrics(
                 validation_rows,
@@ -959,9 +1075,21 @@ def build_ebm_feature_diagnostic(
         if metric_frames
         else pd.DataFrame(columns=pd.Index(_PREDICTIVE_METRIC_COLUMNS))
     )
-    feature_importance = pd.DataFrame(columns=pd.Index(_FEATURE_IMPORTANCE_COLUMNS))
-    feature_shape_summary = pd.DataFrame(columns=pd.Index(_FEATURE_SHAPE_SUMMARY_COLUMNS))
-    pairwise_interactions = pd.DataFrame(columns=pd.Index(_PAIRWISE_INTERACTION_COLUMNS))
+    feature_importance = (
+        pd.concat(feature_importance_frames, ignore_index=True)
+        if feature_importance_frames
+        else pd.DataFrame(columns=pd.Index(_FEATURE_IMPORTANCE_COLUMNS))
+    )
+    feature_shape_summary = (
+        pd.concat(feature_shape_frames, ignore_index=True)
+        if feature_shape_frames
+        else pd.DataFrame(columns=pd.Index(_FEATURE_SHAPE_SUMMARY_COLUMNS))
+    )
+    pairwise_interactions = (
+        pd.concat(pairwise_interaction_frames, ignore_index=True)
+        if pairwise_interaction_frames
+        else pd.DataFrame(columns=pd.Index(_PAIRWISE_INTERACTION_COLUMNS))
+    )
     candidate_hypotheses = aggregate_candidate_hypotheses(
         feature_shape_summary=feature_shape_summary,
         pairwise_interactions=pairwise_interactions,
@@ -1583,6 +1711,217 @@ def _is_excluded_feature_column(column: str) -> bool:
     if normalized.startswith("pontuacao") or normalized.startswith("target_") or normalized.endswith("_target"):
         return True
     return False
+
+
+def _model_term_scores(model: object) -> list[np.ndarray]:
+    raw_scores = getattr(model, "term_scores_", None)
+    if raw_scores is None or isinstance(raw_scores, (str, bytes)):
+        return []
+    try:
+        raw_score_items = list(raw_scores)
+    except TypeError:
+        return []
+    term_scores: list[np.ndarray] = []
+    for raw_score in raw_score_items:
+        try:
+            scores = np.asarray(raw_score, dtype="float64").reshape(-1)
+        except (TypeError, ValueError):
+            term_scores.append(np.asarray([], dtype="float64"))
+            continue
+        term_scores.append(scores)
+    return term_scores
+
+
+def _model_term_names(
+    model: object,
+    *,
+    feature_columns: tuple[str, ...],
+    term_count: int,
+) -> tuple[str, ...]:
+    raw_names = getattr(model, "term_names_", None)
+    if isinstance(raw_names, Sequence) and not isinstance(raw_names, (str, bytes)):
+        names = tuple(str(name) for name in raw_names)
+        if len(names) >= term_count:
+            return names
+    return tuple(feature_columns[index] if index < len(feature_columns) else "" for index in range(term_count))
+
+
+def _finite_term_scores(scores: np.ndarray) -> np.ndarray:
+    finite_scores = scores[np.isfinite(scores)]
+    if finite_scores.size == 0:
+        return np.asarray([], dtype="float64")
+    return finite_scores.astype("float64")
+
+
+def _rank_feature_importance(rows: list[dict[str, object]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=pd.Index(_FEATURE_IMPORTANCE_COLUMNS))
+    frame = pd.DataFrame(rows)
+    frame = frame.sort_values(
+        ["importance_score", "feature_name"],
+        ascending=[False, True],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    frame["importance_rank"] = range(1, len(frame) + 1)
+    return frame.loc[:, list(_FEATURE_IMPORTANCE_COLUMNS)]
+
+
+def _rank_feature_shapes(shape_rows: list[dict[str, object]], importance: pd.DataFrame) -> pd.DataFrame:
+    if not shape_rows:
+        return pd.DataFrame(columns=pd.Index(_FEATURE_SHAPE_SUMMARY_COLUMNS))
+    rank_by_feature = dict(zip(importance["feature_name"], importance["importance_rank"], strict=False))
+    frame = pd.DataFrame(shape_rows)
+    frame["importance_rank"] = frame["feature_name"].map(rank_by_feature).fillna(0).astype(int)
+    frame = frame.sort_values(["importance_rank", "feature_name"], kind="mergesort").reset_index(drop=True)
+    return frame.loc[:, list(_FEATURE_SHAPE_SUMMARY_COLUMNS)]
+
+
+def _apply_main_effect_fold_signal(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    output = frame.copy()
+    support_ok = output["term_support_extraction_status"].eq("learned_bins")
+    row_support_ok = pd.to_numeric(output["largest_positive_bin_row_support"], errors="coerce").ge(
+        _MIN_CANDIDATE_BIN_OR_CELL_ROW_SUPPORT
+    ) & pd.to_numeric(output["largest_negative_bin_row_support"], errors="coerce").ge(
+        _MIN_CANDIDATE_BIN_OR_CELL_ROW_SUPPORT
+    )
+    round_support_ok = pd.to_numeric(output["largest_positive_bin_round_support"], errors="coerce").ge(
+        _MIN_CANDIDATE_BIN_OR_CELL_ROUND_SUPPORT
+    ) & pd.to_numeric(output["largest_negative_bin_round_support"], errors="coerce").ge(
+        _MIN_CANDIDATE_BIN_OR_CELL_ROUND_SUPPORT
+    )
+    stable_shape = ~output["monotonicity_hint"].isin(["mixed", "unstable"])
+    output["fold_candidate_signal"] = (
+        support_ok
+        & row_support_ok
+        & round_support_ok
+        & stable_shape
+        & pd.to_numeric(output["effect_range"], errors="coerce").ge(0.50)
+        & pd.to_numeric(output["importance_rank"], errors="coerce").le(10)
+    )
+    return output
+
+
+def _main_effect_support_summary(
+    model: object,
+    validation_rows: pd.DataFrame,
+    *,
+    feature_name: str,
+    feature_index: int,
+    scores: np.ndarray,
+) -> dict[str, object]:
+    edges = _learned_edges_for_feature(model, feature_index=feature_index)
+    if edges is None or feature_name not in validation_rows.columns or "rodada" not in validation_rows.columns:
+        return _unavailable_main_effect_support(validation_rows)
+    try:
+        bins = assign_continuous_bins(validation_rows[feature_name], learned_edges=edges)
+    except EbmDiagnosticInvalid:
+        return _unavailable_main_effect_support(validation_rows)
+
+    supported_bins = sorted(int(value) for value in bins.dropna().unique() if 0 <= int(value) < len(scores))
+    if not supported_bins:
+        return _unavailable_main_effect_support(validation_rows)
+    positive_bin = max(supported_bins, key=lambda bin_index: (float(scores[bin_index]), -bin_index))
+    negative_bin = min(supported_bins, key=lambda bin_index: (float(scores[bin_index]), bin_index))
+    positive_support = _single_bin_support(validation_rows, bins, positive_bin)
+    negative_support = _single_bin_support(validation_rows, bins, negative_bin)
+    return {
+        "term_support_extraction_status": "learned_bins",
+        "largest_positive_bin_lower": _bin_lower_label(edges, positive_bin),
+        "largest_positive_bin_upper": _bin_upper_label(edges, positive_bin),
+        "largest_positive_bin_row_support": positive_support["row_support"],
+        "largest_positive_bin_round_support": positive_support["round_support"],
+        "largest_negative_bin_lower": _bin_lower_label(edges, negative_bin),
+        "largest_negative_bin_upper": _bin_upper_label(edges, negative_bin),
+        "largest_negative_bin_row_support": negative_support["row_support"],
+        "largest_negative_bin_round_support": negative_support["round_support"],
+        "row_support": int(len(validation_rows)),
+        "season_support": int(validation_rows["season"].nunique()) if "season" in validation_rows.columns else 1,
+    }
+
+
+def _learned_edges_for_feature(model: object, *, feature_index: int) -> tuple[float, ...] | None:
+    raw_bins = getattr(model, "bins_", None)
+    if not isinstance(raw_bins, Sequence) or isinstance(raw_bins, (str, bytes)) or feature_index >= len(raw_bins):
+        return None
+    feature_bins = raw_bins[feature_index]
+    if isinstance(feature_bins, np.ndarray):
+        candidate_edges = feature_bins
+    elif isinstance(feature_bins, Sequence) and not isinstance(feature_bins, (str, bytes)) and feature_bins:
+        candidate_edges = feature_bins[0]
+    else:
+        return None
+    if isinstance(candidate_edges, dict):
+        return None
+    try:
+        edges = tuple(float(value) for value in candidate_edges)
+    except (TypeError, ValueError):
+        return None
+    try:
+        return tuple(float(value) for value in _validated_learned_edges(edges))
+    except EbmDiagnosticInvalid:
+        return None
+
+
+def _single_bin_support(frame: pd.DataFrame, bins: pd.Series, bin_index: int) -> dict[str, int]:
+    selected = frame.loc[bins.eq(bin_index)]
+    return {
+        "row_support": int(len(selected)),
+        "round_support": int(selected["rodada"].nunique(dropna=True)) if "rodada" in selected.columns else 0,
+    }
+
+
+def _bin_lower_label(edges: tuple[float, ...], bin_index: int) -> str:
+    if bin_index <= 0:
+        return "-inf"
+    return _format_float(edges[bin_index - 1])
+
+
+def _bin_upper_label(edges: tuple[float, ...], bin_index: int) -> str:
+    if bin_index >= len(edges):
+        return "inf"
+    return _format_float(edges[bin_index])
+
+
+def _format_float(value: float) -> str:
+    return f"{value:.10g}"
+
+
+def _unavailable_main_effect_support(validation_rows: pd.DataFrame) -> dict[str, object]:
+    return {
+        "term_support_extraction_status": "unavailable",
+        "largest_positive_bin_lower": "",
+        "largest_positive_bin_upper": "",
+        "largest_positive_bin_row_support": 0,
+        "largest_positive_bin_round_support": 0,
+        "largest_negative_bin_lower": "",
+        "largest_negative_bin_upper": "",
+        "largest_negative_bin_row_support": 0,
+        "largest_negative_bin_round_support": 0,
+        "row_support": int(len(validation_rows)),
+        "season_support": int(validation_rows["season"].nunique()) if "season" in validation_rows.columns else 0,
+    }
+
+
+def _monotonicity_hint(scores: np.ndarray) -> str:
+    if scores.size < 2:
+        return "unstable"
+    diffs = np.diff(scores)
+    finite_diffs = diffs[np.isfinite(diffs)]
+    if finite_diffs.size == 0:
+        return "unstable"
+    if np.all(finite_diffs >= 0) and np.any(finite_diffs > 0):
+        return "increasing"
+    if np.all(finite_diffs <= 0) and np.any(finite_diffs < 0):
+        return "decreasing"
+    min_index = int(np.argmin(scores))
+    max_index = int(np.argmax(scores))
+    if 0 < min_index < scores.size - 1 and scores[0] > scores[min_index] and scores[-1] > scores[min_index]:
+        return "u_shaped"
+    if 0 < max_index < scores.size - 1 and scores[0] < scores[max_index] and scores[-1] < scores[max_index]:
+        return "inverted_u"
+    return "mixed"
 
 
 def _aggregate_main_effect_hypotheses(feature_shape_summary: pd.DataFrame) -> list[dict[str, object]]:
