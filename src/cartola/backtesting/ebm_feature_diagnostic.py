@@ -500,7 +500,8 @@ def extract_ebm_term_summaries(
         feature_name = term_names[term_index] if term_index < len(term_names) else ""
         if feature_name not in feature_columns:
             continue
-        scores = _finite_term_scores(term_score_values)
+        learned_edges = _learned_edges_for_feature(fit_result.model, feature_index=feature_columns.index(feature_name))
+        scores = _scores_aligned_to_data_bins(term_score_values, learned_edges)
         if scores.size == 0:
             continue
         importance_score = float(np.nanmean(np.abs(scores)))
@@ -508,10 +509,9 @@ def extract_ebm_term_summaries(
         effect_max = float(np.nanmax(scores))
         effect_range = effect_max - effect_min
         support_summary = _main_effect_support_summary(
-            fit_result.model,
             validation_rows,
             feature_name=feature_name,
-            feature_index=feature_columns.index(feature_name),
+            learned_edges=learned_edges,
             scores=scores,
         )
         importance_candidates.append(
@@ -1753,6 +1753,24 @@ def _finite_term_scores(scores: np.ndarray) -> np.ndarray:
     return finite_scores.astype("float64")
 
 
+def _scores_aligned_to_data_bins(
+    raw_scores: np.ndarray,
+    learned_edges: tuple[float, ...] | None,
+) -> np.ndarray:
+    if learned_edges is None:
+        return np.asarray([], dtype="float64")
+    normal_bin_count = len(learned_edges) + 1
+    if raw_scores.size == normal_bin_count + 2:
+        aligned_scores = raw_scores[1:-1]
+    elif raw_scores.size == normal_bin_count:
+        aligned_scores = raw_scores
+    else:
+        return np.asarray([], dtype="float64")
+    if not bool(np.isfinite(aligned_scores).all()):
+        return np.asarray([], dtype="float64")
+    return aligned_scores.astype("float64")
+
+
 def _rank_feature_importance(rows: list[dict[str, object]]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=pd.Index(_FEATURE_IMPORTANCE_COLUMNS))
@@ -1804,18 +1822,16 @@ def _apply_main_effect_fold_signal(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _main_effect_support_summary(
-    model: object,
     validation_rows: pd.DataFrame,
     *,
     feature_name: str,
-    feature_index: int,
+    learned_edges: tuple[float, ...] | None,
     scores: np.ndarray,
 ) -> dict[str, object]:
-    edges = _learned_edges_for_feature(model, feature_index=feature_index)
-    if edges is None or feature_name not in validation_rows.columns or "rodada" not in validation_rows.columns:
+    if learned_edges is None or feature_name not in validation_rows.columns or "rodada" not in validation_rows.columns:
         return _unavailable_main_effect_support(validation_rows)
     try:
-        bins = assign_continuous_bins(validation_rows[feature_name], learned_edges=edges)
+        bins = assign_continuous_bins(validation_rows[feature_name], learned_edges=learned_edges)
     except EbmDiagnosticInvalid:
         return _unavailable_main_effect_support(validation_rows)
 
@@ -1828,12 +1844,12 @@ def _main_effect_support_summary(
     negative_support = _single_bin_support(validation_rows, bins, negative_bin)
     return {
         "term_support_extraction_status": "learned_bins",
-        "largest_positive_bin_lower": _bin_lower_label(edges, positive_bin),
-        "largest_positive_bin_upper": _bin_upper_label(edges, positive_bin),
+        "largest_positive_bin_lower": _bin_lower_label(learned_edges, positive_bin),
+        "largest_positive_bin_upper": _bin_upper_label(learned_edges, positive_bin),
         "largest_positive_bin_row_support": positive_support["row_support"],
         "largest_positive_bin_round_support": positive_support["round_support"],
-        "largest_negative_bin_lower": _bin_lower_label(edges, negative_bin),
-        "largest_negative_bin_upper": _bin_upper_label(edges, negative_bin),
+        "largest_negative_bin_lower": _bin_lower_label(learned_edges, negative_bin),
+        "largest_negative_bin_upper": _bin_upper_label(learned_edges, negative_bin),
         "largest_negative_bin_row_support": negative_support["row_support"],
         "largest_negative_bin_round_support": negative_support["round_support"],
         "row_support": int(len(validation_rows)),

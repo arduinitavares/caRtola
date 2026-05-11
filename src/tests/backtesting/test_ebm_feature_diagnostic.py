@@ -1700,6 +1700,49 @@ def test_prepare_diagnostic_dataset_deduplicates_fit_features_but_preserves_raw_
     assert dataset.feature_columns == ("numeric_feature", "posicao_ata")
 
 
+def test_extract_ebm_term_summaries_aligns_special_bins() -> None:
+    class SpecialBinEbm:
+        term_names_ = ["feature_a"]
+        term_scores_ = [[0.0, -0.5, 0.5, 0.0]]
+        bins_ = [[[0.0]]]
+
+    fit_result = ebm_feature_diagnostic.EBMFitResult(
+        model=SpecialBinEbm(),
+        predictions=pd.Series([0.0, 0.0, 0.0, 0.0]),
+        fit_seconds=0.1,
+        fit_row_count=4,
+        target_type="source_residual",
+        fold_id="A",
+        validation_season=2023,
+    )
+    validation_rows = pd.DataFrame(
+        {
+            "season": [2023, 2023, 2023, 2023],
+            "rodada": [5, 5, 6, 6],
+            "feature_a": [-2.0, -1.0, 1.0, 2.0],
+        }
+    )
+
+    summary = ebm_feature_diagnostic.extract_ebm_term_summaries(
+        fit_result=fit_result,
+        validation_rows=validation_rows,
+        feature_columns=("feature_a",),
+    )
+
+    row = summary.feature_shape_summary.iloc[0]
+    assert row["effect_min"] == -0.5
+    assert row["effect_max"] == 0.5
+    assert row["monotonicity_hint"] == "increasing"
+    assert row["largest_positive_bin_lower"] == "0"
+    assert row["largest_positive_bin_upper"] == "inf"
+    assert row["largest_positive_bin_row_support"] == 2
+    assert row["largest_positive_bin_round_support"] == 1
+    assert row["largest_negative_bin_lower"] == "-inf"
+    assert row["largest_negative_bin_upper"] == "0"
+    assert row["largest_negative_bin_row_support"] == 2
+    assert row["largest_negative_bin_round_support"] == 1
+
+
 def test_prepare_diagnostic_dataset_keeps_null_played_points_as_invalid(tmp_path: Path) -> None:
     dataset = prepare_diagnostic_dataset(
         _source_context(tmp_path),
