@@ -9,7 +9,10 @@ Please critically review the document
 
 Do not accept the design blindly. The design was revised after prior reviewers
 objected that the original manual shrinkage formula was not supported by the
-EBM evidence and that a global count denominator was position-biased.
+EBM evidence, that a global count denominator was position-biased, that the
+Phase 0 audit could not be purely artifact-only, and that early rounds need the
+actual available opponent-match window rather than a fixed five-match
+denominator.
 
 Assess whether the revised H005 reliability-only design is ready for
 implementation, needs further revision, or should be abandoned.
@@ -23,9 +26,13 @@ Focus on:
 4. Whether the expected-count formula is cutoff-safe and statistically sound.
 5. Whether keeping the raw matchup columns plus reliability columns makes the
    experiment too ambiguous.
-6. Whether the decision statuses and acceptance gates are appropriate.
-7. Whether a simpler or better alternative exists.
-8. Implementation risks that could produce misleading results.
+6. Whether the source-anchored audit provenance and recomputed-count check are
+   enough to prevent source drift.
+7. Whether the implementation architecture for passing `played_history`,
+   fixtures, and `target_round` is explicit enough.
+8. Whether the decision statuses and acceptance gates are appropriate.
+9. Whether a simpler or better alternative exists.
+10. Implementation risks that could produce misleading results.
 
 Return your assessment in this structure:
 

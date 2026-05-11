@@ -19,8 +19,13 @@ Accepted review corrections:
   player-observation count, not a round count.
 - The original design was ambiguous about whether raw matchup features remain
   in the challenger pack.
-- H005 needs an artifact-only mechanism audit before the feature experiment is
+- H005 needs a source-anchored mechanism audit before the feature experiment is
   treated as candidate evidence.
+- The mechanism audit cannot be purely artifact-only because the source
+  `player_predictions.csv` starts at target round `5`, while expected-count
+  features need rounds `1-4` history for the first target round.
+- The denominator must use the actual available historical opponent-match
+  window, not a fixed five-match assumption.
 
 Rejected or qualified review corrections:
 
@@ -99,14 +104,14 @@ H005 must not use a single global denominator such as `20.0`.
 H005 v1 adds exactly three feature columns:
 
 ```text
+h005_opponent_position_available_match_count_roll5
 h005_opponent_position_expected_count_roll5
 h005_opponent_position_count_ratio
-h005_opponent_position_reliability_gap
 ```
 
 It does not add shrunk points, delta-shrunk points, threshold variants,
-position-specific hand-tuned constants, optimizer policies, or new data
-sources.
+position-specific hand-tuned constants, clipped reliability-gap features,
+optimizer policies, or new data sources.
 
 The `ppg_xg_matchup_h005` pack includes all columns from `ppg_xg_matchup` plus
 the three H005 columns. It is feature augmentation, not forced replacement. A
@@ -130,8 +135,8 @@ H005 must not read target-round outcomes.
 
 ### Expected Count Formula
 
-For each target round, compute the cutoff-safe expected five-round observation
-count by position from played history:
+For each target round, compute the cutoff-safe expected observation count by
+position from played history:
 
 ```text
 team_round_position_count =
@@ -142,17 +147,63 @@ position_players_per_team_round_prior =
   mean(team_round_position_count)
   grouped by posicao
 
+available_opponent_match_count_roll5 =
+  count_distinct(rodada)
+  from the same recent opponent-position rows used by
+  matchup_opponent_allowed_position_count
+
+h005_opponent_position_available_match_count_roll5 =
+  available_opponent_match_count_roll5
+
 h005_opponent_position_expected_count_roll5 =
-  max(5.0 * position_players_per_team_round_prior, 1.0)
+  max(
+    h005_opponent_position_available_match_count_roll5
+      * position_players_per_team_round_prior,
+    1.0
+  )
 ```
 
 This makes the denominator position-normalized and season/round cutoff-safe.
 It adapts to historical formation mix without introducing hand-tuned constants
 for `gol`, `lat`, `zag`, `mei`, or `ata`.
 
+The available-match multiplier matters in early rounds and incomplete fixture
+windows. For target round `5`, at most four prior opponent matches can exist,
+so the expected count must not assume a full five-match window.
+
+The expected count approximates the actual observation count. The actual
+`matchup_opponent_allowed_position_count` sums per-round player observations;
+the expected count multiplies available opponent matches by the league-wide
+position player-count prior. These are close but not identical because of
+substitutions, rotation, and formation variation.
+
 If a position has no played-history prior for a target round, use the global
 non-coach `position_players_per_team_round_prior` mean. If that is unavailable,
 use `1.0`.
+
+### Zero-Count Densification
+
+The position player-count prior must include zero-count team-position
+combinations. A naive groupby over observed rows is not enough, because it drops
+positions that a team did not field in a round and artificially inflates the
+mean.
+
+For each historical played round, build the Cartesian product of:
+
+```text
+active non-coach clubs in that round
+standard non-coach positions: gol, lat, zag, mei, ata
+```
+
+Then left-join observed distinct player counts and fill missing combinations
+with `0` before computing `position_players_per_team_round_prior`.
+
+### Granularity And Season Scope
+
+Expected count is computed once per `(season, target_round, posicao)` from that
+season's played history only, then merged onto the candidate frame by `posicao`.
+It must never pool future seasons or other seasons into a target season's
+cutoff history.
 
 ### Reliability Formula
 
@@ -168,14 +219,12 @@ Then compute:
 h005_opponent_position_count_ratio =
   count_nonnegative
   / h005_opponent_position_expected_count_roll5
-
-h005_opponent_position_reliability_gap =
-  max(1.0 - min(h005_opponent_position_count_ratio, 1.0), 0.0)
 ```
 
 `h005_opponent_position_count_ratio` is intentionally not clipped above `1.0`
-so XGBoost can see unusually high support. The gap feature is clipped because
-it represents shortage from normal support.
+so XGBoost can see unusually high support. H005 v1 deliberately does not add a
+clipped reliability-gap feature because it is a deterministic transform of the
+ratio and would add dimensionality without new information for a tree model.
 
 ### `tec` Handling
 
@@ -192,10 +241,52 @@ H005 must not introduce NaN or infinite values.
 - Missing expected count uses the fallback order defined above.
 - Nonfinite H005 outputs invalidate the run.
 
+## Architecture: Expected Count Injection Point
+
+H005 requires `played_history`, fixtures, and `target_round`. Existing H004
+augmentation only receives the already-built candidate frame, so H005 cannot use
+the same frame-only helper shape.
+
+Implementation must use one of these explicit paths:
+
+1. Preferred: add an H005-specific augmentation branch in
+   `build_prediction_frame` after matchup and FootyStats features are merged,
+   passing `frame`, `played_history`, `fixtures`, and `target_round` into the
+   H005 helper.
+2. Acceptable: compute the H005 available-match and expected-count helper
+   columns inside the matchup context builder where `played_history`, fixtures,
+   and `target_round` are already available, then expose them only when
+   `feature_augmentation_mode == "h005_matchup_reliability_v1"`.
+
+The implementation must not approximate expected count from the target-round
+candidate frame alone. That frame does not contain the prior rounds needed for
+round `5` and would make the audit and backtest inconsistent.
+
 ## Phase 0 Mechanism Audit
 
-Before the feature experiment is interpreted as candidate evidence, write an
-artifact-only H005 mechanism audit from persisted source experiment artifacts.
+Before the feature experiment is interpreted as candidate evidence, write a
+source-anchored H005 mechanism audit.
+
+The audit reads persisted source experiment predictions and residuals, but it
+may also read validated raw season data and source fixture files to recompute
+H005 features. It is not purely artifact-only because source
+`player_predictions.csv` starts at target round `5` and does not contain the
+rounds `1-4` history needed for the first target round.
+
+To prevent source drift, the audit must recompute the existing
+`matchup_opponent_allowed_position_count` for every source prediction row from
+the selected raw season data and fixture context. If recomputed counts do not
+match the persisted source artifact exactly for all valid rows, the audit is
+`invalid`.
+
+The audit manifest must record:
+
+- raw season data paths used;
+- computed raw season data SHA-256 hashes;
+- source fixture paths and SHA-256 hashes;
+- recomputed-vs-persisted matchup count match status;
+- source prediction artifact paths;
+- source prediction artifact SHA-256 hashes.
 
 Required output:
 
@@ -211,11 +302,17 @@ The audit must compute, by season, position, and reliability-ratio bin:
 - source residual mean;
 - source overprediction rate;
 - mean `matchup_opponent_allowed_position_count`;
+- mean `h005_opponent_position_available_match_count_roll5`;
 - mean `h005_opponent_position_expected_count_roll5`;
 - mean `h005_opponent_position_count_ratio`;
 - mean `matchup_opponent_allowed_position_points_roll5`;
 - mean `matchup_opponent_allowed_points_roll5`;
 - mean position-vs-all allowed-points delta.
+
+The audit must also write the same residual support summary by raw count bins so
+we can compare the normalized ratio against the original raw count evidence.
+If normalized ratio bins are weaker or less position-balanced than raw count
+bins, the audit decision cannot be `supports_reliability_hypothesis`.
 
 Reliability-ratio bins:
 
@@ -238,9 +335,18 @@ The audit supports the hypothesis only if:
 
 - all required source artifacts validate;
 - at least four non-coach positions have at least `500` rows total;
-- low-reliability bins have enough support in at least `3 / 5` seasons;
-- low-reliability residual or overprediction behavior is not directionally
-  contradictory across most supported seasons;
+- low-reliability bins are exactly `0`, `(0, 0.5]`, and `(0.5, 0.8]`;
+- normal-reliability bins are exactly `(0.8, 1.0]` and `(1.0, 1.5]`;
+- at least `3 / 5` seasons have at least `500` low-reliability rows and at
+  least `20` low-reliability target rounds;
+- at least `3 / 5` seasons have at least `500` normal-reliability rows and at
+  least `20` normal-reliability target rounds;
+- `low_minus_normal_source_residual_mean` has the same sign in at least `3`
+  supported seasons;
+- median absolute `low_minus_normal_source_residual_mean` across supported
+  seasons is at least `0.10` points;
+- normalized-ratio low-reliability support includes at least four non-coach
+  positions with at least `100` rows each;
 - no single season contributes more than `40%` of supported low-reliability
   rows.
 
@@ -378,7 +484,11 @@ H005 becomes `candidate_research_profile` only if all gates pass:
 
 - comparability is valid;
 - aggregate total actual point delta is between `-20` and `+40`;
-- no severe regression gate fails.
+- no season delta is worse than `-20`;
+- 2025 delta is no worse than `-10`;
+- no additional non-optimal, infeasible, skipped, or budget-constrained rounds
+  versus control;
+- no season final-budget delta is worse than `-2`.
 
 All other valid comparable outcomes are `rejected`.
 
@@ -449,18 +559,31 @@ Required decision fields:
 - H005 formulas match the frozen definitions exactly.
 - Expected count is computed from `rodada < target_round` only.
 - Expected count is position-normalized.
+- Available opponent-match count uses the same recent opponent-position rows as
+  `matchup_opponent_allowed_position_count`.
+- Early rounds use the actual available prior opponent-match count, not a fixed
+  five-match denominator.
+- Position priors include zero-count team-round-position combinations before
+  taking the mean.
 - Counts below `0` are treated as `0`.
 - `h005_opponent_position_count_ratio` is not clipped above `1.0`.
-- `h005_opponent_position_reliability_gap` is clipped to `[0.0, 1.0]`.
 - `tec` rows receive zero H005 values.
 - H005 outputs are finite in early rounds and low-sample positions.
 - H005 does not change candidate identity or optimizer eligibility columns.
+- The H005 augmentation path has access to `played_history`, fixtures, and
+  `target_round`; it does not compute expected counts from target-round
+  candidate rows alone.
 
 ### Audit/Decision Tests
 
 - The mechanism audit rejects missing source artifacts.
+- The mechanism audit rejects recomputed existing matchup-count mismatches.
 - The mechanism audit writes all required bins even when a bin has zero rows.
 - The mechanism audit computes residuals from persisted source predictions.
+- The mechanism audit uses validated raw season history for rounds before the
+  first source prediction round.
+- The mechanism audit records raw data hashes and source prediction hashes.
+- The mechanism audit compares normalized-ratio bins against raw count bins.
 - The H005 experiment group contains exactly the control and challenger rows.
 - The decision script rejects missing control or missing challenger artifacts.
 - The decision script rejects mismatched candidate-pool signatures.
@@ -478,6 +601,9 @@ Required decision fields:
   one-hot `posicao`, making the normalized reliability features redundant.
 - The EBM residual shape is an exploratory lead from the same five seasons used
   for the first H005 experiment, not independent proof.
+- The mechanism audit uses validated raw season data plus source artifacts, so
+  source-drift checks are mandatory; without a recomputed-count match, the audit
+  is invalid.
 - Normalized reliability may improve row metrics but still fail squad
   optimization.
 - A weak positive moving-budget result can still come from budget-path luck.
