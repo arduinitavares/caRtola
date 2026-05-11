@@ -12,7 +12,9 @@ objected that the original manual shrinkage formula was not supported by the
 EBM evidence, that a global count denominator was position-biased, that the
 Phase 0 audit could not be purely artifact-only, and that early rounds need the
 actual available opponent-match window rather than a fixed five-match
-denominator.
+denominator. The latest revision also defines available matches as opponent
+match opportunities, including rounds where the candidate position has zero
+observations.
 
 Assess whether the revised H005 reliability-only design is ready for
 implementation, needs further revision, or should be abandoned.

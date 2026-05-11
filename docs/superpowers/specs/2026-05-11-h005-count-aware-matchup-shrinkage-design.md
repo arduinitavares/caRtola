@@ -25,7 +25,8 @@ Accepted review corrections:
   `player_predictions.csv` starts at target round `5`, while expected-count
   features need rounds `1-4` history for the first target round.
 - The denominator must use the actual available historical opponent-match
-  window, not a fixed five-match assumption.
+  opportunity window, not a fixed five-match assumption and not only
+  opponent-position rows with nonzero observations.
 
 Rejected or qualified review corrections:
 
@@ -149,8 +150,9 @@ position_players_per_team_round_prior =
 
 available_opponent_match_count_roll5 =
   count_distinct(rodada)
-  from the same recent opponent-position rows used by
-  matchup_opponent_allowed_position_count
+  from the same recent opponent-match opportunity window used to compute
+  opponent allowed roll5 features, including opponent matches where the
+  candidate position has zero observations
 
 h005_opponent_position_available_match_count_roll5 =
   available_opponent_match_count_roll5
@@ -170,6 +172,12 @@ for `gol`, `lat`, `zag`, `mei`, or `ata`.
 The available-match multiplier matters in early rounds and incomplete fixture
 windows. For target round `5`, at most four prior opponent matches can exist,
 so the expected count must not assume a full five-match window.
+
+Available matches are opponent match opportunities, not only observed
+opponent-position rows. If an opponent has five prior matches and a candidate
+position appears in only two of those matches, the available-match count is
+`5`, not `2`. The missing three position observations are part of the
+reliability signal.
 
 The expected count approximates the actual observation count. The actual
 `matchup_opponent_allowed_position_count` sums per-round player observations;
@@ -197,6 +205,11 @@ standard non-coach positions: gol, lat, zag, mei, ata
 
 Then left-join observed distinct player counts and fill missing combinations
 with `0` before computing `position_players_per_team_round_prior`.
+
+A club is active in a historical round if at least one non-coach player with
+`entrou_em_campo == true` appears for that club in that round. Clubs that did
+not play because of postponed or missing fixtures must not be injected into the
+Cartesian product for that round.
 
 ### Granularity And Season Scope
 
@@ -262,6 +275,12 @@ The implementation must not approximate expected count from the target-round
 candidate frame alone. That frame does not contain the prior rounds needed for
 round `5` and would make the audit and backtest inconsistent.
 
+The available opponent-match count must be derived from the same opponent
+fixture window as the existing opponent allowed roll5 features. The
+implementation may add an optional `round_count_column` or companion helper
+around `_roll5_last`, but it must count opponent match opportunities before the
+position join so zero-position rounds remain in the denominator.
+
 ## Phase 0 Mechanism Audit
 
 Before the feature experiment is interpreted as candidate evidence, write a
@@ -325,6 +344,17 @@ Reliability-ratio bins:
 > 1.5
 ```
 
+Raw-count comparison bins:
+
+```text
+0
+(0, 5]
+(5, 10]
+(10, 20]
+(20, 30]
+> 30
+```
+
 Audit decision statuses:
 
 - `supports_reliability_hypothesis`;
@@ -347,6 +377,8 @@ The audit supports the hypothesis only if:
   seasons is at least `0.10` points;
 - normalized-ratio low-reliability support includes at least four non-coach
   positions with at least `100` rows each;
+- raw-count low-support bins must be evaluated with the same four-position,
+  `100`-row support criterion before comparing position balance;
 - no single season contributes more than `40%` of supported low-reliability
   rows.
 
@@ -559,8 +591,9 @@ Required decision fields:
 - H005 formulas match the frozen definitions exactly.
 - Expected count is computed from `rodada < target_round` only.
 - Expected count is position-normalized.
-- Available opponent-match count uses the same recent opponent-position rows as
-  `matchup_opponent_allowed_position_count`.
+- Available opponent-match count uses the same recent opponent-match
+  opportunity window as the opponent allowed roll5 features, including
+  position-zero rounds.
 - Early rounds use the actual available prior opponent-match count, not a fixed
   five-match denominator.
 - Position priors include zero-count team-round-position combinations before
