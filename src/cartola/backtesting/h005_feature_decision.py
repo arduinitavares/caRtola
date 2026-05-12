@@ -108,6 +108,8 @@ def _decision_status(
     worst_season_delta = float(gate_payload["worst_season_delta"])
     season_2025_delta = float(gate_payload["season_2025_delta"])
     concentration = float(gate_payload["concentration"])
+    final_budget_pass = bool(gate_results["final_budget_pass"])
+    season_final_budget_pass = bool(gate_results["season_final_budget_pass"])
     budget_integrity_pass = bool(gate_results["budget_integrity_pass"])
     if (
         aggregate_delta >= 40.0
@@ -115,6 +117,8 @@ def _decision_status(
         and worst_season_delta >= -20.0
         and season_2025_delta >= -10.0
         and concentration < 0.75
+        and final_budget_pass
+        and season_final_budget_pass
         and budget_integrity_pass
     ):
         return "weak_positive_research_lead"
@@ -262,7 +266,7 @@ def _build_gate_payload(artifacts: Mapping[str, Any]) -> dict[str, Any]:
         metric_scope="selected_players",
     )
     selected_calibration_pass = all(
-        0.50 <= _finite(row["calibration_slope"]) <= 1.50 and int(row["observed_count"]) >= 120
+        0.80 <= _finite(row["calibration_slope"]) <= 1.20 and int(row["observed_count"]) >= 120
         for row in challenger_calibration_rows.to_dict(orient="records")
     )
     gate_results = {

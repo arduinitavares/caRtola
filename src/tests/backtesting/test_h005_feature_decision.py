@@ -119,6 +119,39 @@ def test_h005_decision_rejects_failed_season_gate(tmp_path: Path) -> None:
     assert "worst_season_delta_pass" in decision["failed_gates"]
 
 
+def test_h005_candidate_profile_requires_tight_selected_calibration(tmp_path: Path) -> None:
+    audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+        challenger_selected_calibration_slope=1.3,
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] != "candidate_research_profile"
+    assert decision["gate_results"]["selected_calibration_pass"] is False
+
+
+def test_h005_weak_positive_requires_aggregate_final_budget_pass(tmp_path: Path) -> None:
+    audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 9.0, 2022: 9.0, 2023: 9.0, 2024: 8.0, 2025: 8.0},
+        challenger_final_budget_delta=-1.0,
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] != "weak_positive_research_lead"
+    assert decision["decision_status"] == "rejected"
+    assert decision["gate_results"]["final_budget_pass"] is False
+    assert decision["gate_results"]["season_final_budget_pass"] is True
+    assert decision["gate_results"]["budget_integrity_pass"] is True
+
+
 def test_write_h005_feature_decision_writes_json(tmp_path: Path) -> None:
     audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
     experiment = _write_experiment(
@@ -147,6 +180,8 @@ def _write_experiment(
     *,
     fixture_hashes: dict[str, str],
     season_deltas: dict[int, float],
+    challenger_final_budget_delta: float = 1.0,
+    challenger_selected_calibration_slope: float = 1.00,
 ) -> Path:
     experiment = tmp_path / "experiment"
     experiment.mkdir()
@@ -180,14 +215,31 @@ def _write_experiment(
         )
         control_rows.append(_season_row(control_child, season, "ppg_xg_matchup", 1000.0, 120.0, 100.0, 10.0, 1))
         challenger_rows.append(
-            _season_row(challenger_child, season, "ppg_xg_matchup_h005", 1000.0 + delta, 121.0, 100.5, 9.0, 1)
+            _season_row(
+                challenger_child,
+                season,
+                "ppg_xg_matchup_h005",
+                1000.0 + delta,
+                120.0 + challenger_final_budget_delta,
+                100.5,
+                9.0,
+                1,
+            )
         )
         metric_rows.extend(
             [
                 _metric_row(control_child, season, "ppg_xg_matchup", "top50_candidates", 0.10, None, 800),
                 _metric_row(challenger_child, season, "ppg_xg_matchup_h005", "top50_candidates", 0.11, None, 800),
                 _metric_row(control_child, season, "ppg_xg_matchup", "selected_players", 0.05, 0.90, 408),
-                _metric_row(challenger_child, season, "ppg_xg_matchup_h005", "selected_players", 0.05, 1.00, 408),
+                _metric_row(
+                    challenger_child,
+                    season,
+                    "ppg_xg_matchup_h005",
+                    "selected_players",
+                    0.05,
+                    challenger_selected_calibration_slope,
+                    408,
+                ),
             ]
         )
     pd.DataFrame(
