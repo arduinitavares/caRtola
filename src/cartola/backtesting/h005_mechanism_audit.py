@@ -428,9 +428,12 @@ def _support_gate(
         return "mixed_or_weak"
     low_ratio_supported_positions = _supported_positions(low_ratio)
     low_raw_supported_positions = _supported_positions(low_raw)
+    normal_raw_supported_positions = _supported_positions(normal_raw)
     if len(low_ratio_supported_positions) < H005_MIN_SUPPORTED_POSITIONS:
         return "mixed_or_weak"
     if len(low_raw_supported_positions) < H005_MIN_SUPPORTED_POSITIONS:
+        return "mixed_or_weak"
+    if len(normal_raw_supported_positions) < H005_MIN_SUPPORTED_POSITIONS:
         return "mixed_or_weak"
     if len(low_raw_supported_positions) > len(low_ratio_supported_positions):
         return "mixed_or_weak"

@@ -196,6 +196,20 @@ def test_h005_support_gate_requires_four_positions_with_total_rows_at_least_500(
     )
 
 
+def test_h005_support_gate_rejects_position_imbalanced_raw_normal_support() -> None:
+    mechanism_audit = _support_gate_mechanism_audit()
+    raw_count_audit = _support_gate_raw_count_audit(normal_positions=("gol",), normal_row_count=600)
+
+    assert (
+        _support_gate(
+            failed_checks=set(),
+            mechanism_audit=mechanism_audit,
+            raw_count_audit=raw_count_audit,
+        )
+        == "mixed_or_weak"
+    )
+
+
 def test_h005_mechanism_audit_invalidates_recomputed_count_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -636,6 +650,8 @@ def _support_gate_raw_count_audit(
     *,
     low_residual: float = 0.20,
     normal_residual: float = 0.05,
+    normal_positions: tuple[str, ...] = ("gol", "lat", "zag", "mei"),
+    normal_row_count: int = 150,
 ) -> pd.DataFrame:
     seasons = (2021, 2022, 2023)
     positions = ("gol", "lat", "zag", "mei")
@@ -643,12 +659,13 @@ def _support_gate_raw_count_audit(
     for season in seasons:
         for position in positions:
             rows.append(_support_gate_row(season, position, "0", 150, 20, low_residual, bin_column="raw_count_bin"))
+        for position in normal_positions:
             rows.append(
                 _support_gate_row(
                     season,
                     position,
                     "(10, 20]",
-                    150,
+                    normal_row_count,
                     20,
                     normal_residual,
                     bin_column="raw_count_bin",
