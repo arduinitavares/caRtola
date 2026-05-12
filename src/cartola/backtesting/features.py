@@ -77,6 +77,12 @@ H004_ATTACK_DEFENSE_FEATURE_COLUMNS: list[str] = [
     "h004_role_xg_mismatch",
 ]
 
+H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS: list[str] = [
+    "h005_opponent_position_available_match_count_roll5",
+    "h005_opponent_position_expected_count_roll5",
+    "h005_opponent_position_count_ratio",
+]
+
 NUMERIC_PRIOR_COLUMNS: list[str] = [
     "position_points_prior",
     "prior_appearances",
@@ -127,6 +133,13 @@ def feature_columns_for_config(config: BacktestConfig) -> list[str]:
                 "requires matchup_context_mode='cartola_matchup_v1'"
             )
         return [*columns, *H004_ATTACK_DEFENSE_FEATURE_COLUMNS]
+    if config.feature_augmentation_mode == "h005_matchup_reliability_v1":
+        if config.matchup_context_mode != "cartola_matchup_v1":
+            raise ValueError(
+                "feature_augmentation_mode='h005_matchup_reliability_v1' "
+                "requires matchup_context_mode='cartola_matchup_v1'"
+            )
+        return [*columns, *H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS]
     raise ValueError(f"Unsupported feature_augmentation_mode: {config.feature_augmentation_mode!r}")
 
 
@@ -196,6 +209,8 @@ def build_training_frame(
             feature_columns.extend(MATCHUP_CONTEXT_V1_FEATURE_COLUMNS)
         if feature_augmentation_mode == "h004_attack_defense_v1":
             feature_columns.extend(H004_ATTACK_DEFENSE_FEATURE_COLUMNS)
+        if feature_augmentation_mode == "h005_matchup_reliability_v1":
+            feature_columns.extend(H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS)
         return pd.DataFrame(
             columns=pd.Index(
                 list(dict.fromkeys([*MARKET_COLUMNS, *feature_columns, "target"]))

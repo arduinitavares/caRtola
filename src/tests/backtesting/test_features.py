@@ -9,6 +9,7 @@ from cartola.backtesting.features import (
     FOOTYSTATS_PPG_FEATURE_COLUMNS,
     FOOTYSTATS_XG_FEATURE_COLUMNS,
     H004_ATTACK_DEFENSE_FEATURE_COLUMNS,
+    H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS,
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     _add_h004_attack_defense_features,
     build_prediction_frame,
@@ -470,6 +471,33 @@ def test_h004_feature_columns_require_matchup_and_xg_context() -> None:
                 footystats_mode="ppg_xg",
                 matchup_context_mode="none",
                 feature_augmentation_mode="h004_attack_defense_v1",
+            )
+        )
+
+
+def test_h005_feature_columns_are_added_only_for_h005_augmentation() -> None:
+    base_columns = feature_columns_for_config(
+        BacktestConfig(footystats_mode="ppg_xg", matchup_context_mode="cartola_matchup_v1")
+    )
+    h005_columns = feature_columns_for_config(
+        BacktestConfig(
+            footystats_mode="ppg_xg",
+            matchup_context_mode="cartola_matchup_v1",
+            feature_augmentation_mode="h005_matchup_reliability_v1",
+        )
+    )
+
+    assert set(H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS).isdisjoint(base_columns)
+    assert h005_columns == [*base_columns, *H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS]
+
+
+def test_h005_feature_columns_require_matchup_context() -> None:
+    with pytest.raises(ValueError, match="requires matchup_context_mode='cartola_matchup_v1'"):
+        feature_columns_for_config(
+            BacktestConfig(
+                footystats_mode="ppg_xg",
+                matchup_context_mode="none",
+                feature_augmentation_mode="h005_matchup_reliability_v1",
             )
         )
 

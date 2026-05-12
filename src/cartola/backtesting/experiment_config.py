@@ -22,8 +22,16 @@ ExperimentGroup = Literal[
     "xgboost-research",
     "xgboost-sensitivity-v2",
     "h004-attack-defense-mismatch",
+    "h005-count-aware-matchup-shrinkage",
 ]
-FeaturePackId = Literal["ppg", "ppg_xg", "ppg_matchup", "ppg_xg_matchup", "ppg_xg_matchup_h004"]
+FeaturePackId = Literal[
+    "ppg",
+    "ppg_xg",
+    "ppg_matchup",
+    "ppg_xg_matchup",
+    "ppg_xg_matchup_h004",
+    "ppg_xg_matchup_h005",
+]
 
 
 @dataclass(frozen=True)
@@ -60,6 +68,7 @@ _GROUP_FIXTURE_MODES: Mapping[ExperimentGroup, FixtureMode] = {
     "xgboost-research": "exploratory",
     "xgboost-sensitivity-v2": "exploratory",
     "h004-attack-defense-mismatch": "exploratory",
+    "h005-count-aware-matchup-shrinkage": "exploratory",
 }
 
 _GROUP_FEATURE_PACKS: Mapping[ExperimentGroup, tuple[FeaturePackId, ...]] = {
@@ -68,6 +77,7 @@ _GROUP_FEATURE_PACKS: Mapping[ExperimentGroup, tuple[FeaturePackId, ...]] = {
     "xgboost-research": ("ppg_xg", "ppg_xg_matchup"),
     "xgboost-sensitivity-v2": ("ppg_xg_matchup",),
     "h004-attack-defense-mismatch": ("ppg_xg_matchup", "ppg_xg_matchup_h004"),
+    "h005-count-aware-matchup-shrinkage": ("ppg_xg_matchup", "ppg_xg_matchup_h005"),
 }
 
 _GROUP_MODEL_IDS: Mapping[ExperimentGroup, tuple[ModelId, ...]] = {
@@ -88,6 +98,7 @@ _GROUP_MODEL_IDS: Mapping[ExperimentGroup, tuple[ModelId, ...]] = {
         "xgboost_depth3_slow",
     ),
     "h004-attack-defense-mismatch": ("xgboost_depth2_slow",),
+    "h005-count-aware-matchup-shrinkage": ("xgboost_depth2_slow",),
 }
 
 _FEATURE_PACKS: Mapping[FeaturePackId, FeaturePack] = {
@@ -116,6 +127,12 @@ _FEATURE_PACKS: Mapping[FeaturePackId, FeaturePack] = {
         footystats_mode="ppg_xg",
         matchup_context_mode="cartola_matchup_v1",
         feature_augmentation_mode="h004_attack_defense_v1",
+    ),
+    "ppg_xg_matchup_h005": FeaturePack(
+        feature_pack="ppg_xg_matchup_h005",
+        footystats_mode="ppg_xg",
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
     ),
 }
 
@@ -150,7 +167,7 @@ def build_child_run_specs(
     seasons: tuple[int, ...],
     start_round: int,
     budget: float,
-    project_root: Path,
+    project_root: Path = Path("."),
     output_root: Path,
     current_year: int,
     jobs: int,
