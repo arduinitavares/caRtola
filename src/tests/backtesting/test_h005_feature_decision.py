@@ -104,6 +104,58 @@ def test_h005_decision_invalidates_candidate_signature_mismatch(tmp_path: Path) 
     assert decision["candidate_signature_status"] == "mismatch"
 
 
+def test_h005_decision_invalidates_wrong_shared_start_round(tmp_path: Path) -> None:
+    audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+    )
+    metadata = json.loads((experiment / "experiment_metadata.json").read_text(encoding="utf-8"))
+    metadata["start_round"] = 6
+    (experiment / "experiment_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] == "invalid"
+    assert "experiment start_round must be 5" in decision["validation_errors"]
+
+
+def test_h005_decision_invalidates_missing_footystats_source_identity(tmp_path: Path) -> None:
+    audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+        include_child_footystats_identity=False,
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] == "invalid"
+    assert any("footystats_matches_source_path" in error for error in decision["validation_errors"])
+    assert any("footystats_matches_source_sha256" in error for error in decision["validation_errors"])
+
+
+def test_h005_decision_invalidates_solver_signature_mismatch(tmp_path: Path) -> None:
+    audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+    )
+    metadata = json.loads((experiment / "experiment_metadata.json").read_text(encoding="utf-8"))
+    metadata["solver_status_signatures"][CHALLENGER_CHILD_2021]["5"] = "primary_model: Infeasible"
+    (experiment / "experiment_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] == "invalid"
+    assert decision["optimizer_status"] == "mismatch"
+    assert decision["gate_results"]["optimizer_status_pass"] is False
+    assert "optimizer_status=mismatch" in decision["validation_errors"]
+
+
 def test_h005_decision_rejects_failed_season_gate(tmp_path: Path) -> None:
     audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
     experiment = _write_experiment(
@@ -126,12 +178,29 @@ def test_h005_candidate_profile_requires_tight_selected_calibration(tmp_path: Pa
         fixture_hashes={"fixture.csv": "same"},
         season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
         challenger_selected_calibration_slope=1.3,
+        challenger_selected_observed_count=60,
     )
 
     decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
 
     assert decision["decision_status"] != "candidate_research_profile"
     assert decision["gate_results"]["selected_calibration_pass"] is False
+
+
+def test_h005_selected_calibration_excludes_low_count_rows(tmp_path: Path) -> None:
+    audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+        challenger_selected_calibration_slope=1.3,
+        challenger_selected_observed_count=20,
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] == "candidate_research_profile"
+    assert decision["gate_results"]["selected_calibration_pass"] is True
 
 
 def test_h005_weak_positive_requires_aggregate_final_budget_pass(tmp_path: Path) -> None:
@@ -166,6 +235,36 @@ def test_write_h005_feature_decision_writes_json(tmp_path: Path) -> None:
     assert json.loads(output.read_text(encoding="utf-8"))["hypothesis_id"] == "H005"
 
 
+def test_h005_decision_includes_completeness_fields(tmp_path: Path) -> None:
+    audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["comparability_status"] == "ok"
+    assert decision["optimizer_status"] == "ok"
+    assert decision["aggregate_final_budget_delta"] == 5.0
+    assert decision["min_season_final_budget_delta"] == 1.0
+    assert decision["additional_budget_constrained_rounds"] == 0
+    assert decision["concentration"] == 47.0 / 94.0
+    assert decision["source_identity_summary"] == {
+        "raw_sources_seasons_present": [2021, 2022, 2023, 2024, 2025],
+        "footystats_matches_source_identity": {
+            "control": {"child_count": 5, "identity_count": 5, "status": "complete"},
+            "challenger": {"child_count": 5, "identity_count": 5, "status": "complete"},
+        },
+    }
+    assert decision["child_context_summary"] == {
+        "requested_seasons": [2021, 2022, 2023, 2024, 2025],
+        "control_child_count": 5,
+        "challenger_child_count": 5,
+    }
+
+
 def _write_audit_decision(tmp_path: Path, *, status: str) -> Path:
     path = tmp_path / "h005_mechanism_audit_decision.json"
     path.write_text(
@@ -182,6 +281,8 @@ def _write_experiment(
     season_deltas: dict[int, float],
     challenger_final_budget_delta: float = 1.0,
     challenger_selected_calibration_slope: float = 1.00,
+    challenger_selected_observed_count: int = 408,
+    include_child_footystats_identity: bool = True,
 ) -> Path:
     experiment = tmp_path / "experiment"
     experiment.mkdir()
@@ -190,11 +291,14 @@ def _write_experiment(
     metric_rows = []
     child_runs = []
     signatures = {}
+    solver_signatures = {}
     for season, delta in season_deltas.items():
         control_child = f"season={season}/model=xgboost_depth2_slow/feature_pack=ppg_xg_matchup"
         challenger_child = f"season={season}/model=xgboost_depth2_slow/feature_pack=ppg_xg_matchup_h005"
         signatures[control_child] = {"5": "same", "6": "same"}
         signatures[challenger_child] = {"5": "same", "6": "same"}
+        solver_signatures[control_child] = {"5": "primary_model: Optimal", "6": "primary_model: Optimal"}
+        solver_signatures[challenger_child] = {"5": "primary_model: Optimal", "6": "primary_model: Optimal"}
         child_runs.extend(
             [
                 _child_record(
@@ -203,6 +307,7 @@ def _write_experiment(
                     feature_pack="ppg_xg_matchup",
                     feature_augmentation_mode="none",
                     fixture_hashes=fixture_hashes,
+                    include_footystats_identity=include_child_footystats_identity,
                 ),
                 _child_record(
                     child_id=challenger_child,
@@ -210,6 +315,7 @@ def _write_experiment(
                     feature_pack="ppg_xg_matchup_h005",
                     feature_augmentation_mode="h005_matchup_reliability_v1",
                     fixture_hashes=fixture_hashes,
+                    include_footystats_identity=include_child_footystats_identity,
                 ),
             ]
         )
@@ -238,7 +344,7 @@ def _write_experiment(
                     "selected_players",
                     0.05,
                     challenger_selected_calibration_slope,
-                    408,
+                    challenger_selected_observed_count,
                 ),
             ]
         )
@@ -264,10 +370,18 @@ def _write_experiment(
             {
                 "status": "ok",
                 "budget_policy": "moving",
+                "start_round": 5,
+                "budget": 100.0,
+                "initial_budget": 100.0,
                 "group": "h005-count-aware-matchup-shrinkage",
                 "seasons": [2021, 2022, 2023, 2024, 2025],
+                "raw_sources": {
+                    str(season): {"atletas": f"data/01_raw/{season}/atletas.csv"}
+                    for season in (2021, 2022, 2023, 2024, 2025)
+                },
                 "child_runs": child_runs,
                 "candidate_pool_signatures": signatures,
+                "solver_status_signatures": solver_signatures,
             }
         ),
         encoding="utf-8",
@@ -282,7 +396,20 @@ def _child_record(
     feature_pack: str,
     feature_augmentation_mode: str,
     fixture_hashes: dict[str, str],
+    include_footystats_identity: bool,
 ) -> dict[str, object]:
+    metadata = {
+        "budget_policy": "moving",
+        "fixture_mode": "exploratory",
+        "footystats_mode": "ppg_xg",
+        "matchup_context_mode": "cartola_matchup_v1",
+        "scoring_contract_version": "cartola_standard_2026_v1",
+        "fixture_manifest_sha256": {},
+        "fixture_source_sha256": fixture_hashes,
+    }
+    if include_footystats_identity:
+        metadata["footystats_matches_source_path"] = f"data/01_raw/footystats/{season}/matches.csv"
+        metadata["footystats_matches_source_sha256"] = f"footystats-sha-{season}"
     return {
         "child_id": child_id,
         "season": season,
@@ -290,15 +417,7 @@ def _child_record(
         "feature_pack": feature_pack,
         "fixture_mode": "exploratory",
         "feature_augmentation_mode": feature_augmentation_mode,
-        "metadata": {
-            "budget_policy": "moving",
-            "fixture_mode": "exploratory",
-            "footystats_mode": "ppg_xg",
-            "matchup_context_mode": "cartola_matchup_v1",
-            "scoring_contract_version": "cartola_standard_2026_v1",
-            "fixture_manifest_sha256": {},
-            "fixture_source_sha256": fixture_hashes,
-        },
+        "metadata": metadata,
     }
 
 
