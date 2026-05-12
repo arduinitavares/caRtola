@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -146,9 +147,15 @@ def build_h005_mechanism_audit(
     )
     audit_frames: list[pd.DataFrame] = []
     failed_checks: set[str] = set()
+    source_prediction_artifacts: list[dict[str, object]] = []
+    raw_season_artifacts: list[dict[str, object]] = []
+    fixture_artifacts: list[dict[str, object]] = []
     for child in children:
         source = _load_source_predictions(child)
-        recomputed = _recompute_h005_features(child, source, project_root)
+        source_prediction_artifacts.append(_source_prediction_artifact(child))
+        recomputed, raw_season_artifact, fixture_artifact = _recompute_h005_features(child, source, project_root)
+        raw_season_artifacts.append(raw_season_artifact)
+        fixture_artifacts.append(fixture_artifact)
         merged, child_failed_checks = _merge_source_with_recomputed(source, recomputed)
         failed_checks.update(child_failed_checks)
         audit_frames.append(merged)
@@ -164,6 +171,9 @@ def build_h005_mechanism_audit(
         raw_count_audit=raw_count_audit,
         children=children,
         experiment_path=experiment_path,
+        source_prediction_artifacts=source_prediction_artifacts,
+        raw_season_artifacts=raw_season_artifacts,
+        fixture_artifacts=fixture_artifacts,
     )
     result = H005MechanismAuditResult(
         output_path=output_path,
@@ -210,9 +220,23 @@ def _load_source_predictions(child: H005SourceChild) -> pd.DataFrame:
     return frame
 
 
-def _recompute_h005_features(child: H005SourceChild, source: pd.DataFrame, project_root: Path) -> pd.DataFrame:
+def _recompute_h005_features(
+    child: H005SourceChild,
+    source: pd.DataFrame,
+    project_root: Path,
+) -> tuple[pd.DataFrame, dict[str, object], dict[str, object]]:
     season_df = load_season_data(child.season, project_root)
     fixtures = load_fixtures(child.season, project_root)
+    raw_season_artifact = _dataframe_artifact_record(
+        season=child.season,
+        artifact_type="raw_season_data",
+        frame=season_df,
+    )
+    fixture_artifact = _dataframe_artifact_record(
+        season=child.season,
+        artifact_type="fixtures",
+        frame=fixtures,
+    )
     frames: list[pd.DataFrame] = []
     for round_number in sorted(source["rodada"].dropna().astype(int).unique()):
         round_frame = build_prediction_frame(
@@ -227,25 +251,30 @@ def _recompute_h005_features(child: H005SourceChild, source: pd.DataFrame, proje
         selected["season"] = child.season
         frames.append(selected)
     if not frames:
-        return pd.DataFrame(columns=pd.Index([*H005_RECOMPUTED_COLUMNS, "season"]))
-    return pd.concat(frames, ignore_index=True)
+        empty_frame = pd.DataFrame(columns=pd.Index([*H005_RECOMPUTED_COLUMNS, "season"]))
+        return empty_frame, raw_season_artifact, fixture_artifact
+    return pd.concat(frames, ignore_index=True), raw_season_artifact, fixture_artifact
 
 
 def _merge_source_with_recomputed(source: pd.DataFrame, recomputed: pd.DataFrame) -> tuple[pd.DataFrame, set[str]]:
-    source_keys = source[["season", "rodada", "id_atleta"]].copy()
-    recomputed_keys = recomputed[["season", "rodada", "id_atleta"]].copy()
+    key_columns = ["season", "rodada", "id_atleta"]
+    source_keys = source[key_columns].copy()
+    recomputed_keys = recomputed[key_columns].copy()
     source_key_index = pd.MultiIndex.from_frame(source_keys)
     recomputed_key_index = pd.MultiIndex.from_frame(recomputed_keys)
     failed_checks: set[str] = set()
-    if not source_key_index.equals(recomputed_key_index) or set(source_key_index) != set(recomputed_key_index):
+    if (
+        bool(source_keys.duplicated().any())
+        or bool(recomputed_keys.duplicated().any())
+        or set(source_key_index) != set(recomputed_key_index)
+    ):
         failed_checks.add("row_identity_mismatch")
 
     merged = source.merge(
         recomputed,
-        on=["season", "rodada", "id_atleta"],
+        on=key_columns,
         how="left",
         suffixes=("_source", "_recomputed"),
-        validate="one_to_one",
         indicator=True,
     )
     if bool(merged["_merge"].ne("both").any()):
@@ -341,6 +370,9 @@ def _build_audit_decision(
     raw_count_audit: pd.DataFrame,
     children: tuple[H005SourceChild, ...],
     experiment_path: Path,
+    source_prediction_artifacts: list[dict[str, object]],
+    raw_season_artifacts: list[dict[str, object]],
+    fixture_artifacts: list[dict[str, object]],
 ) -> dict[str, object]:
     audit_status = _support_gate(
         failed_checks=failed_checks,
@@ -353,8 +385,12 @@ def _build_audit_decision(
         "failed_checks": sorted(failed_checks),
         "manual_points_shrinkage": False,
         "h005_design_revision": H005_DESIGN_REVISION,
+        "recomputed_count_match_status": "mismatch" if "recomputed_count_mismatch" in failed_checks else "ok",
         "experiment_path": str(experiment_path),
         "source_children": [child.as_dict() for child in children],
+        "source_prediction_artifacts": source_prediction_artifacts,
+        "raw_season_artifacts": raw_season_artifacts,
+        "fixture_artifacts": fixture_artifacts,
     }
 
 
@@ -441,6 +477,45 @@ def _validate_columns(source_name: str, frame: pd.DataFrame, columns: tuple[str,
     missing_columns = [column for column in columns if column not in frame.columns]
     if missing_columns:
         raise H005MechanismAuditError(f"{source_name} missing required columns: {', '.join(missing_columns)}")
+
+
+def _source_prediction_artifact(child: H005SourceChild) -> dict[str, object]:
+    path = child.child_path / "player_predictions.csv"
+    return {
+        "season": child.season,
+        "artifact_type": "player_predictions",
+        "path": str(path),
+        "sha256": _sha256_file(path),
+        "status": "file_hash",
+    }
+
+
+def _dataframe_artifact_record(
+    *,
+    season: int,
+    artifact_type: str,
+    frame: pd.DataFrame,
+) -> dict[str, object]:
+    return {
+        "season": season,
+        "artifact_type": artifact_type,
+        "path": None,
+        "sha256": _sha256_dataframe(frame),
+        "status": "dataframe_hash",
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_dataframe(frame: pd.DataFrame) -> str:
+    payload = frame.to_csv(index=False, lineterminator="\n").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _read_json(path: Path) -> dict[str, Any]:

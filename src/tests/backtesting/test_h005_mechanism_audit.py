@@ -140,6 +140,77 @@ def test_h005_mechanism_audit_writes_required_artifacts(
     assert (output_path / "h005_mechanism_audit_decision.json").is_file()
 
 
+def test_h005_mechanism_audit_duplicate_source_keys_invalidates_without_crashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _write_source_experiment(tmp_path)
+    output_path = tmp_path / "audit"
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_season_data",
+        lambda season, project_root: _raw_season(),
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_fixtures",
+        lambda season, project_root: _fixtures(),
+    )
+    predictions_path = (
+        experiment
+        / "runs"
+        / "season=2021"
+        / "model=xgboost_depth2_slow"
+        / "feature_pack=ppg_xg_matchup"
+        / "player_predictions.csv"
+    )
+    predictions = pd.read_csv(predictions_path)
+    pd.concat([predictions, predictions], ignore_index=True).to_csv(predictions_path, index=False)
+
+    result = build_h005_mechanism_audit(
+        experiment_path=experiment,
+        output_path=output_path,
+        seasons=(2021,),
+        model_id="xgboost_depth2_slow",
+        feature_pack="ppg_xg_matchup",
+        project_root=tmp_path,
+    )
+    decision = json.loads((output_path / "h005_mechanism_audit_decision.json").read_text(encoding="utf-8"))
+
+    assert result.decision["audit_status"] == "invalid"
+    failed_checks = cast("list[str]", result.decision["failed_checks"])
+    assert "row_identity_mismatch" in failed_checks
+    assert decision["audit_status"] == "invalid"
+    assert "row_identity_mismatch" in decision["failed_checks"]
+
+
+def test_h005_mechanism_audit_source_row_order_does_not_invalidate_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _write_two_player_source_experiment(tmp_path, reverse_order=True)
+    output_path = tmp_path / "audit"
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_season_data",
+        lambda season, project_root: _raw_season_with_two_round3_players(),
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_fixtures",
+        lambda season, project_root: _fixtures(),
+    )
+
+    result = build_h005_mechanism_audit(
+        experiment_path=experiment,
+        output_path=output_path,
+        seasons=(2021,),
+        model_id="xgboost_depth2_slow",
+        feature_pack="ppg_xg_matchup",
+        project_root=tmp_path,
+    )
+
+    failed_checks = cast("list[str]", result.decision["failed_checks"])
+    assert "row_identity_mismatch" not in failed_checks
+    assert result.decision["audit_status"] == "mixed_or_weak"
+
+
 def test_h005_mechanism_audit_artifacts_include_decision_contract_and_summary_columns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -173,6 +244,15 @@ def test_h005_mechanism_audit_artifacts_include_decision_contract_and_summary_co
     assert decision["failed_checks"] == []
     assert decision["manual_points_shrinkage"] is False
     assert decision["h005_design_revision"] == "reliability_v1"
+    assert decision["source_prediction_artifacts"][0]["path"].endswith("player_predictions.csv")
+    assert decision["source_prediction_artifacts"][0]["sha256"]
+    assert decision["raw_season_artifacts"][0]["season"] == 2021
+    assert decision["raw_season_artifacts"][0]["sha256"]
+    assert decision["raw_season_artifacts"][0]["status"] == "dataframe_hash"
+    assert decision["fixture_artifacts"][0]["season"] == 2021
+    assert decision["fixture_artifacts"][0]["sha256"]
+    assert decision["fixture_artifacts"][0]["status"] == "dataframe_hash"
+    assert decision["recomputed_count_match_status"] == "ok"
     assert {
         "row_count",
         "round_count",
@@ -233,6 +313,66 @@ def _write_source_experiment(tmp_path: Path) -> Path:
     return experiment
 
 
+def _write_two_player_source_experiment(tmp_path: Path, *, reverse_order: bool) -> Path:
+    experiment = tmp_path / "experiment"
+    child = experiment / "runs" / "season=2021" / "model=xgboost_depth2_slow" / "feature_pack=ppg_xg_matchup"
+    child.mkdir(parents=True)
+    rows = [
+        {
+            "rodada": 3,
+            "id_atleta": 301,
+            "apelido": "LAT",
+            "id_clube": 10,
+            "posicao": "lat",
+            "status": "Provavel",
+            "preco_pre_rodada": 10.0,
+            "pontuacao": 4.0,
+            "entrou_em_campo": True,
+            "xgboost_depth2_slow_score": 5.0,
+            "matchup_opponent_allowed_position_count": 1,
+            "matchup_opponent_allowed_position_points_roll5": 5.0,
+            "matchup_opponent_allowed_points_roll5": 6.0,
+        },
+        {
+            "rodada": 3,
+            "id_atleta": 302,
+            "apelido": "GOL",
+            "id_clube": 20,
+            "posicao": "gol",
+            "status": "Provavel",
+            "preco_pre_rodada": 10.0,
+            "pontuacao": 2.0,
+            "entrou_em_campo": True,
+            "xgboost_depth2_slow_score": 3.0,
+            "matchup_opponent_allowed_position_count": 2,
+            "matchup_opponent_allowed_position_points_roll5": 3.5,
+            "matchup_opponent_allowed_points_roll5": 3.5,
+        },
+    ]
+    if reverse_order:
+        rows = list(reversed(rows))
+    pd.DataFrame(rows).to_csv(child / "player_predictions.csv", index=False)
+    (child / "selected_players.csv").write_text(
+        "rodada,id_atleta,entrou_em_campo\n3,301,true\n3,302,true\n",
+        encoding="utf-8",
+    )
+    (child / "run_metadata.json").write_text(
+        json.dumps(
+            {
+                "season": 2021,
+                "model_id": "xgboost_depth2_slow",
+                "feature_pack": "ppg_xg_matchup",
+                "fixture_mode": "exploratory",
+                "matchup_context_mode": "cartola_matchup_v1",
+                "footystats_mode": "ppg_xg",
+                "fixture_source_sha256": {"fixture.csv": "fixture-sha"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return experiment
+
+
 def _raw_season() -> pd.DataFrame:
     rows = [
         _raw_player(1, 101, 10, "lat", 5.0),
@@ -246,6 +386,16 @@ def _raw_season() -> pd.DataFrame:
         if scout not in frame.columns:
             frame[scout] = 0
     return frame
+
+
+def _raw_season_with_two_round3_players() -> pd.DataFrame:
+    return pd.concat(
+        [
+            _raw_season(),
+            pd.DataFrame([_raw_player(3, 302, 20, "gol", 2.0)]),
+        ],
+        ignore_index=True,
+    )
 
 
 def _raw_player(round_number: int, athlete_id: int, club_id: int, position: str, points: float) -> dict[str, object]:
