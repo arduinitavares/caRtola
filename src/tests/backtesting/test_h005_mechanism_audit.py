@@ -9,6 +9,7 @@ import pytest
 
 from cartola.backtesting.h005_mechanism_audit import (
     H005MechanismAuditError,
+    _sha256_paths,
     _support_gate,
     build_h005_mechanism_audit,
     discover_h005_source_children,
@@ -138,6 +139,23 @@ def test_h005_support_gate_supports_reliability_when_all_phase0_criteria_pass() 
         )
         == "supports_reliability_hypothesis"
     )
+
+
+def test_h005_sha256_paths_is_stable_across_different_parent_directories(tmp_path: Path) -> None:
+    left = tmp_path / "left" / "data"
+    right = tmp_path / "right" / "data"
+    left.mkdir(parents=True)
+    right.mkdir(parents=True)
+    left_file = left / "rodada-1.csv"
+    right_file = right / "rodada-1.csv"
+    left_file.write_text("rodada,id_atleta\n1,101\n", encoding="utf-8")
+    right_file.write_text("rodada,id_atleta\n1,101\n", encoding="utf-8")
+
+    assert _sha256_paths([left_file]) == _sha256_paths([right_file])
+
+    right_file.write_text("rodada,id_atleta\n1,202\n", encoding="utf-8")
+
+    assert _sha256_paths([left_file]) != _sha256_paths([right_file])
 
 
 def test_h005_support_gate_rejects_weak_low_vs_normal_residual_spread() -> None:

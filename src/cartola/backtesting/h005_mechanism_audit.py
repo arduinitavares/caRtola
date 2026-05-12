@@ -664,8 +664,6 @@ def _sha256_file(path: Path) -> str:
 def _sha256_paths(paths: list[Path]) -> str:
     digest = hashlib.sha256()
     for path in paths:
-        digest.update(str(path).encode("utf-8"))
-        digest.update(b"\0")
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
