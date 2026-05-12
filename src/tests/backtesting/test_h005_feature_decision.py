@@ -252,6 +252,62 @@ def test_h005_decision_invalidates_missing_audit_status(tmp_path: Path) -> None:
     ]
 
 
+def test_h005_decision_invalidates_wrong_audit_design_revision(tmp_path: Path) -> None:
+    audit = _write_audit_decision(
+        tmp_path,
+        status="supports_reliability_hypothesis",
+        overrides={"h005_design_revision": "old_revision"},
+    )
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] == "invalid"
+    assert "audit_decision h005_design_revision must be reliability_v1" in decision["validation_errors"]
+
+
+def test_h005_decision_invalidates_wrong_audit_source_child_feature_pack(tmp_path: Path) -> None:
+    source_children = _audit_source_children()
+    source_children[0]["feature_pack"] = "ppg_xg_matchup_h005"
+    audit = _write_audit_decision(
+        tmp_path,
+        status="supports_reliability_hypothesis",
+        overrides={"source_children": source_children},
+    )
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] == "invalid"
+    assert "audit_decision source_children feature_pack must be ppg_xg_matchup" in decision["validation_errors"]
+
+
+def test_h005_decision_invalidates_missing_audit_source_child_season(tmp_path: Path) -> None:
+    audit = _write_audit_decision(
+        tmp_path,
+        status="supports_reliability_hypothesis",
+        overrides={"source_children": _audit_source_children()[:-1]},
+    )
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] == "invalid"
+    assert "audit_decision source_children seasons must be 2021,2022,2023,2024,2025" in decision["validation_errors"]
+
+
 def test_h005_weak_positive_requires_aggregate_final_budget_pass(tmp_path: Path) -> None:
     audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
     experiment = _write_experiment(
@@ -314,13 +370,36 @@ def test_h005_decision_includes_completeness_fields(tmp_path: Path) -> None:
     }
 
 
-def _write_audit_decision(tmp_path: Path, *, status: str) -> Path:
+def _write_audit_decision(tmp_path: Path, *, status: str, overrides: dict[str, object] | None = None) -> Path:
     path = tmp_path / "h005_mechanism_audit_decision.json"
+    payload: dict[str, object] = {
+        "hypothesis_id": "H005",
+        "audit_status": status,
+        "h005_design_revision": "reliability_v1",
+        "manual_points_shrinkage": False,
+        "source_children": _audit_source_children(),
+    }
+    if overrides:
+        payload.update(overrides)
     path.write_text(
-        json.dumps({"hypothesis_id": "H005", "audit_status": status}),
+        json.dumps(payload),
         encoding="utf-8",
     )
     return path
+
+
+def _audit_source_children() -> list[dict[str, object]]:
+    return [
+        {
+            "season": season,
+            "model_id": "xgboost_depth2_slow",
+            "feature_pack": "ppg_xg_matchup",
+            "fixture_mode": "exploratory",
+            "matchup_context_mode": "cartola_matchup_v1",
+            "footystats_mode": "ppg_xg",
+        }
+        for season in (2021, 2022, 2023, 2024, 2025)
+    ]
 
 
 def _write_experiment(

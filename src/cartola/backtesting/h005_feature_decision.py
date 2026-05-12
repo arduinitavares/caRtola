@@ -191,6 +191,7 @@ def _validation_errors(
         errors.append("audit_decision hypothesis_id must be H005")
     if not audit.get("audit_status"):
         errors.append("audit_decision audit_status must be supports_reliability_hypothesis or diagnostic status")
+    errors.extend(_audit_provenance_errors(audit))
     if metadata.get("budget_policy") != "moving":
         errors.append("experiment budget_policy must be moving")
     if metadata.get("start_round") != 5:
@@ -242,6 +243,41 @@ def _validation_errors(
     errors.extend(_missing_column_errors(artifacts["metrics"], required_metric_columns, "prediction_metrics.csv"))
     errors.extend(_child_context_errors(metadata))
     return errors
+
+
+def _audit_provenance_errors(audit: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if audit.get("h005_design_revision") != "reliability_v1":
+        errors.append("audit_decision h005_design_revision must be reliability_v1")
+    if audit.get("manual_points_shrinkage") is not False:
+        errors.append("audit_decision manual_points_shrinkage must be false")
+    source_children = audit.get("source_children")
+    if not isinstance(source_children, list):
+        errors.append("audit_decision source_children must be a list")
+        return errors
+    if len(source_children) != len(REQUIRED_SEASONS):
+        errors.append("audit_decision source_children must include exactly one child per required season")
+    seasons: list[int] = []
+    expected_fields = {
+        "model_id": CONTROL_MODEL_ID,
+        "feature_pack": CONTROL_FEATURE_PACK,
+        "fixture_mode": "exploratory",
+        "matchup_context_mode": "cartola_matchup_v1",
+        "footystats_mode": "ppg_xg",
+    }
+    for child in source_children:
+        if not isinstance(child, dict):
+            errors.append("audit_decision source_children entries must be objects")
+            continue
+        season = child.get("season")
+        if isinstance(season, int):
+            seasons.append(season)
+        for key, expected in expected_fields.items():
+            if child.get(key) != expected:
+                errors.append(f"audit_decision source_children {key} must be {expected}")
+    if tuple(sorted(seasons)) != REQUIRED_SEASONS:
+        errors.append("audit_decision source_children seasons must be 2021,2022,2023,2024,2025")
+    return sorted(set(errors))
 
 
 def _metadata_float(metadata: Mapping[str, Any], key: str) -> float | None:
