@@ -641,6 +641,54 @@ def test_h005_missing_position_prior_uses_global_non_coach_prior_mean() -> None:
     assert foo["h005_opponent_position_expected_count_roll5"] == pytest.approx(1.4)
 
 
+def test_h005_count_ratio_ignores_stale_sparse_position_samples() -> None:
+    rows: list[dict[str, object]] = []
+    for round_number in range(1, 8):
+        rows.extend(
+            [
+                _h005_player(round_number, 1000 + round_number, 10, "gol", 3.0),
+                _h005_player(round_number, 2000 + round_number, 10, "ata", 6.0),
+                _h005_player(round_number, 3000 + round_number, 20, "gol", 4.0),
+            ]
+        )
+    rows.extend(
+        [
+            _h005_player(1, 4001, 10, "lat", 5.0),
+            _h005_player(2, 4002, 10, "lat", 5.0),
+            _h005_player(8, 8001, 10, "lat", 0.0, entered=False),
+        ]
+    )
+    season_df = pd.DataFrame(rows)
+    for scout in DEFAULT_SCOUT_COLUMNS:
+        if scout not in season_df.columns:
+            season_df[scout] = 0
+    fixtures = pd.DataFrame(
+        [
+            {
+                "rodada": round_number,
+                "id_clube_home": 10,
+                "id_clube_away": 20,
+                "data": f"2025-04-{round_number:02d}",
+            }
+            for round_number in range(1, 9)
+        ]
+    )
+
+    frame = build_prediction_frame(
+        season_df,
+        target_round=8,
+        fixtures=fixtures,
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    lat = frame.loc[frame["posicao"].eq("lat")].iloc[0]
+
+    assert lat["matchup_opponent_allowed_position_count"] == 2
+    assert lat["h005_opponent_position_available_match_count_roll5"] == 5
+    assert lat["h005_opponent_position_count_ratio"] == pytest.approx(0.0)
+
+
 def test_h004_feature_formulas_are_finite_and_zero_for_tecnico() -> None:
     season_df = _season_df()
     tecnico = season_df[season_df["id_atleta"].eq(2)].copy()
