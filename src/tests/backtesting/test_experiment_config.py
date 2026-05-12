@@ -155,6 +155,7 @@ def test_h005_count_aware_matchup_reliability_matrix_is_control_vs_challenger_on
         seasons=(2021, 2022, 2023, 2024, 2025),
         start_round=5,
         budget=100.0,
+        project_root=Path("."),
         current_year=2026,
         jobs=12,
         output_root=Path("out"),

@@ -167,7 +167,7 @@ def build_child_run_specs(
     seasons: tuple[int, ...],
     start_round: int,
     budget: float,
-    project_root: Path = Path("."),
+    project_root: Path,
     output_root: Path,
     current_year: int,
     jobs: int,
