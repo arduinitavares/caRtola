@@ -9,6 +9,7 @@ import pytest
 
 from cartola.backtesting.h005_mechanism_audit import (
     H005MechanismAuditError,
+    _support_gate,
     build_h005_mechanism_audit,
     discover_h005_source_children,
 )
@@ -59,6 +60,112 @@ def test_discover_h005_source_children_rejects_metadata_mismatch(tmp_path: Path)
             model_id="xgboost_depth2_slow",
             feature_pack="ppg_xg_matchup",
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fixture_mode", "none"),
+        ("matchup_context_mode", "none"),
+        ("footystats_mode", "ppg"),
+    ],
+)
+def test_discover_h005_source_children_rejects_source_context_metadata_mismatch(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    experiment = tmp_path / "experiment"
+    child = experiment / "runs" / "season=2021" / "model=xgboost_depth2_slow" / "feature_pack=ppg_xg_matchup"
+    child.mkdir(parents=True)
+    metadata = {
+        "season": 2021,
+        "model_id": "xgboost_depth2_slow",
+        "feature_pack": "ppg_xg_matchup",
+        "fixture_mode": "exploratory",
+        "matchup_context_mode": "cartola_matchup_v1",
+        "footystats_mode": "ppg_xg",
+    }
+    metadata[field] = value
+    (child / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(H005MechanismAuditError, match="metadata mismatch"):
+        discover_h005_source_children(
+            experiment_path=experiment,
+            seasons=(2021,),
+            model_id="xgboost_depth2_slow",
+            feature_pack="ppg_xg_matchup",
+        )
+
+
+def test_discover_h005_source_children_rejects_feature_augmentation_metadata_mismatch(tmp_path: Path) -> None:
+    experiment = tmp_path / "experiment"
+    child = experiment / "runs" / "season=2021" / "model=xgboost_depth2_slow" / "feature_pack=ppg_xg_matchup"
+    child.mkdir(parents=True)
+    (child / "run_metadata.json").write_text(
+        json.dumps(
+            {
+                "season": 2021,
+                "model_id": "xgboost_depth2_slow",
+                "feature_pack": "ppg_xg_matchup",
+                "fixture_mode": "exploratory",
+                "matchup_context_mode": "cartola_matchup_v1",
+                "footystats_mode": "ppg_xg",
+                "feature_augmentation_mode": "h005_matchup_reliability_v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(H005MechanismAuditError, match="metadata mismatch"):
+        discover_h005_source_children(
+            experiment_path=experiment,
+            seasons=(2021,),
+            model_id="xgboost_depth2_slow",
+            feature_pack="ppg_xg_matchup",
+        )
+
+
+def test_h005_support_gate_supports_reliability_when_all_phase0_criteria_pass() -> None:
+    mechanism_audit = _support_gate_mechanism_audit()
+    raw_count_audit = _support_gate_raw_count_audit()
+
+    assert (
+        _support_gate(
+            failed_checks=set(),
+            mechanism_audit=mechanism_audit,
+            raw_count_audit=raw_count_audit,
+        )
+        == "supports_reliability_hypothesis"
+    )
+
+
+def test_h005_support_gate_rejects_weak_low_vs_normal_residual_spread() -> None:
+    mechanism_audit = _support_gate_mechanism_audit(low_residual=0.12, normal_residual=0.05)
+    raw_count_audit = _support_gate_raw_count_audit()
+
+    assert (
+        _support_gate(
+            failed_checks=set(),
+            mechanism_audit=mechanism_audit,
+            raw_count_audit=raw_count_audit,
+        )
+        == "mixed_or_weak"
+    )
+
+
+def test_h005_support_gate_rejects_single_season_low_reliability_concentration() -> None:
+    mechanism_audit = _support_gate_mechanism_audit(low_rows_by_season={2021: 901, 2022: 600, 2023: 600})
+    raw_count_audit = _support_gate_raw_count_audit()
+
+    assert (
+        _support_gate(
+            failed_checks=set(),
+            mechanism_audit=mechanism_audit,
+            raw_count_audit=raw_count_audit,
+        )
+        == "mixed_or_weak"
+    )
 
 
 def test_h005_mechanism_audit_invalidates_recomputed_count_mismatch(
@@ -249,9 +356,11 @@ def test_h005_mechanism_audit_artifacts_include_decision_contract_and_summary_co
     assert decision["raw_season_artifacts"][0]["season"] == 2021
     assert decision["raw_season_artifacts"][0]["sha256"]
     assert decision["raw_season_artifacts"][0]["status"] == "dataframe_hash"
+    assert decision["raw_season_artifacts"][0]["paths"] == []
     assert decision["fixture_artifacts"][0]["season"] == 2021
     assert decision["fixture_artifacts"][0]["sha256"]
     assert decision["fixture_artifacts"][0]["status"] == "dataframe_hash"
+    assert decision["fixture_artifacts"][0]["paths"] == []
     assert decision["recomputed_count_match_status"] == "ok"
     assert {
         "row_count",
@@ -267,6 +376,45 @@ def test_h005_mechanism_audit_artifacts_include_decision_contract_and_summary_co
         "position_allowed_delta_mean",
     }.issubset(ratio_audit.columns)
     assert "raw_count_bin" in raw_count_audit.columns
+
+
+def test_h005_mechanism_audit_provenance_uses_file_hash_when_raw_and_fixture_files_exist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _write_source_experiment(tmp_path)
+    output_path = tmp_path / "audit"
+    raw_file = tmp_path / "data" / "01_raw" / "2021" / "rodada-1.csv"
+    raw_file.parent.mkdir(parents=True)
+    raw_file.write_text("rodada,id_atleta\n1,101\n", encoding="utf-8")
+    fixture_file = tmp_path / "data" / "01_raw" / "fixtures" / "2021" / "partidas-1.csv"
+    fixture_file.parent.mkdir(parents=True)
+    fixture_file.write_text("rodada,id_clube_home,id_clube_away,data\n1,10,20,2021-01-01\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_season_data",
+        lambda season, project_root: _raw_season(),
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_fixtures",
+        lambda season, project_root: _fixtures(),
+    )
+
+    build_h005_mechanism_audit(
+        experiment_path=experiment,
+        output_path=output_path,
+        seasons=(2021,),
+        model_id="xgboost_depth2_slow",
+        feature_pack="ppg_xg_matchup",
+        project_root=tmp_path,
+    )
+
+    decision = json.loads((output_path / "h005_mechanism_audit_decision.json").read_text(encoding="utf-8"))
+
+    assert decision["raw_season_artifacts"][0]["status"] == "file_hash"
+    assert decision["raw_season_artifacts"][0]["paths"] == [str(raw_file)]
+    assert decision["fixture_artifacts"][0]["status"] == "file_hash"
+    assert decision["fixture_artifacts"][0]["paths"] == [str(fixture_file)]
+    assert decision["recomputed_count_match_status"] == "ok"
 
 
 def _write_source_experiment(tmp_path: Path) -> Path:
@@ -426,3 +574,61 @@ def _fixtures() -> pd.DataFrame:
             {"rodada": 3, "id_clube_home": 10, "id_clube_away": 20, "data": "2021-01-15"},
         ]
     )
+
+
+def _support_gate_mechanism_audit(
+    *,
+    low_residual: float = 0.30,
+    normal_residual: float = 0.05,
+    low_rows_by_season: dict[int, int] | None = None,
+) -> pd.DataFrame:
+    seasons = (2021, 2022, 2023)
+    positions = ("gol", "lat", "zag", "mei")
+    low_bins = ("0", "(0, 0.5]", "(0.5, 0.8]")
+    normal_bins = ("(0.8, 1.0]", "(1.0, 1.5]")
+    rows: list[dict[str, object]] = []
+    for season in seasons:
+        low_rows_per_position = (low_rows_by_season or {}).get(season, 600) // len(positions)
+        for position in positions:
+            rows.append(_support_gate_row(season, position, "0", low_rows_per_position, 20, low_residual))
+            for ratio_bin in low_bins[1:]:
+                rows.append(_support_gate_row(season, position, ratio_bin, 0, 0, low_residual))
+            for ratio_bin in normal_bins:
+                rows.append(_support_gate_row(season, position, ratio_bin, 75, 20, normal_residual))
+    return pd.DataFrame(rows)
+
+
+def _support_gate_raw_count_audit() -> pd.DataFrame:
+    rows = [
+        _support_gate_row(2021, position, "0", 150, 20, 0.0, bin_column="raw_count_bin")
+        for position in ("gol", "lat", "zag", "mei")
+    ]
+    return pd.DataFrame(rows)
+
+
+def _support_gate_row(
+    season: int,
+    position: str,
+    bin_value: str,
+    row_count: int,
+    round_count: int,
+    residual_mean: float,
+    *,
+    bin_column: str = "ratio_bin",
+) -> dict[str, object]:
+    return {
+        "season": season,
+        "posicao": position,
+        bin_column: bin_value,
+        "row_count": row_count,
+        "round_count": round_count,
+        "source_residual_mean": residual_mean,
+        "source_overprediction_rate": 0.5,
+        "source_base_count_mean": 1.0,
+        "h005_available_match_count_mean": 1.0,
+        "h005_expected_count_mean": 1.0,
+        "h005_count_ratio_mean": 1.0,
+        "source_position_points_mean": 1.0,
+        "source_all_points_mean": 1.0,
+        "position_allowed_delta_mean": 0.0,
+    }

@@ -42,6 +42,16 @@ H005_RATIO_LABELS: tuple[str, ...] = ("0", "(0, 0.5]", "(0.5, 0.8]", "(0.8, 1.0]
 H005_RAW_COUNT_BINS: tuple[float, ...] = (-np.inf, 0.0, 5.0, 10.0, 20.0, 30.0, np.inf)
 H005_RAW_COUNT_LABELS: tuple[str, ...] = ("0", "(0, 5]", "(5, 10]", "(10, 20]", "(20, 30]", "> 30")
 H005_NON_COACH_POSITIONS: frozenset[str] = frozenset(("gol", "lat", "zag", "mei", "ata"))
+H005_LOW_RATIO_BINS: frozenset[str] = frozenset(("0", "(0, 0.5]", "(0.5, 0.8]"))
+H005_NORMAL_RATIO_BINS: frozenset[str] = frozenset(("(0.8, 1.0]", "(1.0, 1.5]"))
+H005_LOW_RAW_COUNT_BINS: frozenset[str] = frozenset(("0", "(0, 5]", "(5, 10]"))
+H005_MIN_SUPPORTED_POSITION_ROWS = 100
+H005_MIN_SUPPORTED_SEASON_ROWS = 500
+H005_MIN_SUPPORTED_SEASON_ROUNDS = 20
+H005_MIN_SUPPORTED_SEASONS = 3
+H005_MIN_SUPPORTED_POSITIONS = 4
+H005_MIN_MEDIAN_ABS_LOW_NORMAL_SPREAD = 0.10
+H005_MAX_LOW_ROW_SEASON_SHARE = 0.40
 
 
 class H005MechanismAuditError(ValueError):
@@ -100,6 +110,7 @@ def discover_h005_source_children(
             conflicts.append(f"model_id={metadata_model_id!r}")
         if metadata_feature_pack != feature_pack:
             conflicts.append(f"feature_pack={metadata_feature_pack!r}")
+        _append_source_context_conflicts(metadata, conflicts)
         if conflicts:
             raise H005MechanismAuditError(
                 f"H005 source metadata mismatch for {child_path}: {', '.join(conflicts)}"
@@ -227,12 +238,14 @@ def _recompute_h005_features(
 ) -> tuple[pd.DataFrame, dict[str, object], dict[str, object]]:
     season_df = load_season_data(child.season, project_root)
     fixtures = load_fixtures(child.season, project_root)
-    raw_season_artifact = _dataframe_artifact_record(
+    raw_season_artifact = _source_data_artifact_record(
+        project_root=project_root,
         season=child.season,
         artifact_type="raw_season_data",
         frame=season_df,
     )
-    fixture_artifact = _dataframe_artifact_record(
+    fixture_artifact = _source_data_artifact_record(
+        project_root=project_root,
         season=child.season,
         artifact_type="fixtures",
         frame=fixtures,
@@ -404,14 +417,89 @@ def _support_gate(
         return "invalid"
     if raw_count_audit.empty or mechanism_audit.empty:
         return "mixed_or_weak"
-    low_ratio = mechanism_audit[
-        mechanism_audit["ratio_bin"].astype(str).isin(("0", "(0, 0.5]"))
-        & mechanism_audit["posicao"].astype(str).isin(H005_NON_COACH_POSITIONS)
-        & (pd.to_numeric(mechanism_audit["row_count"], errors="coerce") >= 100)
+    low_ratio = _summary_subset(mechanism_audit, "ratio_bin", H005_LOW_RATIO_BINS)
+    normal_ratio = _summary_subset(mechanism_audit, "ratio_bin", H005_NORMAL_RATIO_BINS)
+    low_raw = _summary_subset(raw_count_audit, "raw_count_bin", H005_LOW_RAW_COUNT_BINS)
+
+    low_ratio_supported_positions = _supported_positions(low_ratio)
+    low_raw_supported_positions = _supported_positions(low_raw)
+    if len(low_ratio_supported_positions) < H005_MIN_SUPPORTED_POSITIONS:
+        return "mixed_or_weak"
+    if len(low_raw_supported_positions) < H005_MIN_SUPPORTED_POSITIONS:
+        return "mixed_or_weak"
+    if len(low_raw_supported_positions) > len(low_ratio_supported_positions):
+        return "mixed_or_weak"
+
+    low_season_support = _supported_seasons(low_ratio)
+    normal_season_support = _supported_seasons(normal_ratio)
+    supported_seasons = sorted(set(low_season_support) & set(normal_season_support))
+    if len(supported_seasons) < H005_MIN_SUPPORTED_SEASONS:
+        return "mixed_or_weak"
+
+    low_minus_normal_by_season = [
+        _weighted_residual_mean(low_ratio[low_ratio["season"].eq(season)])
+        - _weighted_residual_mean(normal_ratio[normal_ratio["season"].eq(season)])
+        for season in supported_seasons
     ]
-    if low_ratio["posicao"].nunique() >= 4:
-        return "supports_reliability_hypothesis"
-    return "mixed_or_weak"
+    signs = {np.sign(value) for value in low_minus_normal_by_season if value != 0.0}
+    if len(signs) != 1:
+        return "mixed_or_weak"
+    if float(np.median(np.abs(low_minus_normal_by_season))) < H005_MIN_MEDIAN_ABS_LOW_NORMAL_SPREAD:
+        return "mixed_or_weak"
+
+    low_supported_rows = low_ratio[low_ratio["season"].isin(supported_seasons)]
+    low_rows_by_season = low_supported_rows.groupby("season")["row_count"].sum()
+    total_low_rows = float(low_rows_by_season.sum())
+    if total_low_rows <= 0.0 or float(low_rows_by_season.max()) / total_low_rows > H005_MAX_LOW_ROW_SEASON_SHARE:
+        return "mixed_or_weak"
+
+    return "supports_reliability_hypothesis"
+
+
+def _summary_subset(frame: pd.DataFrame, bin_column: str, bins: frozenset[str]) -> pd.DataFrame:
+    subset = frame[
+        frame[bin_column].astype(str).isin(bins)
+        & frame["posicao"].astype(str).isin(H005_NON_COACH_POSITIONS)
+    ].copy()
+    subset["row_count"] = pd.to_numeric(subset["row_count"], errors="coerce").fillna(0.0)
+    subset["round_count"] = pd.to_numeric(subset["round_count"], errors="coerce").fillna(0.0)
+    subset["source_residual_mean"] = pd.to_numeric(subset["source_residual_mean"], errors="coerce")
+    return subset
+
+
+def _supported_positions(frame: pd.DataFrame) -> set[str]:
+    if frame.empty:
+        return set()
+    rows_by_position = frame.groupby("posicao")["row_count"].sum()
+    return {
+        str(position)
+        for position, row_count in rows_by_position.items()
+        if float(row_count) >= H005_MIN_SUPPORTED_POSITION_ROWS
+    }
+
+
+def _supported_seasons(frame: pd.DataFrame) -> set[int]:
+    if frame.empty:
+        return set()
+    season_support = frame.groupby("season").agg(
+        row_count=("row_count", "sum"),
+        round_count=("round_count", "max"),
+    )
+    return {
+        int(season)
+        for season, row in season_support.iterrows()
+        if float(row["row_count"]) >= H005_MIN_SUPPORTED_SEASON_ROWS
+        and float(row["round_count"]) >= H005_MIN_SUPPORTED_SEASON_ROUNDS
+    }
+
+
+def _weighted_residual_mean(frame: pd.DataFrame) -> float:
+    rows = pd.to_numeric(frame["row_count"], errors="coerce").fillna(0.0)
+    residuals = pd.to_numeric(frame["source_residual_mean"], errors="coerce")
+    valid = rows.gt(0.0) & residuals.notna()
+    if not bool(valid.any()):
+        return 0.0
+    return float(np.average(residuals.loc[valid], weights=rows.loc[valid]))
 
 
 def _closed_right_bins(
@@ -479,6 +567,22 @@ def _validate_columns(source_name: str, frame: pd.DataFrame, columns: tuple[str,
         raise H005MechanismAuditError(f"{source_name} missing required columns: {', '.join(missing_columns)}")
 
 
+def _append_source_context_conflicts(metadata: dict[str, Any], conflicts: list[str]) -> None:
+    expected_fields = {
+        "fixture_mode": "exploratory",
+        "matchup_context_mode": "cartola_matchup_v1",
+        "footystats_mode": "ppg_xg",
+    }
+    for field, expected_value in expected_fields.items():
+        actual_value = _metadata_str(metadata, field)
+        if actual_value != expected_value:
+            conflicts.append(f"{field}={actual_value!r}")
+
+    feature_augmentation_mode = metadata.get("feature_augmentation_mode")
+    if feature_augmentation_mode not in (None, "", "none"):
+        conflicts.append(f"feature_augmentation_mode={feature_augmentation_mode!r}")
+
+
 def _source_prediction_artifact(child: H005SourceChild) -> dict[str, object]:
     path = child.child_path / "player_predictions.csv"
     return {
@@ -490,16 +594,26 @@ def _source_prediction_artifact(child: H005SourceChild) -> dict[str, object]:
     }
 
 
-def _dataframe_artifact_record(
+def _source_data_artifact_record(
     *,
+    project_root: Path,
     season: int,
     artifact_type: str,
     frame: pd.DataFrame,
 ) -> dict[str, object]:
+    paths = _raw_season_paths(project_root, season) if artifact_type == "raw_season_data" else _fixture_paths(project_root, season)
+    if paths:
+        return {
+            "season": season,
+            "artifact_type": artifact_type,
+            "paths": [str(path) for path in paths],
+            "sha256": _sha256_paths(paths),
+            "status": "file_hash",
+        }
     return {
         "season": season,
         "artifact_type": artifact_type,
-        "path": None,
+        "paths": [],
         "sha256": _sha256_dataframe(frame),
         "status": "dataframe_hash",
     }
@@ -513,9 +627,50 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_paths(paths: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(str(path).encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _sha256_dataframe(frame: pd.DataFrame) -> str:
     payload = frame.to_csv(index=False, lineterminator="\n").encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _raw_season_paths(project_root: Path, season: int) -> list[Path]:
+    season_dir = project_root / "data" / "01_raw" / str(season)
+    rodada_paths = sorted(
+        (path for path in season_dir.glob("rodada-*.csv") if _round_number_from_stem(path, "rodada-") > 0),
+        key=lambda path: _round_number_from_stem(path, "rodada-"),
+    )
+    if rodada_paths:
+        return rodada_paths
+    return sorted(
+        (path for path in season_dir.glob("Mercado_*.txt") if _round_number_from_stem(path, "Mercado_") > 0),
+        key=lambda path: _round_number_from_stem(path, "Mercado_"),
+    )
+
+
+def _fixture_paths(project_root: Path, season: int) -> list[Path]:
+    fixture_dir = project_root / "data" / "01_raw" / "fixtures" / str(season)
+    return sorted(
+        (path for path in fixture_dir.glob("partidas-*.csv") if _round_number_from_stem(path, "partidas-") > 0),
+        key=lambda path: _round_number_from_stem(path, "partidas-"),
+    )
+
+
+def _round_number_from_stem(path: Path, prefix: str) -> int:
+    try:
+        return int(path.stem.removeprefix(prefix))
+    except ValueError:
+        return -1
 
 
 def _read_json(path: Path) -> dict[str, Any]:
