@@ -45,7 +45,9 @@ H005_NON_COACH_POSITIONS: frozenset[str] = frozenset(("gol", "lat", "zag", "mei"
 H005_LOW_RATIO_BINS: frozenset[str] = frozenset(("0", "(0, 0.5]", "(0.5, 0.8]"))
 H005_NORMAL_RATIO_BINS: frozenset[str] = frozenset(("(0.8, 1.0]", "(1.0, 1.5]"))
 H005_LOW_RAW_COUNT_BINS: frozenset[str] = frozenset(("0", "(0, 5]", "(5, 10]"))
+H005_NORMAL_RAW_COUNT_BINS: frozenset[str] = frozenset(("(10, 20]", "(20, 30]"))
 H005_MIN_SUPPORTED_POSITION_ROWS = 100
+H005_MIN_TOTAL_POSITION_ROWS = 500
 H005_MIN_SUPPORTED_SEASON_ROWS = 500
 H005_MIN_SUPPORTED_SEASON_ROUNDS = 20
 H005_MIN_SUPPORTED_SEASONS = 3
@@ -420,7 +422,10 @@ def _support_gate(
     low_ratio = _summary_subset(mechanism_audit, "ratio_bin", H005_LOW_RATIO_BINS)
     normal_ratio = _summary_subset(mechanism_audit, "ratio_bin", H005_NORMAL_RATIO_BINS)
     low_raw = _summary_subset(raw_count_audit, "raw_count_bin", H005_LOW_RAW_COUNT_BINS)
+    normal_raw = _summary_subset(raw_count_audit, "raw_count_bin", H005_NORMAL_RAW_COUNT_BINS)
 
+    if len(_supported_positions(_summary_subset(mechanism_audit, "ratio_bin", frozenset(H005_RATIO_LABELS)), minimum_rows=H005_MIN_TOTAL_POSITION_ROWS)) < H005_MIN_SUPPORTED_POSITIONS:
+        return "mixed_or_weak"
     low_ratio_supported_positions = _supported_positions(low_ratio)
     low_raw_supported_positions = _supported_positions(low_raw)
     if len(low_ratio_supported_positions) < H005_MIN_SUPPORTED_POSITIONS:
@@ -430,21 +435,24 @@ def _support_gate(
     if len(low_raw_supported_positions) > len(low_ratio_supported_positions):
         return "mixed_or_weak"
 
-    low_season_support = _supported_seasons(low_ratio)
-    normal_season_support = _supported_seasons(normal_ratio)
-    supported_seasons = sorted(set(low_season_support) & set(normal_season_support))
+    supported_seasons = _comparable_supported_seasons(low_ratio, normal_ratio)
     if len(supported_seasons) < H005_MIN_SUPPORTED_SEASONS:
         return "mixed_or_weak"
 
-    low_minus_normal_by_season = [
-        _weighted_residual_mean(low_ratio[low_ratio["season"].eq(season)])
-        - _weighted_residual_mean(normal_ratio[normal_ratio["season"].eq(season)])
-        for season in supported_seasons
-    ]
-    signs = {np.sign(value) for value in low_minus_normal_by_season if value != 0.0}
+    raw_supported_seasons = _comparable_supported_seasons(low_raw, normal_raw)
+    if len(raw_supported_seasons) < H005_MIN_SUPPORTED_SEASONS:
+        return "mixed_or_weak"
+
+    ratio_spreads = _low_minus_normal_by_season(low_ratio, normal_ratio, supported_seasons)
+    raw_spreads = _low_minus_normal_by_season(low_raw, normal_raw, raw_supported_seasons)
+    signs = {np.sign(value) for value in ratio_spreads if value != 0.0}
     if len(signs) != 1:
         return "mixed_or_weak"
-    if float(np.median(np.abs(low_minus_normal_by_season))) < H005_MIN_MEDIAN_ABS_LOW_NORMAL_SPREAD:
+    median_abs_ratio_spread = float(np.median(np.abs(ratio_spreads)))
+    if median_abs_ratio_spread < H005_MIN_MEDIAN_ABS_LOW_NORMAL_SPREAD:
+        return "mixed_or_weak"
+    median_abs_raw_spread = float(np.median(np.abs(raw_spreads)))
+    if median_abs_ratio_spread < median_abs_raw_spread:
         return "mixed_or_weak"
 
     low_supported_rows = low_ratio[low_ratio["season"].isin(supported_seasons)]
@@ -467,15 +475,33 @@ def _summary_subset(frame: pd.DataFrame, bin_column: str, bins: frozenset[str]) 
     return subset
 
 
-def _supported_positions(frame: pd.DataFrame) -> set[str]:
+def _supported_positions(frame: pd.DataFrame, *, minimum_rows: int = H005_MIN_SUPPORTED_POSITION_ROWS) -> set[str]:
     if frame.empty:
         return set()
     rows_by_position = frame.groupby("posicao")["row_count"].sum()
     return {
         str(position)
         for position, row_count in rows_by_position.items()
-        if float(row_count) >= H005_MIN_SUPPORTED_POSITION_ROWS
+        if float(row_count) >= minimum_rows
     }
+
+
+def _comparable_supported_seasons(low_frame: pd.DataFrame, normal_frame: pd.DataFrame) -> list[int]:
+    low_season_support = _supported_seasons(low_frame)
+    normal_season_support = _supported_seasons(normal_frame)
+    return sorted(set(low_season_support) & set(normal_season_support))
+
+
+def _low_minus_normal_by_season(
+    low_frame: pd.DataFrame,
+    normal_frame: pd.DataFrame,
+    seasons: list[int],
+) -> list[float]:
+    return [
+        _weighted_residual_mean(low_frame[low_frame["season"].eq(season)])
+        - _weighted_residual_mean(normal_frame[normal_frame["season"].eq(season)])
+        for season in seasons
+    ]
 
 
 def _supported_seasons(frame: pd.DataFrame) -> set[int]:

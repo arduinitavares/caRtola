@@ -168,6 +168,34 @@ def test_h005_support_gate_rejects_single_season_low_reliability_concentration()
     )
 
 
+def test_h005_support_gate_rejects_when_raw_count_spread_exceeds_ratio_spread() -> None:
+    mechanism_audit = _support_gate_mechanism_audit(low_residual=0.30, normal_residual=0.05)
+    raw_count_audit = _support_gate_raw_count_audit(low_residual=0.50, normal_residual=0.05)
+
+    assert (
+        _support_gate(
+            failed_checks=set(),
+            mechanism_audit=mechanism_audit,
+            raw_count_audit=raw_count_audit,
+        )
+        == "mixed_or_weak"
+    )
+
+
+def test_h005_support_gate_requires_four_positions_with_total_rows_at_least_500() -> None:
+    mechanism_audit = _support_gate_mechanism_audit(total_rows_by_position={"mei": 499})
+    raw_count_audit = _support_gate_raw_count_audit()
+
+    assert (
+        _support_gate(
+            failed_checks=set(),
+            mechanism_audit=mechanism_audit,
+            raw_count_audit=raw_count_audit,
+        )
+        == "mixed_or_weak"
+    )
+
+
 def test_h005_mechanism_audit_invalidates_recomputed_count_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -581,6 +609,7 @@ def _support_gate_mechanism_audit(
     low_residual: float = 0.30,
     normal_residual: float = 0.05,
     low_rows_by_season: dict[int, int] | None = None,
+    total_rows_by_position: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     seasons = (2021, 2022, 2023)
     positions = ("gol", "lat", "zag", "mei")
@@ -590,19 +619,41 @@ def _support_gate_mechanism_audit(
     for season in seasons:
         low_rows_per_position = (low_rows_by_season or {}).get(season, 600) // len(positions)
         for position in positions:
+            if total_rows_by_position and position in total_rows_by_position:
+                low_rows_per_position = 100
+                normal_rows_per_bin = max((total_rows_by_position[position] - 300) // 6, 0)
+            else:
+                normal_rows_per_bin = 75
             rows.append(_support_gate_row(season, position, "0", low_rows_per_position, 20, low_residual))
             for ratio_bin in low_bins[1:]:
                 rows.append(_support_gate_row(season, position, ratio_bin, 0, 0, low_residual))
             for ratio_bin in normal_bins:
-                rows.append(_support_gate_row(season, position, ratio_bin, 75, 20, normal_residual))
+                rows.append(_support_gate_row(season, position, ratio_bin, normal_rows_per_bin, 20, normal_residual))
     return pd.DataFrame(rows)
 
 
-def _support_gate_raw_count_audit() -> pd.DataFrame:
-    rows = [
-        _support_gate_row(2021, position, "0", 150, 20, 0.0, bin_column="raw_count_bin")
-        for position in ("gol", "lat", "zag", "mei")
-    ]
+def _support_gate_raw_count_audit(
+    *,
+    low_residual: float = 0.20,
+    normal_residual: float = 0.05,
+) -> pd.DataFrame:
+    seasons = (2021, 2022, 2023)
+    positions = ("gol", "lat", "zag", "mei")
+    rows: list[dict[str, object]] = []
+    for season in seasons:
+        for position in positions:
+            rows.append(_support_gate_row(season, position, "0", 150, 20, low_residual, bin_column="raw_count_bin"))
+            rows.append(
+                _support_gate_row(
+                    season,
+                    position,
+                    "(10, 20]",
+                    150,
+                    20,
+                    normal_residual,
+                    bin_column="raw_count_bin",
+                )
+            )
     return pd.DataFrame(rows)
 
 
