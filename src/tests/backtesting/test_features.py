@@ -610,6 +610,37 @@ def test_h005_reliability_sets_tecnico_columns_to_zero() -> None:
     assert tecnico[list(H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS)].tolist() == [0.0, 0.0, 0.0]
 
 
+def test_h005_missing_position_prior_uses_global_non_coach_prior_mean() -> None:
+    season_df = pd.concat(
+        [
+            _h005_season_df(),
+            pd.DataFrame(
+                [
+                    _h005_player(1, 104, 10, "mei", 4.0),
+                    _h005_player(1, 204, 20, "mei", 4.0),
+                    _h005_player(2, 104, 10, "mei", 4.0),
+                    _h005_player(2, 204, 20, "mei", 4.0),
+                    _h005_player(3, 303, 10, "foo", 0.0, entered=False),
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    frame = build_prediction_frame(
+        season_df,
+        target_round=3,
+        fixtures=_h005_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    foo = frame.loc[frame["posicao"].eq("foo")].iloc[0]
+
+    assert foo["h005_opponent_position_available_match_count_roll5"] == 2
+    assert foo["h005_opponent_position_expected_count_roll5"] == pytest.approx(1.4)
+
+
 def test_h004_feature_formulas_are_finite_and_zero_for_tecnico() -> None:
     season_df = _season_df()
     tecnico = season_df[season_df["id_atleta"].eq(2)].copy()

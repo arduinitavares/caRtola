@@ -374,8 +374,16 @@ def _add_h005_matchup_reliability_features(
         how="left",
         validate="many_to_one",
     )
+    position_expected_counts = _h005_position_expected_counts(played_history)
+    global_position_prior = pd.to_numeric(
+        position_expected_counts["_h005_position_prior"],
+        errors="coerce",
+    ).mean()
+    if not np.isfinite(global_position_prior) or global_position_prior <= 0.0:
+        global_position_prior = 0.0
+
     result = result.merge(
-        _h005_position_expected_counts(played_history),
+        position_expected_counts,
         on="posicao",
         how="left",
         validate="many_to_one",
@@ -389,7 +397,9 @@ def _add_h005_matchup_reliability_features(
         errors="coerce",
     ).fillna(0.0)
     available_count = pd.to_numeric(result[available_column], errors="coerce").fillna(0.0)
-    position_prior = pd.to_numeric(result["_h005_position_prior"], errors="coerce").fillna(0.0)
+    position_prior = pd.to_numeric(result["_h005_position_prior"], errors="coerce").fillna(
+        global_position_prior
+    )
 
     result[available_column] = available_count.astype(float)
     result[expected_column] = np.maximum(available_count * position_prior, 1.0)
