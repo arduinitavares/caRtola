@@ -502,6 +502,114 @@ def test_h005_feature_columns_require_matchup_context() -> None:
         )
 
 
+def _h005_player(
+    round_number: int,
+    athlete_id: int,
+    club_id: int,
+    position: str,
+    points: float,
+    *,
+    entered: bool = True,
+) -> dict[str, object]:
+    return {
+        "rodada": round_number,
+        "id_atleta": athlete_id,
+        "apelido": f"P{athlete_id}",
+        "slug": f"p-{athlete_id}",
+        "posicao": position,
+        "status": "Provavel",
+        "preco": 10.0,
+        "preco_pre_rodada": 10.0,
+        "pontuacao": points,
+        "media": points,
+        "num_jogos": round_number,
+        "variacao": 0.0,
+        "id_clube": club_id,
+        "nome_clube": f"Clube {club_id}",
+        "entrou_em_campo": entered,
+        "G": 0,
+        "A": 0,
+        "DS": 0,
+        "V": 0,
+    }
+
+
+def _h005_season_df() -> pd.DataFrame:
+    rows = [
+        _h005_player(1, 101, 10, "gol", 3.0),
+        _h005_player(1, 102, 10, "ata", 7.0),
+        _h005_player(1, 201, 20, "gol", 4.0),
+        _h005_player(1, 202, 20, "lat", 5.0),
+        _h005_player(1, 203, 20, "ata", 8.0),
+        _h005_player(2, 101, 10, "gol", 2.0),
+        _h005_player(2, 102, 10, "ata", 6.0),
+        _h005_player(2, 103, 10, "lat", 1.0),
+        _h005_player(2, 201, 20, "gol", 5.0),
+        _h005_player(2, 203, 20, "ata", 7.0),
+        _h005_player(3, 301, 10, "lat", 0.0, entered=False),
+        _h005_player(3, 302, 10, "tec", 0.0, entered=False),
+    ]
+    frame = pd.DataFrame(rows)
+    for scout in DEFAULT_SCOUT_COLUMNS:
+        if scout not in frame.columns:
+            frame[scout] = 0
+    return frame
+
+
+def _h005_fixture_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"rodada": 1, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-03-29"},
+            {"rodada": 2, "id_clube_home": 20, "id_clube_away": 10, "data": "2025-04-05"},
+            {"rodada": 3, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-12"},
+        ]
+    )
+
+
+def test_h005_reliability_counts_position_zero_opponent_matches_as_available() -> None:
+    frame = build_prediction_frame(
+        _h005_season_df(),
+        target_round=3,
+        fixtures=_h005_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    lat = frame.loc[frame["posicao"].eq("lat")].iloc[0]
+
+    assert lat["matchup_opponent_allowed_position_count"] == 1
+    assert lat["h005_opponent_position_available_match_count_roll5"] == 2
+    assert lat["h005_opponent_position_expected_count_roll5"] == pytest.approx(1.0)
+    assert lat["h005_opponent_position_count_ratio"] == pytest.approx(1.0)
+
+
+def test_h005_position_prior_densifies_zero_count_team_position_rounds() -> None:
+    frame = build_prediction_frame(
+        _h005_season_df(),
+        target_round=3,
+        fixtures=_h005_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    lat = frame.loc[frame["posicao"].eq("lat")].iloc[0]
+
+    assert lat["h005_opponent_position_expected_count_roll5"] == pytest.approx(1.0)
+
+
+def test_h005_reliability_sets_tecnico_columns_to_zero() -> None:
+    frame = build_prediction_frame(
+        _h005_season_df(),
+        target_round=3,
+        fixtures=_h005_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    tecnico = frame.loc[frame["posicao"].eq("tec")].iloc[0]
+    assert tecnico[list(H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS)].tolist() == [0.0, 0.0, 0.0]
+
+
 def test_h004_feature_formulas_are_finite_and_zero_for_tecnico() -> None:
     season_df = _season_df()
     tecnico = season_df[season_df["id_atleta"].eq(2)].copy()
