@@ -203,6 +203,55 @@ def test_h005_selected_calibration_excludes_low_count_rows(tmp_path: Path) -> No
     assert decision["gate_results"]["selected_calibration_pass"] is True
 
 
+def test_h005_selected_calibration_metric_delta_allows_low_count_null_slope(tmp_path: Path) -> None:
+    audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+        challenger_selected_calibration_slope=None,
+        challenger_selected_observed_count=20,
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    selected_rows = [
+        row
+        for row in decision["metric_deltas"]
+        if row["metric_scope"] == "selected_players" and row["season"] == 2021
+    ]
+    assert decision["decision_status"] == "candidate_research_profile"
+    assert decision["gate_results"]["selected_calibration_pass"] is True
+    assert selected_rows == [
+        {
+            "season": 2021,
+            "metric_scope": "selected_players",
+            "metric": "calibration_slope",
+            "control": 0.9,
+            "challenger": None,
+            "delta": None,
+        }
+    ]
+
+
+def test_h005_decision_invalidates_missing_audit_status(tmp_path: Path) -> None:
+    audit = tmp_path / "h005_mechanism_audit_decision.json"
+    audit.write_text(json.dumps({"hypothesis_id": "H005"}), encoding="utf-8")
+    experiment = _write_experiment(
+        tmp_path,
+        fixture_hashes={"fixture.csv": "same"},
+        season_deltas={2021: 25.0, 2022: 22.0, 2023: 20.0, 2024: 15.0, 2025: 12.0},
+    )
+
+    decision = build_h005_feature_decision(experiment_path=experiment, audit_decision_path=audit)
+
+    assert decision["decision_status"] == "invalid"
+    assert decision["mechanism_audit_status"] == "invalid"
+    assert "audit_decision audit_status must be supports_reliability_hypothesis or diagnostic status" in decision[
+        "validation_errors"
+    ]
+
+
 def test_h005_weak_positive_requires_aggregate_final_budget_pass(tmp_path: Path) -> None:
     audit = _write_audit_decision(tmp_path, status="supports_reliability_hypothesis")
     experiment = _write_experiment(
@@ -280,7 +329,7 @@ def _write_experiment(
     fixture_hashes: dict[str, str],
     season_deltas: dict[int, float],
     challenger_final_budget_delta: float = 1.0,
-    challenger_selected_calibration_slope: float = 1.00,
+    challenger_selected_calibration_slope: float | None = 1.00,
     challenger_selected_observed_count: int = 408,
     include_child_footystats_identity: bool = True,
 ) -> Path:

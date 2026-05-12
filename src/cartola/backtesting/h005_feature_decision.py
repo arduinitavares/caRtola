@@ -31,7 +31,7 @@ def write_h005_feature_decision(*, experiment_path: Path, audit_decision_path: P
 def build_h005_feature_decision(*, experiment_path: Path, audit_decision_path: Path) -> dict[str, Any]:
     artifacts = _load_required_artifacts(Path(experiment_path))
     audit = _read_json(Path(audit_decision_path), label="H005 mechanism audit decision")
-    mechanism_audit_status = str(audit.get("audit_status", "missing"))
+    mechanism_audit_status = str(audit.get("audit_status") or "invalid")
     comparability_status = str(artifacts["comparability"].get("status", "missing"))
     fixture_identity_status = _fixture_identity_status(artifacts["metadata"])
     candidate_signature_status = _candidate_signature_status(artifacts["metadata"])
@@ -189,6 +189,8 @@ def _validation_errors(
     metadata = artifacts["metadata"]
     if audit.get("hypothesis_id") != "H005":
         errors.append("audit_decision hypothesis_id must be H005")
+    if not audit.get("audit_status"):
+        errors.append("audit_decision audit_status must be supports_reliability_hypothesis or diagnostic status")
     if metadata.get("budget_policy") != "moving":
         errors.append("experiment budget_policy must be moving")
     if metadata.get("start_round") != 5:
@@ -394,8 +396,13 @@ def _metric_deltas(metrics: pd.DataFrame) -> list[dict[str, Any]]:
         challenger = _metric_rows(metrics, feature_pack=CHALLENGER_FEATURE_PACK, metric_scope=metric_scope)
         merged = control.merge(challenger, on="season", suffixes=("_control", "_challenger"), validate="one_to_one")
         for row in merged.to_dict(orient="records"):
-            control_value = _finite(row[f"{metric_name}_control"])
-            challenger_value = _finite(row[f"{metric_name}_challenger"])
+            control_value = _metric_value(row[f"{metric_name}_control"], metric_scope=metric_scope)
+            challenger_value = _metric_value(row[f"{metric_name}_challenger"], metric_scope=metric_scope)
+            delta = (
+                challenger_value - control_value
+                if control_value is not None and challenger_value is not None
+                else None
+            )
             rows.append(
                 {
                     "season": int(row["season"]),
@@ -403,10 +410,16 @@ def _metric_deltas(metrics: pd.DataFrame) -> list[dict[str, Any]]:
                     "metric": metric_name,
                     "control": control_value,
                     "challenger": challenger_value,
-                    "delta": challenger_value - control_value,
+                    "delta": delta,
                 }
             )
     return rows
+
+
+def _metric_value(value: object, *, metric_scope: str) -> float | None:
+    if metric_scope == "selected_players":
+        return _optional_finite(value)
+    return _finite(value)
 
 
 def _candidate_signature_status(metadata: Mapping[str, Any]) -> str:
