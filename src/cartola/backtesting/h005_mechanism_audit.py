@@ -263,6 +263,8 @@ def _recompute_h005_features(
         )
         _validate_columns("recomputed H005 prediction frame", round_frame, H005_RECOMPUTED_COLUMNS)
         selected = round_frame.loc[:, H005_RECOMPUTED_COLUMNS].copy()
+        source_round_keys = source.loc[source["rodada"].eq(round_number), ["rodada", "id_atleta"]].drop_duplicates()
+        selected = selected.merge(source_round_keys, on=["rodada", "id_atleta"], how="inner")
         selected["season"] = child.season
         frames.append(selected)
     if not frames:

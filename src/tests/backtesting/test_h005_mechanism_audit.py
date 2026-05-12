@@ -394,6 +394,121 @@ def test_h005_mechanism_audit_duplicate_source_keys_invalidates_without_crashing
     assert "row_identity_mismatch" in decision["failed_checks"]
 
 
+def test_h005_mechanism_audit_ignores_extra_recomputed_rows_outside_source_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _write_source_experiment(tmp_path)
+    output_path = tmp_path / "audit"
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_season_data",
+        lambda season, project_root: _raw_season_with_two_round3_players(extra_status="Duvide"),
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_fixtures",
+        lambda season, project_root: _fixtures(),
+    )
+
+    def _build_prediction_frame_with_extra_recomputed_candidate(
+        _season_df: pd.DataFrame,
+        round_number: int,
+        **_kwargs: object,
+    ) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "rodada": round_number,
+                    "id_atleta": 301,
+                    "status": "Provavel",
+                    "matchup_opponent_allowed_position_count": 1,
+                    "h005_opponent_position_available_match_count_roll5": 1,
+                    "h005_opponent_position_expected_count_roll5": 1.0,
+                    "h005_opponent_position_count_ratio": 1.0,
+                },
+                {
+                    "rodada": round_number,
+                    "id_atleta": 302,
+                    "status": "Duvide",
+                    "matchup_opponent_allowed_position_count": 7,
+                    "h005_opponent_position_available_match_count_roll5": 7,
+                    "h005_opponent_position_expected_count_roll5": 1.0,
+                    "h005_opponent_position_count_ratio": 7.0,
+                },
+            ]
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.build_prediction_frame",
+        _build_prediction_frame_with_extra_recomputed_candidate,
+    )
+
+    result = build_h005_mechanism_audit(
+        experiment_path=experiment,
+        output_path=output_path,
+        seasons=(2021,),
+        model_id="xgboost_depth2_slow",
+        feature_pack="ppg_xg_matchup",
+        project_root=tmp_path,
+    )
+
+    failed_checks = cast("list[str]", result.decision["failed_checks"])
+    assert "row_identity_mismatch" not in failed_checks
+    assert result.decision["audit_status"] == "mixed_or_weak"
+    assert result.decision["recomputed_count_match_status"] == "ok"
+
+
+def test_h005_mechanism_audit_invalidates_when_recomputed_missing_source_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _write_source_experiment(tmp_path)
+    output_path = tmp_path / "audit"
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_season_data",
+        lambda season, project_root: _raw_season(),
+    )
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.load_fixtures",
+        lambda season, project_root: _fixtures(),
+    )
+
+    def _build_prediction_frame_missing_source_candidate(
+        _season_df: pd.DataFrame,
+        round_number: int,
+        **_kwargs: object,
+    ) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "rodada": round_number,
+                    "id_atleta": 999,
+                    "matchup_opponent_allowed_position_count": 1,
+                    "h005_opponent_position_available_match_count_roll5": 1,
+                    "h005_opponent_position_expected_count_roll5": 1.0,
+                    "h005_opponent_position_count_ratio": 1.0,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        "cartola.backtesting.h005_mechanism_audit.build_prediction_frame",
+        _build_prediction_frame_missing_source_candidate,
+    )
+
+    result = build_h005_mechanism_audit(
+        experiment_path=experiment,
+        output_path=output_path,
+        seasons=(2021,),
+        model_id="xgboost_depth2_slow",
+        feature_pack="ppg_xg_matchup",
+        project_root=tmp_path,
+    )
+
+    failed_checks = cast("list[str]", result.decision["failed_checks"])
+    assert result.decision["audit_status"] == "invalid"
+    assert "row_identity_mismatch" in failed_checks
+
+
 def test_h005_mechanism_audit_source_row_order_does_not_invalidate_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -641,24 +756,32 @@ def _raw_season() -> pd.DataFrame:
     return frame
 
 
-def _raw_season_with_two_round3_players() -> pd.DataFrame:
+def _raw_season_with_two_round3_players(*, extra_status: str = "Provavel") -> pd.DataFrame:
     return pd.concat(
         [
             _raw_season(),
-            pd.DataFrame([_raw_player(3, 302, 20, "gol", 2.0)]),
+            pd.DataFrame([_raw_player(3, 302, 20, "gol", 2.0, status=extra_status)]),
         ],
         ignore_index=True,
     )
 
 
-def _raw_player(round_number: int, athlete_id: int, club_id: int, position: str, points: float) -> dict[str, object]:
+def _raw_player(
+    round_number: int,
+    athlete_id: int,
+    club_id: int,
+    position: str,
+    points: float,
+    *,
+    status: str = "Provavel",
+) -> dict[str, object]:
     return {
         "rodada": round_number,
         "id_atleta": athlete_id,
         "apelido": str(athlete_id),
         "slug": str(athlete_id),
         "posicao": position,
-        "status": "Provavel",
+        "status": status,
         "preco": 10.0,
         "preco_pre_rodada": 10.0,
         "pontuacao": points,
