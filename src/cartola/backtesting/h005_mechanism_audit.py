@@ -445,6 +445,8 @@ def _support_gate(
     raw_supported_seasons = _comparable_supported_seasons(low_raw, normal_raw)
     if len(raw_supported_seasons) < H005_MIN_SUPPORTED_SEASONS:
         return "mixed_or_weak"
+    if len(supported_seasons) < len(raw_supported_seasons):
+        return "mixed_or_weak"
 
     ratio_spreads = _low_minus_normal_by_season(low_ratio, normal_ratio, supported_seasons)
     raw_spreads = _low_minus_normal_by_season(low_raw, normal_raw, raw_supported_seasons)

@@ -210,6 +210,20 @@ def test_h005_support_gate_rejects_position_imbalanced_raw_normal_support() -> N
     )
 
 
+def test_h005_support_gate_rejects_when_raw_has_more_supported_seasons_than_ratio() -> None:
+    mechanism_audit = _support_gate_mechanism_audit()
+    raw_count_audit = _support_gate_raw_count_audit(seasons=(2021, 2022, 2023, 2024, 2025))
+
+    assert (
+        _support_gate(
+            failed_checks=set(),
+            mechanism_audit=mechanism_audit,
+            raw_count_audit=raw_count_audit,
+        )
+        == "mixed_or_weak"
+    )
+
+
 def test_h005_mechanism_audit_invalidates_recomputed_count_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -652,8 +666,8 @@ def _support_gate_raw_count_audit(
     normal_residual: float = 0.05,
     normal_positions: tuple[str, ...] = ("gol", "lat", "zag", "mei"),
     normal_row_count: int = 150,
+    seasons: tuple[int, ...] = (2021, 2022, 2023),
 ) -> pd.DataFrame:
-    seasons = (2021, 2022, 2023)
     positions = ("gol", "lat", "zag", "mei")
     rows: list[dict[str, object]] = []
     for season in seasons:
