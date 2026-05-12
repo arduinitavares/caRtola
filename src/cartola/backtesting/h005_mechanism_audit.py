@@ -437,6 +437,8 @@ def _support_gate(
         return "mixed_or_weak"
     if len(low_raw_supported_positions) > len(low_ratio_supported_positions):
         return "mixed_or_weak"
+    if low_raw_supported_positions != normal_raw_supported_positions:
+        return "mixed_or_weak"
 
     supported_seasons = _comparable_supported_seasons(low_ratio, normal_ratio)
     if len(supported_seasons) < H005_MIN_SUPPORTED_SEASONS:
@@ -450,8 +452,9 @@ def _support_gate(
 
     ratio_spreads = _low_minus_normal_by_season(low_ratio, normal_ratio, supported_seasons)
     raw_spreads = _low_minus_normal_by_season(low_raw, normal_raw, raw_supported_seasons)
-    signs = {np.sign(value) for value in ratio_spreads if value != 0.0}
-    if len(signs) != 1:
+    positive_spread_count = sum(1 for value in ratio_spreads if value > 0.0)
+    negative_spread_count = sum(1 for value in ratio_spreads if value < 0.0)
+    if max(positive_spread_count, negative_spread_count) < H005_MIN_SUPPORTED_SEASONS:
         return "mixed_or_weak"
     median_abs_ratio_spread = float(np.median(np.abs(ratio_spreads)))
     if median_abs_ratio_spread < H005_MIN_MEDIAN_ABS_LOW_NORMAL_SPREAD:
