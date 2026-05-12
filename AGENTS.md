@@ -114,6 +114,16 @@ Steps:
   `uv run --frozen python scripts/run_h004_feature_decision.py --experiment-path data/08_reporting/experiments/model_feature/group=h004-attack-defense-mismatch__started_at=20260508T191417000002Z__matrix=fc77bcf76f40`
 - H004 Phase 2 writes `h004_phase2_decision.json`; the latest verified run rejected `ppg_xg_matchup_h004` after aggregate and 2025 actual-points regressions, so preserve it as negative research evidence rather than a live default or direct follow-up tweak.
 
+## H005 Count-Aware Matchup Reliability Research
+
+- Source-anchored H005 mechanism audit:
+  `uv run --frozen python scripts/run_h005_mechanism_audit.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --seasons 2021,2022,2023,2024,2025 --model-id xgboost_depth2_slow --feature-pack ppg_xg_matchup`
+- H005 feature experiment:
+  `uv run --frozen python scripts/run_model_experiments.py --group h005-count-aware-matchup-shrinkage --seasons 2021,2022,2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --jobs 12 --profile-runtime`
+- H005 feature decision:
+  `uv run --frozen python scripts/run_h005_feature_decision.py --experiment-path data/08_reporting/experiments/model_feature/<h005-experiment-id> --audit-decision-path data/08_reporting/hypotheses/<h005-audit-id>/h005_mechanism_audit_decision.json`
+- H005 is research-only. Do not change live defaults from H005 unless a separate promotion protocol is explicitly approved.
+
 ## Ridge Tuning Workflow
 
 - Constrained Ridge alpha tuning:
