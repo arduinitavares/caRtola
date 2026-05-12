@@ -340,46 +340,6 @@ def _opponent_available_match_count_roll5(
     return pd.DataFrame(rows)
 
 
-def _h005_opponent_position_observed_count_roll5(
-    played_history: pd.DataFrame,
-    fixtures: pd.DataFrame | None,
-    target_round: int,
-) -> pd.DataFrame:
-    columns = pd.Index(
-        [
-            "opponent_id_clube",
-            "posicao",
-            "_h005_opponent_position_observed_count_roll5",
-        ]
-    )
-    fixture_context = _historical_fixture_context(fixtures, target_round)
-    recent_rounds = _h005_recent_opponent_opportunity_rounds(played_history, fixtures, target_round)
-    if played_history.empty or fixture_context.empty or recent_rounds.empty:
-        return pd.DataFrame(columns=columns)
-
-    scored_against = played_history.merge(
-        fixture_context,
-        on=["rodada", "id_clube"],
-        how="inner",
-        validate="many_to_one",
-    )
-    if scored_against.empty:
-        return pd.DataFrame(columns=columns)
-
-    recent_scored_against = scored_against.merge(
-        recent_rounds,
-        on=["opponent_id_clube", "rodada"],
-        how="inner",
-        validate="many_to_one",
-    )
-    if recent_scored_against.empty:
-        return pd.DataFrame(columns=columns)
-
-    return recent_scored_against.groupby(["opponent_id_clube", "posicao"], as_index=False).agg(
-        _h005_opponent_position_observed_count_roll5=("pontuacao", "count")
-    )
-
-
 def _h005_position_expected_counts(played_history: pd.DataFrame) -> pd.DataFrame:
     columns = pd.Index(["posicao", "_h005_position_prior"])
     if played_history.empty:
@@ -433,12 +393,6 @@ def _add_h005_matchup_reliability_features(
         how="left",
         validate="many_to_one",
     )
-    result = result.merge(
-        _h005_opponent_position_observed_count_roll5(played_history, fixtures, target_round),
-        on=["opponent_id_clube", "posicao"],
-        how="left",
-        validate="many_to_one",
-    )
     position_expected_counts = _h005_position_expected_counts(played_history)
     global_position_prior = pd.to_numeric(
         position_expected_counts["_h005_position_prior"],
@@ -458,9 +412,9 @@ def _add_h005_matchup_reliability_features(
     expected_column = "h005_opponent_position_expected_count_roll5"
     ratio_column = "h005_opponent_position_count_ratio"
     raw_count = pd.to_numeric(
-        result["_h005_opponent_position_observed_count_roll5"],
+        result["matchup_opponent_allowed_position_count"],
         errors="coerce",
-    ).fillna(0.0)
+    ).fillna(0.0).clip(lower=0.0)
     available_count = pd.to_numeric(result[available_column], errors="coerce").fillna(0.0)
     position_prior = pd.to_numeric(result["_h005_position_prior"], errors="coerce").fillna(
         global_position_prior
@@ -488,7 +442,6 @@ def _add_h005_matchup_reliability_features(
     return result.drop(
         columns=[
             "opponent_id_clube",
-            "_h005_opponent_position_observed_count_roll5",
             "_h005_position_prior",
         ],
         errors="ignore",

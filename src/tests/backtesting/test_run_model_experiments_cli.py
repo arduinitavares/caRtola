@@ -129,6 +129,25 @@ def test_parse_args_accepts_h004_group() -> None:
     assert args.group == "h004-attack-defense-mismatch"
 
 
+def test_parse_args_accepts_h005_group() -> None:
+    args = parse_args(
+        [
+            "--group",
+            "h005-count-aware-matchup-shrinkage",
+            "--seasons",
+            "2021,2022,2023,2024,2025",
+            "--start-round",
+            "5",
+            "--budget",
+            "100",
+            "--current-year",
+            "2026",
+        ]
+    )
+
+    assert args.group == "h005-count-aware-matchup-shrinkage"
+
+
 def test_main_calls_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     observed: dict[str, object] = {}
 

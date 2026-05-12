@@ -641,7 +641,7 @@ def test_h005_missing_position_prior_uses_global_non_coach_prior_mean() -> None:
     assert foo["h005_opponent_position_expected_count_roll5"] == pytest.approx(1.4)
 
 
-def test_h005_count_ratio_ignores_stale_sparse_position_samples() -> None:
+def test_h005_count_ratio_uses_source_matchup_count_for_sparse_position_samples() -> None:
     rows: list[dict[str, object]] = []
     for round_number in range(1, 8):
         rows.extend(
@@ -686,7 +686,11 @@ def test_h005_count_ratio_ignores_stale_sparse_position_samples() -> None:
 
     assert lat["matchup_opponent_allowed_position_count"] == 2
     assert lat["h005_opponent_position_available_match_count_roll5"] == 5
-    assert lat["h005_opponent_position_count_ratio"] == pytest.approx(0.0)
+    expected_ratio = (
+        lat["matchup_opponent_allowed_position_count"]
+        / lat["h005_opponent_position_expected_count_roll5"]
+    )
+    assert lat["h005_opponent_position_count_ratio"] == pytest.approx(expected_ratio)
 
 
 def test_h004_feature_formulas_are_finite_and_zero_for_tecnico() -> None:
