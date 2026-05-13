@@ -114,6 +114,26 @@ Steps:
   `uv run --frozen python scripts/run_h004_feature_decision.py --experiment-path data/08_reporting/experiments/model_feature/group=h004-attack-defense-mismatch__started_at=20260508T191417000002Z__matrix=fc77bcf76f40`
 - H004 Phase 2 writes `h004_phase2_decision.json`; the latest verified run rejected `ppg_xg_matchup_h004` after aggregate and 2025 actual-points regressions, so preserve it as negative research evidence rather than a live default or direct follow-up tweak.
 
+## EBM Feature Diagnostic Workflow
+
+- Artifact-backed EBM diagnostic for the current XGBoost sensitivity matchup source:
+  `uv run --frozen python scripts/run_ebm_feature_diagnostic.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --model-id xgboost_depth2_slow --feature-pack ppg_xg_matchup --seasons 2021,2022,2023,2024,2025 --fixture-mode exploratory --current-year 2026 --profile-runtime`
+- EBM diagnostic outputs are written under `data/08_reporting/ebm_diagnostics/ebm_diagnostic_started_at=.../` and include `ebm_diagnostic_manifest.json`, `ebm_diagnostic_decision.json`, `source_context.csv`, `predictive_metrics.csv`, `feature_importance_by_fold.csv`, `feature_shape_summary.csv`, `pairwise_interactions.csv`, `candidate_hypotheses.csv`, `invalid_ebm_rows.csv`, `invalid_diagnostic_report.csv`, and `ebm_feature_diagnostic.html`.
+- Treat EBM as discovery-only: outputs include `discovery_only=true`, use whole-season validation folds with inner validation disabled, read persisted source experiment artifacts, and must not update live defaults, promotion fields, or experiment rankings.
+- The latest completed EBM diagnostic for `xgboost_depth2_slow + ppg_xg_matchup` produced one source-residual candidate around `matchup_opponent_allowed_position_count`; use it only to freeze follow-up hypotheses such as H005, not as direct production evidence.
+- InterpretML `interpret` is a project dependency for this diagnostic; if dependency/runtime validation fails, inspect `invalid_diagnostic_report.csv` before rerunning.
+
+## H005 Count-Aware Matchup Reliability Research
+
+- H005 commands require an active checkout that includes `scripts/run_h005_mechanism_audit.py` and `scripts/run_h005_feature_decision.py`; do not run them from an older checkout that only has the H005 docs/specs.
+- Source-anchored H005 mechanism audit:
+  `uv run --frozen python scripts/run_h005_mechanism_audit.py --experiment-path data/08_reporting/experiments/model_feature/group=xgboost-sensitivity-v2__started_at=20260507T231127138806Z__matrix=f019652c883d --seasons 2021,2022,2023,2024,2025 --model-id xgboost_depth2_slow --feature-pack ppg_xg_matchup`
+- H005 feature experiment:
+  `uv run --frozen python scripts/run_model_experiments.py --group h005-count-aware-matchup-shrinkage --seasons 2021,2022,2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --jobs 12 --profile-runtime`
+- H005 feature decision:
+  `uv run --frozen python scripts/run_h005_feature_decision.py --experiment-path data/08_reporting/experiments/model_feature/<h005-experiment-id> --audit-decision-path data/08_reporting/hypotheses/<h005-audit-id>/h005_mechanism_audit_decision.json`
+- H005 is research-only. Do not change live defaults from H005 unless a separate promotion protocol is explicitly approved.
+
 ## Ridge Tuning Workflow
 
 - Constrained Ridge alpha tuning:
