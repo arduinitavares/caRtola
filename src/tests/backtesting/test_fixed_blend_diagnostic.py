@@ -694,7 +694,7 @@ def _round_delta_rows() -> pd.DataFrame:
 def _per_season_summary_rows(overrides: list[dict[str, object]]) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for override in overrides:
-        row = {
+        row: dict[str, object] = {
             "blend_name": "blend_a",
             "season": 2025,
             "control_actual_points": 100.0,
