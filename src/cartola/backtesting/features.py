@@ -77,6 +77,14 @@ H004_ATTACK_DEFENSE_FEATURE_COLUMNS: list[str] = [
     "h004_role_xg_mismatch",
 ]
 
+H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS: list[str] = [
+    "h005_opponent_position_available_match_count_roll5",
+    "h005_opponent_position_expected_count_roll5",
+    "h005_opponent_position_count_ratio",
+]
+
+STANDARD_PLAYER_POSITIONS: tuple[str, ...] = ("gol", "lat", "zag", "mei", "ata")
+
 NUMERIC_PRIOR_COLUMNS: list[str] = [
     "position_points_prior",
     "prior_appearances",
@@ -127,6 +135,13 @@ def feature_columns_for_config(config: BacktestConfig) -> list[str]:
                 "requires matchup_context_mode='cartola_matchup_v1'"
             )
         return [*columns, *H004_ATTACK_DEFENSE_FEATURE_COLUMNS]
+    if config.feature_augmentation_mode == "h005_matchup_reliability_v1":
+        if config.matchup_context_mode != "cartola_matchup_v1":
+            raise ValueError(
+                "feature_augmentation_mode='h005_matchup_reliability_v1' "
+                "requires matchup_context_mode='cartola_matchup_v1'"
+            )
+        return [*columns, *H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS]
     raise ValueError(f"Unsupported feature_augmentation_mode: {config.feature_augmentation_mode!r}")
 
 
@@ -159,6 +174,13 @@ def build_prediction_frame(
                 "requires matchup_context_mode='cartola_matchup_v1'"
             )
         return _add_h004_attack_defense_features(frame)
+    if feature_augmentation_mode == "h005_matchup_reliability_v1":
+        if matchup_context_mode != "cartola_matchup_v1":
+            raise ValueError(
+                "feature_augmentation_mode='h005_matchup_reliability_v1' "
+                "requires matchup_context_mode='cartola_matchup_v1'"
+            )
+        return _add_h005_matchup_reliability_features(frame, played_history, fixtures, target_round)
     raise ValueError(f"Unsupported feature_augmentation_mode: {feature_augmentation_mode!r}")
 
 
@@ -196,6 +218,8 @@ def build_training_frame(
             feature_columns.extend(MATCHUP_CONTEXT_V1_FEATURE_COLUMNS)
         if feature_augmentation_mode == "h004_attack_defense_v1":
             feature_columns.extend(H004_ATTACK_DEFENSE_FEATURE_COLUMNS)
+        if feature_augmentation_mode == "h005_matchup_reliability_v1":
+            feature_columns.extend(H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS)
         return pd.DataFrame(
             columns=pd.Index(
                 list(dict.fromkeys([*MARKET_COLUMNS, *feature_columns, "target"]))
@@ -252,6 +276,176 @@ def _add_h004_attack_defense_features(frame: pd.DataFrame) -> pd.DataFrame:
     for column in H004_ATTACK_DEFENSE_FEATURE_COLUMNS:
         result[column] = pd.to_numeric(result[column], errors="raise").astype(float)
     return result
+
+
+def _h005_recent_opponent_opportunity_rounds(
+    played_history: pd.DataFrame,
+    fixtures: pd.DataFrame | None,
+    target_round: int,
+) -> pd.DataFrame:
+    columns = pd.Index(["opponent_id_clube", "rodada"])
+    fixture_context = _historical_fixture_context(fixtures, target_round)
+    if played_history.empty or fixture_context.empty:
+        return pd.DataFrame(columns=columns)
+
+    played_club_rounds = played_history[["rodada", "id_clube"]].drop_duplicates()
+    opportunities = fixture_context.merge(
+        played_club_rounds,
+        on=["rodada", "id_clube"],
+        how="inner",
+        validate="many_to_one",
+    )
+    if opportunities.empty:
+        return pd.DataFrame(columns=columns)
+
+    opponent_rounds = (
+        opportunities[["opponent_id_clube", "rodada"]]
+        .drop_duplicates()
+        .sort_values(["opponent_id_clube", "rodada"])
+    )
+    recent_rounds = [
+        group.tail(5)
+        for _, group in opponent_rounds.groupby("opponent_id_clube", sort=False)
+    ]
+    if not recent_rounds:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(recent_rounds, ignore_index=True)[["opponent_id_clube", "rodada"]]
+
+
+def _opponent_available_match_count_roll5(
+    played_history: pd.DataFrame,
+    fixtures: pd.DataFrame | None,
+    target_round: int,
+) -> pd.DataFrame:
+    columns = pd.Index(
+        [
+            "opponent_id_clube",
+            "h005_opponent_position_available_match_count_roll5",
+        ]
+    )
+    recent_rounds = _h005_recent_opponent_opportunity_rounds(played_history, fixtures, target_round)
+    if recent_rounds.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, object]] = []
+    for opponent_id, group in recent_rounds.groupby("opponent_id_clube", sort=False):
+        rows.append(
+            {
+                "opponent_id_clube": opponent_id,
+                "h005_opponent_position_available_match_count_roll5": int(
+                    group.tail(5)["rodada"].nunique()
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _h005_position_expected_counts(played_history: pd.DataFrame) -> pd.DataFrame:
+    columns = pd.Index(["posicao", "_h005_position_prior"])
+    if played_history.empty:
+        return pd.DataFrame(columns=columns)
+
+    standard_history = played_history[played_history["posicao"].isin(STANDARD_PLAYER_POSITIONS)]
+    active_club_rounds = standard_history[["rodada", "id_clube"]].drop_duplicates()
+    if active_club_rounds.empty:
+        return pd.DataFrame(columns=columns)
+
+    position_frame = pd.DataFrame({"posicao": STANDARD_PLAYER_POSITIONS})
+    dense_counts = active_club_rounds.merge(position_frame, how="cross")
+    observed_counts = (
+        standard_history.groupby(["rodada", "id_clube", "posicao"], as_index=False)
+        .agg(_h005_observed_position_count=("id_atleta", "nunique"))
+    )
+    dense_counts = dense_counts.merge(
+        observed_counts,
+        on=["rodada", "id_clube", "posicao"],
+        how="left",
+        validate="one_to_one",
+    )
+    dense_counts["_h005_observed_position_count"] = (
+        dense_counts["_h005_observed_position_count"].fillna(0.0).astype(float)
+    )
+    return dense_counts.groupby("posicao", as_index=False).agg(
+        _h005_position_prior=("_h005_observed_position_count", "mean")
+    )
+
+
+def _add_h005_matchup_reliability_features(
+    frame: pd.DataFrame,
+    played_history: pd.DataFrame,
+    fixtures: pd.DataFrame | None,
+    target_round: int,
+) -> pd.DataFrame:
+    required_columns = ["id_clube", "posicao", "matchup_opponent_allowed_position_count"]
+    missing_columns = [column for column in required_columns if column not in frame.columns]
+    if missing_columns:
+        raise ValueError(f"H005 feature augmentation requires columns: {', '.join(missing_columns)}")
+
+    result = frame.merge(
+        _round_fixture_context(fixtures, target_round)[["id_clube", "opponent_id_clube"]],
+        on="id_clube",
+        how="left",
+        validate="many_to_one",
+    )
+    result = result.merge(
+        _opponent_available_match_count_roll5(played_history, fixtures, target_round),
+        on="opponent_id_clube",
+        how="left",
+        validate="many_to_one",
+    )
+    position_expected_counts = _h005_position_expected_counts(played_history)
+    global_position_prior = pd.to_numeric(
+        position_expected_counts["_h005_position_prior"],
+        errors="coerce",
+    ).mean()
+    if not np.isfinite(global_position_prior) or global_position_prior <= 0.0:
+        global_position_prior = 0.0
+
+    result = result.merge(
+        position_expected_counts,
+        on="posicao",
+        how="left",
+        validate="many_to_one",
+    )
+
+    available_column = "h005_opponent_position_available_match_count_roll5"
+    expected_column = "h005_opponent_position_expected_count_roll5"
+    ratio_column = "h005_opponent_position_count_ratio"
+    raw_count = pd.to_numeric(
+        result["matchup_opponent_allowed_position_count"],
+        errors="coerce",
+    ).fillna(0.0).clip(lower=0.0)
+    available_count = pd.to_numeric(result[available_column], errors="coerce").fillna(0.0)
+    position_prior = pd.to_numeric(result["_h005_position_prior"], errors="coerce").fillna(
+        global_position_prior
+    )
+
+    result[available_column] = available_count.astype(float)
+    result[expected_column] = np.maximum(available_count * position_prior, 1.0)
+    result[ratio_column] = np.maximum(raw_count, 0.0) / result[expected_column]
+
+    tecnico_mask = result["posicao"].astype(str).eq("tec")
+    result.loc[tecnico_mask, H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS] = 0.0
+    for column in H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS:
+        result[column] = pd.to_numeric(result[column], errors="raise").astype(float)
+
+    numeric_context = result[H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS]
+    invalid = numeric_context.isna().any(axis=1) | ~np.isfinite(numeric_context).all(axis=1)
+    if bool(invalid.any()):
+        invalid_columns = [
+            column
+            for column in H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS
+            if bool(result.loc[invalid, column].isna().any())
+            or bool((~np.isfinite(result.loc[invalid, column])).any())
+        ]
+        raise ValueError(f"H005 feature augmentation has non-finite output: {', '.join(invalid_columns)}")
+    return result.drop(
+        columns=[
+            "opponent_id_clube",
+            "_h005_position_prior",
+        ],
+        errors="ignore",
+    )
 
 
 def _played_history(season_df: pd.DataFrame, target_round: int) -> pd.DataFrame:

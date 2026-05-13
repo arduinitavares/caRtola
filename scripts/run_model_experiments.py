@@ -43,6 +43,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "xgboost-research",
             "xgboost-sensitivity-v2",
             "h004-attack-defense-mismatch",
+            "h005-count-aware-matchup-shrinkage",
         ),
         required=True,
     )

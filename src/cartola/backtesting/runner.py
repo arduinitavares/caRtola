@@ -22,6 +22,7 @@ from cartola.backtesting.config import MARKET_OPEN_PRICE_COLUMN, BacktestConfig
 from cartola.backtesting.data import build_round_alignment_report, load_fixtures, load_season_data
 from cartola.backtesting.features import (
     H004_ATTACK_DEFENSE_FEATURE_COLUMNS,
+    H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS,
     MARKET_COLUMNS,  # noqa: F401
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     build_prediction_frame,
@@ -511,6 +512,8 @@ def _feature_augmentation_columns(config: BacktestConfig) -> list[str]:
         return []
     if config.feature_augmentation_mode == "h004_attack_defense_v1":
         return list(H004_ATTACK_DEFENSE_FEATURE_COLUMNS)
+    if config.feature_augmentation_mode == "h005_matchup_reliability_v1":
+        return list(H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS)
     raise ValueError(f"Unsupported feature_augmentation_mode: {config.feature_augmentation_mode!r}")
 
 

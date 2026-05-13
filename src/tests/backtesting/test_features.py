@@ -9,6 +9,7 @@ from cartola.backtesting.features import (
     FOOTYSTATS_PPG_FEATURE_COLUMNS,
     FOOTYSTATS_XG_FEATURE_COLUMNS,
     H004_ATTACK_DEFENSE_FEATURE_COLUMNS,
+    H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS,
     MATCHUP_CONTEXT_V1_FEATURE_COLUMNS,
     _add_h004_attack_defense_features,
     build_prediction_frame,
@@ -472,6 +473,224 @@ def test_h004_feature_columns_require_matchup_and_xg_context() -> None:
                 feature_augmentation_mode="h004_attack_defense_v1",
             )
         )
+
+
+def test_h005_feature_columns_are_added_only_for_h005_augmentation() -> None:
+    base_columns = feature_columns_for_config(
+        BacktestConfig(footystats_mode="ppg_xg", matchup_context_mode="cartola_matchup_v1")
+    )
+    h005_columns = feature_columns_for_config(
+        BacktestConfig(
+            footystats_mode="ppg_xg",
+            matchup_context_mode="cartola_matchup_v1",
+            feature_augmentation_mode="h005_matchup_reliability_v1",
+        )
+    )
+
+    assert set(H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS).isdisjoint(base_columns)
+    assert h005_columns == [*base_columns, *H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS]
+
+
+def test_h005_feature_columns_require_matchup_context() -> None:
+    with pytest.raises(ValueError, match="requires matchup_context_mode='cartola_matchup_v1'"):
+        feature_columns_for_config(
+            BacktestConfig(
+                footystats_mode="ppg_xg",
+                matchup_context_mode="none",
+                feature_augmentation_mode="h005_matchup_reliability_v1",
+            )
+        )
+
+
+def _h005_player(
+    round_number: int,
+    athlete_id: int,
+    club_id: int,
+    position: str,
+    points: float,
+    *,
+    entered: bool = True,
+) -> dict[str, object]:
+    return {
+        "rodada": round_number,
+        "id_atleta": athlete_id,
+        "apelido": f"P{athlete_id}",
+        "slug": f"p-{athlete_id}",
+        "posicao": position,
+        "status": "Provavel",
+        "preco": 10.0,
+        "preco_pre_rodada": 10.0,
+        "pontuacao": points,
+        "media": points,
+        "num_jogos": round_number,
+        "variacao": 0.0,
+        "id_clube": club_id,
+        "nome_clube": f"Clube {club_id}",
+        "entrou_em_campo": entered,
+        "G": 0,
+        "A": 0,
+        "DS": 0,
+        "V": 0,
+    }
+
+
+def _h005_season_df() -> pd.DataFrame:
+    rows = [
+        _h005_player(1, 101, 10, "gol", 3.0),
+        _h005_player(1, 102, 10, "ata", 7.0),
+        _h005_player(1, 201, 20, "gol", 4.0),
+        _h005_player(1, 202, 20, "lat", 5.0),
+        _h005_player(1, 203, 20, "ata", 8.0),
+        _h005_player(2, 101, 10, "gol", 2.0),
+        _h005_player(2, 102, 10, "ata", 6.0),
+        _h005_player(2, 103, 10, "lat", 1.0),
+        _h005_player(2, 201, 20, "gol", 5.0),
+        _h005_player(2, 203, 20, "ata", 7.0),
+        _h005_player(3, 301, 10, "lat", 0.0, entered=False),
+        _h005_player(3, 302, 10, "tec", 0.0, entered=False),
+    ]
+    frame = pd.DataFrame(rows)
+    for scout in DEFAULT_SCOUT_COLUMNS:
+        if scout not in frame.columns:
+            frame[scout] = 0
+    return frame
+
+
+def _h005_fixture_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"rodada": 1, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-03-29"},
+            {"rodada": 2, "id_clube_home": 20, "id_clube_away": 10, "data": "2025-04-05"},
+            {"rodada": 3, "id_clube_home": 10, "id_clube_away": 20, "data": "2025-04-12"},
+        ]
+    )
+
+
+def test_h005_reliability_counts_position_zero_opponent_matches_as_available() -> None:
+    frame = build_prediction_frame(
+        _h005_season_df(),
+        target_round=3,
+        fixtures=_h005_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    lat = frame.loc[frame["posicao"].eq("lat")].iloc[0]
+
+    assert lat["matchup_opponent_allowed_position_count"] == 1
+    assert lat["h005_opponent_position_available_match_count_roll5"] == 2
+    assert lat["h005_opponent_position_expected_count_roll5"] == pytest.approx(1.0)
+    assert lat["h005_opponent_position_count_ratio"] == pytest.approx(1.0)
+
+
+def test_h005_position_prior_densifies_zero_count_team_position_rounds() -> None:
+    frame = build_prediction_frame(
+        _h005_season_df(),
+        target_round=3,
+        fixtures=_h005_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    lat = frame.loc[frame["posicao"].eq("lat")].iloc[0]
+
+    assert lat["h005_opponent_position_expected_count_roll5"] == pytest.approx(1.0)
+
+
+def test_h005_reliability_sets_tecnico_columns_to_zero() -> None:
+    frame = build_prediction_frame(
+        _h005_season_df(),
+        target_round=3,
+        fixtures=_h005_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    tecnico = frame.loc[frame["posicao"].eq("tec")].iloc[0]
+    assert tecnico[list(H005_MATCHUP_RELIABILITY_FEATURE_COLUMNS)].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_h005_missing_position_prior_uses_global_non_coach_prior_mean() -> None:
+    season_df = pd.concat(
+        [
+            _h005_season_df(),
+            pd.DataFrame(
+                [
+                    _h005_player(1, 104, 10, "mei", 4.0),
+                    _h005_player(1, 204, 20, "mei", 4.0),
+                    _h005_player(2, 104, 10, "mei", 4.0),
+                    _h005_player(2, 204, 20, "mei", 4.0),
+                    _h005_player(3, 303, 10, "foo", 0.0, entered=False),
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    frame = build_prediction_frame(
+        season_df,
+        target_round=3,
+        fixtures=_h005_fixture_df(),
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    foo = frame.loc[frame["posicao"].eq("foo")].iloc[0]
+
+    assert foo["h005_opponent_position_available_match_count_roll5"] == 2
+    assert foo["h005_opponent_position_expected_count_roll5"] == pytest.approx(1.4)
+
+
+def test_h005_count_ratio_uses_source_matchup_count_for_sparse_position_samples() -> None:
+    rows: list[dict[str, object]] = []
+    for round_number in range(1, 8):
+        rows.extend(
+            [
+                _h005_player(round_number, 1000 + round_number, 10, "gol", 3.0),
+                _h005_player(round_number, 2000 + round_number, 10, "ata", 6.0),
+                _h005_player(round_number, 3000 + round_number, 20, "gol", 4.0),
+            ]
+        )
+    rows.extend(
+        [
+            _h005_player(1, 4001, 10, "lat", 5.0),
+            _h005_player(2, 4002, 10, "lat", 5.0),
+            _h005_player(8, 8001, 10, "lat", 0.0, entered=False),
+        ]
+    )
+    season_df = pd.DataFrame(rows)
+    for scout in DEFAULT_SCOUT_COLUMNS:
+        if scout not in season_df.columns:
+            season_df[scout] = 0
+    fixtures = pd.DataFrame(
+        [
+            {
+                "rodada": round_number,
+                "id_clube_home": 10,
+                "id_clube_away": 20,
+                "data": f"2025-04-{round_number:02d}",
+            }
+            for round_number in range(1, 9)
+        ]
+    )
+
+    frame = build_prediction_frame(
+        season_df,
+        target_round=8,
+        fixtures=fixtures,
+        matchup_context_mode="cartola_matchup_v1",
+        feature_augmentation_mode="h005_matchup_reliability_v1",
+    )
+
+    lat = frame.loc[frame["posicao"].eq("lat")].iloc[0]
+
+    assert lat["matchup_opponent_allowed_position_count"] == 2
+    assert lat["h005_opponent_position_available_match_count_roll5"] == 5
+    expected_ratio = (
+        lat["matchup_opponent_allowed_position_count"]
+        / lat["h005_opponent_position_expected_count_roll5"]
+    )
+    assert lat["h005_opponent_position_count_ratio"] == pytest.approx(expected_ratio)
 
 
 def test_h004_feature_formulas_are_finite_and_zero_for_tecnico() -> None:

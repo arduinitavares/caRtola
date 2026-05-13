@@ -34,7 +34,7 @@ StrictAlignmentPolicy = Literal["fail", "exclude_round"]
 FootyStatsMode = Literal["none", "ppg", "ppg_xg"]
 FootyStatsEvaluationScope = Literal["historical_candidate", "live_current"]
 MatchupContextMode = Literal["none", "cartola_matchup_v1"]
-FeatureAugmentationMode = Literal["none", "h004_attack_defense_v1"]
+FeatureAugmentationMode = Literal["none", "h004_attack_defense_v1", "h005_matchup_reliability_v1"]
 
 STATUS_ID_TO_NAME: Mapping[int, str] = {
     2: "Duvida",
