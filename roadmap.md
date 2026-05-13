@@ -82,7 +82,9 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - missing strict fixture evidence raises instead of falling back to no-fixture or exploratory reconstruction,
   - live target-round fixture coverage is validated against candidate clubs, while historical training rounds keep strict played-club alignment checks,
   - recommendation metadata records fixture mode, matchup mode, strict manifest paths/hashes, generator versions, and feature columns,
-  - CLI defaults remain unchanged: `random_forest`, `ppg`, `fixture_mode=none`, and `matchup_context_mode=none`.
+  - CLI defaults are now the promoted no-fixture live profile:
+    `xgboost_depth2_l2_heavy`, `ppg_xg`, `fixture_mode=none`, and
+    `matchup_context_mode=none`.
 - Matchup fixture coverage audit:
   - `scripts/audit_matchup_fixture_coverage.py` checks whether requested seasons have fixture context for every played club-round,
   - prefers strict fixture CSVs with valid manifests and falls back to exploratory fixture CSVs,
@@ -139,7 +141,9 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
 - Production model selection for live recommendations:
   - `scripts/recommend_squad.py` and `scripts/run_live_round.py` now accept `--model-id`,
   - live/replay recommendations can use any model in the controlled registry,
-  - historical promotion evidence must be rerun under moving budget before changing defaults.
+  - the live no-fixture default has been promoted to
+    `xgboost_depth2_l2_heavy + ppg_xg` after a 2021-2025 moving-budget
+    production-parity rerun passed the v1 promotion guardrails.
 - Constrained Ridge alpha tuning runner:
   - `scripts/run_ridge_tuning.py`,
   - fixed, predeclared Ridge alpha matrix: `0.01`, `0.03`, `0.1`, `0.3`, `1.0`, `3.0`, `10.0`, `30.0`, `100.0`, and `300.0`,
@@ -188,6 +192,23 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
     `data/08_reporting/hypotheses/`,
   - treats the output as model-signal research only; a pass authorizes a frozen
     feature-pack experiment plan, not a live default or optimizer-policy change.
+- EBM feature diagnostic runner:
+  - `scripts/run_ebm_feature_diagnostic.py` reads persisted experiment artifacts
+    and fits discovery-only InterpretML EBMs across whole-season folds,
+  - writes source context, predictive metrics, feature importance, feature shape,
+    interaction, candidate hypothesis, invalid-row, decision JSON, and HTML
+    artifacts under `data/08_reporting/ebm_diagnostics/`,
+  - keeps `discovery_only=true` outputs out of promotion/index/default paths,
+  - produced one residual candidate around
+    `matchup_opponent_allowed_position_count` for the current
+    `xgboost_depth2_slow + ppg_xg_matchup` source run.
+- H005 count-aware matchup reliability research:
+  - adds the `ppg_xg_matchup_h005` feature pack and deterministic H005 mechanism
+    audit/decision scripts,
+  - tests position-normalized matchup-count reliability without manual point
+    shrinkage,
+  - preserves H005 as research-only and fail-closed when source identity,
+    mechanism support, comparability, budget, ranking, or calibration gates fail.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -283,6 +304,62 @@ most recent complete season. Do not promote or keep iterating on
 `ppg_xg_matchup_h004`; preserve it as negative evidence. The next feature
 hypothesis should start from a fresh residual diagnostic or a materially
 different football signal, not a direct H004-family tweak.
+
+EBM and H005 reliability research are complete enough to close this research
+branch:
+
+- EBM source diagnostic:
+  `data/08_reporting/ebm_diagnostics/ebm_diagnostic_started_at=20260511T004620197204Z`;
+- EBM status: `diagnostic_complete`;
+- only residual-target lead:
+  `matchup_opponent_allowed_position_count`;
+- H005 mechanism audit:
+  `data/08_reporting/hypotheses/h005_mechanism_audit_started_at=20260513T115234772087Z`;
+- H005 feature experiment:
+  `data/08_reporting/experiments/model_feature/group=h005-count-aware-matchup-shrinkage__started_at=20260513T115300476279Z__matrix=ede90899ae80`;
+- H005 decision status: `invalid`;
+- mechanism audit status: `invalid` because of a strict duplicate
+  `row_identity_mismatch` on `2022`, round `5`, athlete `68923`;
+- recomputed count match status: `ok`;
+- if the duplicate identity check is ignored, mechanism support is still only
+  `mixed_or_weak`;
+- H005 aggregate actual-points delta: `-164.14`;
+- H005 2025 actual-points delta: `-186.80`;
+- comparability, fixture identity, candidate signature, and optimizer status:
+  `ok`.
+
+Interpretation: H005 ran through the experiment matrix, but it did not produce
+valid or useful evidence. The normalized matchup-count reliability feature pack
+should not be promoted, and it should not be followed by another direct
+count-reliability tweak. The broader lesson is that the EBM lead was too weak
+once translated into a frozen feature pack. Future feature hypotheses should
+come from a fresh diagnostic or a materially different signal family.
+
+The no-fixture live default promotion matrix is complete for `2021`, `2022`,
+`2023`, `2024`, and `2025` with `fixture_mode=none`, moving-budget semantics,
+`start_round=5`, and `budget=100`.
+
+Promoted default:
+
+- model/profile: `xgboost_depth2_l2_heavy + ppg_xg`;
+- artifact:
+  `data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260513T135649009077Z__matrix=e90eb0b9b692`;
+- rank: `1`;
+- total actual points: `9945.02`;
+- baseline `random_forest + ppg`: `8975.77`;
+- aggregate lift: `+969.25`;
+- average lift: `+5.70` points per round;
+- improved seasons: `5 / 5`;
+- worst season average delta: `+0.67`;
+- selected calibration slope: `0.8843`;
+- top-50 Spearman delta: `+0.0111`;
+- promotion status: `passes_v1_guardrails`.
+
+Interpretation: `xgboost_depth2_l2_heavy + ppg_xg + fixture_mode=none` is now
+the promoted historical moving-budget live default. `random_forest + ppg`
+remains useful as a baseline comparator only; it should not be used as the live
+default unless explicitly requested for a control/replay run. This no-fixture
+promotion does not promote exploratory or strict matchup-context defaults.
 
 The first fixed-budget production-parity model/feature experiment is complete for `2023`,
 `2024`, and `2025` with `fixture_mode=none`, `start_round=5`, and
@@ -664,8 +741,6 @@ Live squad recommendation for the current no-fixture production profile:
 uv run --frozen python scripts/run_live_round.py \
   --season 2026 \
   --budget 100 \
-  --model-id ridge \
-  --footystats-mode ppg_xg \
   --current-year 2026
 ```
 
@@ -677,8 +752,6 @@ uv run --frozen python scripts/recommend_squad.py \
   --target-round 14 \
   --mode live \
   --budget 100 \
-  --model-id ridge \
-  --footystats-mode ppg_xg \
   --current-year 2026
 ```
 
@@ -713,44 +786,89 @@ Quality gate:
 uv run --frozen scripts/pyrepo-check --all
 ```
 
+**Next Milestone: Live-Lineup Risk Guardrails**
+
+Goal: make live squad recommendations operationally safer before spending more
+time on marginal feature-pack hypotheses.
+
+Why now: H001-H005 did not produce promotable research evidence, and the live
+default has now been corrected to the promoted
+`xgboost_depth2_l2_heavy + ppg_xg` no-fixture profile. The remaining direct
+product-risk gap is lineup safety: `Provavel` is not confirmed-lineup evidence,
+capture age is not yet surfaced as a hard review signal, and selected low-sample
+players can enter the squad without a prominent risk summary.
+
+Scope:
+
+- Add a live risk summary artifact for `run_live_round.py` and
+  `recommend_squad.py` outputs.
+- Surface market-capture age, capture policy, selected-player status mix,
+  low-appearance/low-history flags, and selected-player DNP/null-risk context.
+- Add CLI/report warnings that are visible before a human trusts the squad.
+- Keep this as a guardrail/reporting milestone; the model default change is
+  already handled by the promotion artifact above, so do not change optimizer
+  objective or promotion policy in the same milestone.
+- Defer external confirmed-lineup integration and manual player exclusion to a
+  later milestone unless the guardrail summary proves insufficient.
+
+Acceptance:
+
+- Live/replay recommendation metadata records the risk summary path.
+- `recommended_squad.csv` or a companion risk CSV identifies selected low-sample
+  and stale-capture risks deterministically.
+- CLI output warns when capture age, `status`, or selected-player history fails
+  the configured review thresholds.
+- Unit tests cover stale capture metadata, selected-player risk flags, and the
+  no-warning path for a clean synthetic squad.
+- The default live command remains runnable:
+  `uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --current-year 2026`.
+
 **Roadmap**
-1. Rerun the model/feature leaderboards under moving-budget semantics before making any promotion decision.
-   - Keep `random_forest + ppg` available as the historical baseline.
-   - Continue to record the chosen model id and feature mode in every recommendation output.
-   - The old fixed-budget evidence favored `ridge + ppg_xg + alpha=1.0 + fixture_mode=none`, but it is now superseded until rerun under moving budget.
+1. Build the live-lineup risk guardrails milestone.
+   - Treat this as the next delivery before another H006-style feature
+     hypothesis.
+   - The milestone improves recommendation trust, not model score quality.
+   - It must not silently block all live recommendations; it should make risk
+     explicit and fail only on deliberately configured hard thresholds.
+2. Keep live model selection pinned to the promoted moving-budget default.
+   - Current default: `xgboost_depth2_l2_heavy + ppg_xg + fixture_mode=none`.
+   - Keep `random_forest + ppg` available as the historical baseline, not as a
+     live recommendation default.
+   - Continue to record the chosen model id and feature mode in every
+     recommendation output.
+   - Any future default change needs a fresh frozen moving-budget promotion
+     artifact with the same comparability guardrails.
    - For single-round live recommendations, `--budget` still means the caller-provided current available budget for that one open round.
    - Strict matchup mode is available only as an opt-in research/live candidate until it survives real strict pre-lock rounds.
-2. Use strict matchup mode in the next open round only after capturing strict fixture evidence.
+3. Use strict matchup mode in the next open round only after capturing strict fixture evidence.
    - Capture strict fixture snapshots before generating the recommendation.
    - First candidate to test: `xgboost_depth2_slow + ppg_xg + cartola_matchup_v1`, because it beat Ridge in all three exploratory seasons and fixed the 2025 regression seen in the faster aggregate winner.
    - Inspect `run_metadata.json` for fixture manifest paths/hashes and `candidate_predictions.csv` before trusting the squad.
    - Do not fall back to exploratory fixtures in live mode.
-3. Treat the fixed XGBoost sensitivity result as exploratory fixed-budget evidence, not production proof.
-   - The `xgboost-sensitivity-v2` run showed a stable candidate region, with `xgboost_depth2_slow` preferred over the higher-aggregate `xgboost_depth2_fast` because 2025 was non-negative.
-   - Do not add XGBoost to production defaults until it beats the freshly rerun moving-budget incumbent under the same comparability guardrails and does not materially regress 2025.
+4. Treat the older fixed XGBoost sensitivity result as superseded by the
+   no-fixture production-parity promotion rerun.
+   - XGBoost is now allowed in live no-fixture defaults only for the promoted
+     profile `xgboost_depth2_l2_heavy + ppg_xg`.
+   - Matchup-context XGBoost profiles remain separate research/live candidates
+     until strict pre-lock fixture evidence supports them.
    - Treat each fixed candidate list as a frozen generation. Any change to the XGBoost specs should become a new experiment group/generation, not an informal rerun.
    - On macOS, XGBoost requires the native OpenMP runtime (`libomp`) to be installed before the XGBoost children can run.
    - Defer RandomForest/ExtraTrees tuning until calibration wrappers are designed; tree models still fail calibration guardrails.
    - Defer HGB tuning despite the runtime fix; it is now operationally usable, but it did not beat Ridge.
    - Defer Optuna until the fixed XGBoost sensitivity pass shows a season-stable local region, not a single lucky aggregate winner.
    - Future Optuna work should use a seeded `TPESampler`, SQLite storage, a frozen search space, explicit trial manifests, and final full-backtest reruns for finalists; pruned or predictive-only trials must never be promotion-eligible.
-   - Defer LightGBM and CatBoost until XGBoost has a clear fixed-candidate result.
-4. Use generated Plotly experiment reports as the standard review surface.
+   - Defer LightGBM and CatBoost until the promoted XGBoost default has enough
+     live monitoring evidence to justify another model-family generation.
+5. Use generated Plotly experiment reports as the standard review surface.
    - Start with `squad_performance_comparison.html` and `calibration_plots.html`.
    - Use `ranked_summary.csv`, `per_season_summary.csv`, `prediction_metrics.csv`, `calibration_deciles.csv`, and `comparability_report.json` as source-of-truth artifacts.
    - Do not trust any ranking if comparability failed.
-5. Add live-lineup risk guardrails before trusting automated round picks.
-   - GitHub issues are disabled for the repository, so this item tracks the round-14 goalkeeper incident locally.
-   - Root cause: live recommendations currently treat Cartola `Provavel` as playable, but `Provavel` is not confirmed-lineup evidence.
-   - Add a max capture-age warning or hard guard, especially for `capture_policy=skip` and `capture_policy=missing`.
-   - Flag selected low-sample players, such as very low `num_jogos` or prior appearance count, before the squad is trusted.
-   - Longer term: add a confirmed-lineup source or manual exclusion/override workflow before market lock.
 6. Use `scripts/run_live_round.py` for each 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
 7. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
    - These snapshots are now consumed by opt-in strict matchup live recommendations.
-8. Harden moving-budget evidence before replacing any live default.
-   - Rerun production-parity, matchup-research, XGBoost sensitivity, and Ridge controls with moving budget.
+8. Harden moving-budget evidence before any future default replacement.
+   - Rerun the relevant candidate and baseline controls with moving budget.
    - Compare only artifacts with `budget_policy=moving`; treat missing `budget_policy` as old fixed-budget evidence.
    - Inspect `initial_budget`, `final_budget`, `total_budget_delta`, `min_budget`, `max_budget_drawdown`, and `budget_constrained_rounds` alongside points.
    - Validate that selected player and tecnico rows always preserve finite historical `variacao` in completed rounds.
@@ -767,8 +885,8 @@ uv run --frozen scripts/pyrepo-check --all
 11. Add DNP probability modeling if needed:
     - predict `p_play`,
     - use `expected_points = predicted_points * p_play`.
-12. Keep adaptive hyperparameter search behind the fixed-candidate baseline.
-    - XGBoost is the first external family and should be evaluated only through the fixed `xgboost-research` generation for now.
+12. Keep adaptive hyperparameter search behind the promoted fixed-candidate baseline.
+    - XGBoost is now the live no-fixture default, but future tuning should still use frozen generations with full-backtest reruns.
     - Possible later candidates: CatBoost or LightGBM, one family at a time.
     - Optuna remains a future search engine, not v1 implementation scope.
     - Do not start broad grid search over external libraries before fixed candidates, strict/live matchup integration, and live reliability guardrails are understood.

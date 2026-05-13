@@ -50,7 +50,7 @@ Steps:
 - The compatibility loader now skips opening snapshots such as `rodada-0.csv` and 2021 `Mercado_1.txt`; legacy `Mercado_*.txt` files are read as Latin-1 JSON when no `rodada-*.csv` files exist.
 - FootyStats compatibility audit:
   `uv run --frozen python scripts/audit_footystats_compatibility.py --current-year 2026`
-- For no-fixture live recommendations, prior fixed-budget evidence favored `ridge + ppg_xg + fixture_mode=none`, but historical promotion evidence must be rerun under moving budget before changing defaults; keep `random_forest + ppg` available as the historical baseline and do not infer matchup-context production value from this no-fixture result.
+- For no-fixture live recommendations, the promoted historical moving-budget default is `xgboost_depth2_l2_heavy + ppg_xg + fixture_mode=none`. Promotion artifact: `data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260513T135649009077Z__matrix=e90eb0b9b692`, rank 1, `promotion_eligible=true`, `promotion_reason=passes_v1_guardrails`, aggregate lift `+969.25` over `random_forest + ppg`, improved `5 / 5` seasons. Keep `random_forest + ppg` available only as the historical baseline comparator and do not infer matchup-context production value from this no-fixture result.
 - Backtests and recommendations use the `cartola_standard_2026_v1` scoring contract: all official formations are searched, a non-tecnico captain is selected with a `1.5x` multiplier, and report totals should use the captain-aware point fields.
 - `matchup_context_mode=cartola_matchup_v1` is separate from `footystats_mode`; live recommendations support it only with `--fixture-mode strict` and keep it out of defaults.
 
@@ -132,7 +132,9 @@ Steps:
   `uv run --frozen python scripts/run_model_experiments.py --group h005-count-aware-matchup-shrinkage --seasons 2021,2022,2023,2024,2025 --start-round 5 --budget 100 --current-year 2026 --jobs 12 --profile-runtime`
 - H005 feature decision:
   `uv run --frozen python scripts/run_h005_feature_decision.py --experiment-path data/08_reporting/experiments/model_feature/<h005-experiment-id> --audit-decision-path data/08_reporting/hypotheses/<h005-audit-id>/h005_mechanism_audit_decision.json`
-- H005 is research-only. Do not change live defaults from H005 unless a separate promotion protocol is explicitly approved.
+- Latest H005 run:
+  `data/08_reporting/experiments/model_feature/group=h005-count-aware-matchup-shrinkage__started_at=20260513T115300476279Z__matrix=ede90899ae80`; decision status `invalid`, mechanism audit status `invalid`, recomputed count match `ok`, aggregate actual-points delta `-164.14`, 2025 delta `-186.80`.
+- H005 is research-only and should not be promoted or directly iterated as another count-reliability tweak. The latest run failed strict audit identity checks and was materially negative even though comparability, fixture identity, candidate signature, and optimizer status were ok.
 
 ## Ridge Tuning Workflow
 
@@ -146,17 +148,17 @@ Steps:
 ## Live Recommendation Workflow
 
 - Preferred one-command live workflow:
-  `uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --model-id ridge --footystats-mode ppg_xg --current-year 2026`
+  `uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --current-year 2026`
 - Opt-in strict matchup live workflow, only after strict fixture capture exists for the open round:
   `uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --model-id xgboost_depth2_slow --footystats-mode ppg_xg --fixture-mode strict --matchup-context-mode cartola_matchup_v1 --current-year 2026`
 - `scripts/run_live_round.py` defaults to `--capture-policy fresh`; use `missing` to reuse a valid live capture when present, or `skip` to require one without fetching `atletas/mercado`.
 - For live and single-round replay recommendations, `--budget` means current available budget for that one round; moving-budget updates apply only to historical multi-round workflows.
 - One-command live recommendation outputs are archived under `data/08_reporting/recommendations/{season}/round-{target_round}/live/runs/run_started_at=.../`.
-- `scripts/run_live_round.py` and `scripts/recommend_squad.py` support all controlled model IDs plus `--fixture-mode none|strict` and `--matchup-context-mode none|cartola_matchup_v1`; CLI defaults remain `random_forest`, `ppg`, `fixture_mode=none`, and `matchup_context_mode=none`.
+- `scripts/run_live_round.py` and `scripts/recommend_squad.py` support all controlled model IDs plus `--fixture-mode none|strict` and `--matchup-context-mode none|cartola_matchup_v1`; CLI defaults are `xgboost_depth2_l2_heavy`, `ppg_xg`, `fixture_mode=none`, and `matchup_context_mode=none`.
 - Capture the open market round before a live recommendation:
   `uv run --frozen python scripts/capture_market_round.py --season 2026 --auto --current-year 2026`
 - Generate a live squad recommendation:
-  `uv run --frozen python scripts/recommend_squad.py --season 2026 --target-round 14 --mode live --budget 100 --model-id ridge --footystats-mode ppg_xg --current-year 2026`
+  `uv run --frozen python scripts/recommend_squad.py --season 2026 --target-round 14 --mode live --budget 100 --current-year 2026`
 - Replay a completed current-season round:
   `uv run --frozen python scripts/recommend_squad.py --season 2026 --target-round 10 --mode replay --budget 100 --footystats-mode ppg --current-year 2026`
 - Recommendation outputs are written under `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/`.
@@ -173,6 +175,6 @@ Steps:
 ## Cautions
 
 - `--fixture-mode strict` requires pre-lock snapshot/manifests under `data/01_raw/fixtures_strict/{season}/`; do not claim strict no-leakage fixture evaluation without those files.
-- TODO: Add live-lineup risk guardrails; until then, `Provavel` is not confirmed-lineup evidence, so inspect capture age and selected low-sample players before trusting live squads.
+- Next milestone: add live-lineup risk guardrails. Until then, `Provavel` is not confirmed-lineup evidence, so inspect capture age and selected low-sample players before trusting live squads.
 - CI updates raw data with `uv run --frozen --no-dev python src/cartola/download_data.py` and then `src/cartola/update_readme.py`.
 - TODO: Verify the Docker workflow before relying on `make docker`; `Dockerfile` still references Poetry and Python 3.10 while the current project setup uses `uv` and Python 3.13.12.

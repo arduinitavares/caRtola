@@ -49,8 +49,8 @@ def test_parse_args_builds_live_defaults() -> None:
     assert args.target_round == 14
     assert args.mode == "live"
     assert args.budget == 100.0
-    assert args.footystats_mode == "ppg"
-    assert args.model_id == "random_forest"
+    assert args.footystats_mode == "ppg_xg"
+    assert args.model_id == "xgboost_depth2_l2_heavy"
     assert args.fixture_mode == "none"
     assert args.matchup_context_mode == "none"
     assert args.output_root == Path("data/08_reporting/recommendations")
@@ -118,11 +118,12 @@ def test_main_builds_recommendation_config(monkeypatch: pytest.MonkeyPatch, tmp_
             mode="replay",
             project_root=tmp_path,
             current_year=2026,
-            model_id="ridge",
-            fixture_mode="strict",
-            matchup_context_mode="cartola_matchup_v1",
-        )
-    ]
+                model_id="ridge",
+                fixture_mode="strict",
+                matchup_context_mode="cartola_matchup_v1",
+                footystats_mode="ppg_xg",
+            )
+        ]
     output = capsys.readouterr().out
     assert "Recommendation complete" in output
     assert "Predicted total" in output
