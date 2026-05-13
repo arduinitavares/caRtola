@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -8,10 +9,16 @@ import pytest
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.fixed_blend_diagnostic import (
     FixedBlendDiagnosticError,
+    build_blend_complementarity,
+    decide_blend_candidate,
     load_blend_candidate_frame,
     parse_blend_specs,
     run_blend_replay_for_season,
+    run_fixed_blend_diagnostic,
 )
+from cartola.backtesting.optimizer import optimize_squad
+from cartola.backtesting.optimizer_policies import NO_POLICY
+from cartola.backtesting.scoring_contract import SCORING_CONTRACT_VERSION, actual_scores_with_captain
 
 
 def test_parse_blend_specs_accepts_named_weighted_components() -> None:
@@ -134,6 +141,146 @@ def test_run_blend_replay_for_season_advances_each_blend_budget_independently(tm
     ) | set(replay.selected_player_rows["m006_blend_blend_b_score"].dropna())
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected_status"),
+    [
+        ({"source_valid": False}, "invalid"),
+        ({"non_optimal_delta": 1}, "rejected"),
+        ({"disaster_rounds_under45_delta": 2}, "rejected"),
+        ({}, "candidate_blend"),
+        ({"aggregate_delta": 50.0, "worst_season_delta": -30.0, "season_2025_delta": -20.0}, "weak_positive_research_lead"),
+        ({"aggregate_delta": 10.0}, "inconclusive"),
+        ({"aggregate_delta": -25.0}, "rejected"),
+    ],
+)
+def test_decide_blend_candidate_applies_frozen_gates(
+    overrides: dict[str, object],
+    expected_status: str,
+) -> None:
+    metrics: dict[str, object] = {
+        "blend_name": "blend_a",
+        "source_valid": True,
+        "aggregate_delta": 90.0,
+        "improved_seasons": 3,
+        "worst_season_delta": -20.0,
+        "season_2025_delta": -10.0,
+        "final_budget_delta": -5.0,
+        "min_budget_delta": -5.0,
+        "max_drawdown_delta": 5.0,
+        "selected_calibration_slope": 1.0,
+        "top50_spearman_delta": 0.0,
+        "disaster_rounds_under45_delta": 0,
+        "worst_2_round_delta": -5.0,
+        "top_two_concentration": 0.4,
+        "non_optimal_delta": 0,
+    }
+    metrics.update(overrides)
+
+    decision = decide_blend_candidate(**metrics)
+
+    assert decision.status == expected_status
+    assert decision.blend_name == "blend_a"
+    assert decision.reason
+
+
+def test_build_blend_complementarity_joins_candidate_rows(tmp_path: Path) -> None:
+    experiment_path = tmp_path / "experiment"
+    base = _candidate_frame(rounds=(5,), score_column="model_a_score", score_offset=0.0)
+    _write_predictions(experiment_path, season=2025, model_id="model_a", feature_pack="ppg", frame=base)
+    _write_predictions(
+        experiment_path,
+        season=2025,
+        model_id="model_b",
+        feature_pack="ppg",
+        frame=base.rename(columns={"model_a_score": "model_b_score"}).assign(
+            model_b_score=base["model_a_score"] + 1.0,
+        ),
+    )
+
+    complementarity = build_blend_complementarity(
+        experiment_path=experiment_path,
+        seasons=(2025,),
+        feature_pack="ppg",
+        model_a="model_a",
+        model_b="model_b",
+    )
+
+    assert complementarity["scope"].tolist() == ["season", "overall"]
+    assert complementarity["season"].astype(str).tolist() == ["2025", "all"]
+    assert complementarity["prediction_correlation"].notna().all()
+    assert complementarity["mean_abs_pred_diff"].iloc[0] == pytest.approx(1.0)
+
+
+def test_run_fixed_blend_diagnostic_writes_artifacts_from_synthetic_source(tmp_path: Path) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "blend_diagnostics"
+    model_a = _candidate_frame(rounds=(5, 6), score_column="model_a_score", score_offset=0.0)
+    model_b = model_a.rename(columns={"model_a_score": "model_b_score"}).assign(
+        model_b_score=model_a["model_a_score"] + 0.5,
+    )
+    _write_experiment_child(
+        experiment_path,
+        season=2025,
+        model_id="model_a",
+        feature_pack="ppg",
+        predictions=model_a,
+        score_column="model_a_score",
+    )
+    _write_experiment_child(
+        experiment_path,
+        season=2025,
+        model_id="model_b",
+        feature_pack="ppg",
+        predictions=model_b,
+        score_column="model_b_score",
+    )
+
+    output_path = run_fixed_blend_diagnostic(
+        experiment_path=experiment_path,
+        seasons=(2025,),
+        feature_pack="ppg",
+        control_model="model_a",
+        blend_specs=parse_blend_specs(("blend_a=model_a:0.5,model_b:0.5",)),
+        initial_budget=50.0,
+        current_year=2026,
+        output_root=output_root,
+    )
+
+    assert output_path.parent == output_root
+    assert output_path.name.startswith("fixed_blend_started_at=")
+    for artifact_name in (
+        "fixed_blend_manifest.json",
+        "blend_complementarity.csv",
+        "blend_round_results.csv",
+        "blend_selected_players.csv",
+        "blend_per_season_summary.csv",
+        "blend_ranked_summary.csv",
+        "blend_decision.json",
+        "invalid_rows.csv",
+        "fixed_blend_report.html",
+    ):
+        assert (output_path / artifact_name).exists()
+
+    manifest = json.loads((output_path / "fixed_blend_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["hypothesis_id"] == "M006"
+    assert manifest["design_revision"] == "fixed_blend_v1"
+    assert manifest["source_experiment_path"] == str(experiment_path)
+    assert manifest["seasons"] == [2025]
+    assert manifest["feature_pack"] == "ppg"
+    assert manifest["control_model"] == "model_a"
+    assert manifest["initial_budget"] == 50.0
+    assert manifest["budget_policy"] == "moving"
+    assert manifest["current_year"] == 2026
+    assert manifest["source_valid"] is True
+
+    ranked_summary = pd.read_csv(output_path / "blend_ranked_summary.csv")
+    assert ranked_summary["source_valid"].tolist() == [True]
+    assert set(ranked_summary["decision_status"]).issubset(
+        {"rejected", "inconclusive", "weak_positive_research_lead", "candidate_blend"}
+    )
+    assert pd.read_csv(output_path / "invalid_rows.csv").empty
+
+
 def _write_predictions(
     experiment_path: Path,
     *,
@@ -145,6 +292,87 @@ def _write_predictions(
     child_path = experiment_path / "runs" / f"season={season}" / f"model={model_id}" / f"feature_pack={feature_pack}"
     child_path.mkdir(parents=True)
     frame.to_csv(child_path / "player_predictions.csv", index=False)
+
+
+def _write_experiment_child(
+    experiment_path: Path,
+    *,
+    season: int,
+    model_id: str,
+    feature_pack: str,
+    predictions: pd.DataFrame,
+    score_column: str,
+) -> None:
+    child_path = experiment_path / "runs" / f"season={season}" / f"model={model_id}" / f"feature_pack={feature_pack}"
+    child_path.mkdir(parents=True)
+    metadata = {
+        "season": season,
+        "model_id": model_id,
+        "feature_pack": feature_pack,
+        "budget_policy": "moving",
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        "fixture_mode": "none",
+        "matchup_context_mode": "none",
+        "start_round": 5,
+        "initial_budget": 50.0,
+        "score_column": score_column,
+    }
+    (child_path / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    predictions.to_csv(child_path / "player_predictions.csv", index=False)
+    _write_matching_source_outputs(
+        child_path,
+        season=season,
+        predictions=predictions,
+        score_column=score_column,
+        model_id=model_id,
+    )
+
+
+def _write_matching_source_outputs(
+    child_path: Path,
+    *,
+    season: int,
+    predictions: pd.DataFrame,
+    score_column: str,
+    model_id: str,
+) -> None:
+    round_rows: list[dict[str, object]] = []
+    selected_rows: list[pd.DataFrame] = []
+    current_budget = 50.0
+    for round_number in sorted(predictions["rodada"].astype(int).unique().tolist()):
+        round_candidates = predictions.loc[predictions["rodada"].eq(round_number)].copy()
+        result = optimize_squad(
+            round_candidates,
+            score_column=score_column,
+            config=BacktestConfig(season=season, start_round=round_number, budget=current_budget),
+            budget=current_budget,
+            policy=NO_POLICY,
+        )
+        actual_scores = actual_scores_with_captain(result.selected, actual_column="pontuacao")
+        budget_delta = float(result.selected["variacao"].sum())
+        round_rows.append(
+            {
+                "rodada": round_number,
+                "strategy": model_id,
+                "solver_status": result.status,
+                "formation": result.formation_name,
+                "budget_before_round": current_budget,
+                "budget_after_round": current_budget + budget_delta,
+                "budget_delta": budget_delta,
+                "budget_used": result.budget_used,
+                "actual_points_with_captain": actual_scores["actual_points_with_captain"],
+                "predicted_points_with_captain": result.predicted_points_with_captain,
+                "captain_id": result.captain_id,
+            }
+        )
+        selected = result.selected.copy()
+        selected["rodada"] = round_number
+        selected["strategy"] = model_id
+        selected_rows.append(selected)
+        current_budget += budget_delta
+
+    pd.DataFrame(round_rows).to_csv(child_path / "round_results.csv", index=False)
+    pd.concat(selected_rows, ignore_index=True).to_csv(child_path / "selected_players.csv", index=False)
 
 
 def _candidate_frame(*, rounds: tuple[int, ...], score_column: str, score_offset: float) -> pd.DataFrame:
