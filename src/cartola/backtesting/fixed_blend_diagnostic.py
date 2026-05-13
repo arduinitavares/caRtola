@@ -15,7 +15,11 @@ from cartola.backtesting.budgeting import advance_budget, initial_budget_state
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.experiment_metrics import calibration_slope_intercept, top_k_rows_by_round
 from cartola.backtesting.optimizer import optimize_squad
-from cartola.backtesting.policy_simulation import PolicySimulationError, reproduce_no_policy_round
+from cartola.backtesting.policy_simulation import (
+    PolicySimulationError,
+    load_policy_source_context,
+    reproduce_no_policy_round,
+)
 from cartola.backtesting.scoring_contract import actual_scores_with_captain
 
 _WEIGHT_SUM_TOLERANCE = 1e-9
@@ -397,9 +401,11 @@ def build_blend_ranked_summary(
     *,
     source_valid: bool,
     top50_spearman_delta: pd.DataFrame | None = None,
+    round_delta_summary: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     top50_lookup = _top50_delta_lookup(top50_spearman_delta)
+    top_two_lookup = _top_two_round_delta_concentration_lookup(round_delta_summary)
     for blend_name, summary in per_season_summary.groupby("blend_name", sort=True):
         selected = selected_players.loc[selected_players["blend_name"].astype(str).eq(str(blend_name))]
         calibration = calibration_slope_intercept(
@@ -410,7 +416,6 @@ def build_blend_ranked_summary(
         aggregate_delta = float(summary["actual_points_delta"].sum())
         season_2025_rows = summary.loc[summary["season"].astype(int).eq(2025), "actual_points_delta"]
         season_2025_delta = float(season_2025_rows.iloc[0]) if not season_2025_rows.empty else 0.0
-        top_two_concentration = _top_two_concentration(selected)
         row = {
             "blend_name": str(blend_name),
             "source_valid": bool(source_valid),
@@ -420,13 +425,16 @@ def build_blend_ranked_summary(
             "improved_seasons": int((summary["actual_points_delta"] > 0).sum()),
             "worst_season_delta": float(summary["actual_points_delta"].min()),
             "season_2025_delta": season_2025_delta,
-            "final_budget_delta": float(summary["final_budget_delta"].sum()),
-            "min_budget_delta": float(summary["min_budget_delta"].sum()),
-            "max_drawdown_delta": float(summary["max_drawdown_delta"].sum()),
+            "aggregate_final_budget_delta": float(summary["final_budget_delta"].sum()),
+            "aggregate_min_budget_delta": float(summary["min_budget_delta"].sum()),
+            "aggregate_max_drawdown_delta": float(summary["max_drawdown_delta"].sum()),
+            "final_budget_delta": float(summary["final_budget_delta"].min()),
+            "min_budget_delta": float(summary["min_budget_delta"].min()),
+            "max_drawdown_delta": float(summary["max_drawdown_delta"].max()),
             "non_optimal_delta": int(summary["non_optimal_delta"].sum()),
             "disaster_rounds_under45_delta": int(summary["disaster_rounds_under45_delta"].sum()),
-            "worst_2_round_delta": float(summary["worst_2_round_delta"].sum()),
-            "top_two_concentration": top_two_concentration,
+            "worst_2_round_delta": float(summary["worst_2_round_delta"].min()),
+            "top_two_concentration": top_two_lookup.get(str(blend_name), float("inf")),
             "selected_calibration_slope": selected_calibration_slope,
             "selected_calibration_intercept": _none_if_missing(calibration.get("calibration_intercept")),
             "selected_calibration_warning": calibration.get("warning"),
@@ -452,7 +460,58 @@ def build_blend_ranked_summary(
         row["decision_status"] = decision.status
         row["decision_reason"] = decision.reason
         rows.append(row)
-    return pd.DataFrame(rows).sort_values(["decision_status", "aggregate_delta"], ascending=[True, False]).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["decision_status", "aggregate_delta"], ascending=[True, False])
+        .reset_index(drop=True)
+    )
+
+
+def build_blend_round_delta_summary(
+    *,
+    experiment_path: Path,
+    blend_round_results: pd.DataFrame,
+    seasons: tuple[int, ...],
+    control_model: str,
+    feature_pack: str,
+) -> pd.DataFrame:
+    rows: list[pd.DataFrame] = []
+    for season in seasons:
+        control_rounds = _read_control_round_results(
+            experiment_path=experiment_path,
+            season=season,
+            control_model=control_model,
+            feature_pack=feature_pack,
+        )
+        control = control_rounds.loc[:, ["rodada", "actual_points_with_captain"]].rename(
+            columns={"actual_points_with_captain": "control_actual_points_with_captain"}
+        )
+        season_blends = blend_round_results.loc[blend_round_results["season"].astype(int).eq(int(season))]
+        for blend_name, blend_rounds in season_blends.groupby("blend_name", sort=True):
+            blend = blend_rounds.loc[:, ["season", "rodada", "blend_name", "actual_points_with_captain"]].rename(
+                columns={"actual_points_with_captain": "blend_actual_points_with_captain"}
+            )
+            joined = blend.merge(control, on="rodada", how="inner", validate="one_to_one")
+            joined["actual_points_delta"] = (
+                pd.to_numeric(joined["blend_actual_points_with_captain"], errors="coerce")
+                - pd.to_numeric(joined["control_actual_points_with_captain"], errors="coerce")
+            )
+            joined["blend_name"] = str(blend_name)
+            rows.append(joined)
+    if not rows:
+        return pd.DataFrame(
+            columns=pd.Index(
+                [
+                    "season",
+                    "rodada",
+                    "blend_name",
+                    "blend_actual_points_with_captain",
+                    "control_actual_points_with_captain",
+                    "actual_points_delta",
+                ]
+            )
+        )
+    return _concat_or_empty(rows).sort_values(["blend_name", "season", "rodada"], kind="mergesort").reset_index(drop=True)
 
 
 def build_blend_complementarity(
@@ -521,6 +580,13 @@ def run_fixed_blend_diagnostic(
         control_model=control_model,
         feature_pack=feature_pack,
     )
+    round_delta_summary = build_blend_round_delta_summary(
+        experiment_path=experiment_path,
+        blend_round_results=blend_round_results,
+        seasons=seasons,
+        control_model=control_model,
+        feature_pack=feature_pack,
+    )
     top50_delta = _compute_top50_spearman_deltas(
         experiment_path=experiment_path,
         seasons=seasons,
@@ -533,6 +599,7 @@ def run_fixed_blend_diagnostic(
         blend_selected_players,
         source_valid=source_valid,
         top50_spearman_delta=top50_delta,
+        round_delta_summary=round_delta_summary,
     )
     complementarity = _build_all_complementarity(
         experiment_path=experiment_path,
@@ -741,13 +808,27 @@ def _none_if_missing(value: object) -> float | None:
     return numeric
 
 
-def _top_two_concentration(selected: pd.DataFrame) -> float:
-    if selected.empty or "id_atleta" not in selected.columns:
-        return 0.0
-    counts = selected["id_atleta"].astype(str).value_counts()
-    if counts.empty:
-        return 0.0
-    return float(counts.head(2).sum() / counts.sum())
+def _top_two_round_delta_concentration_lookup(round_delta_summary: pd.DataFrame | None) -> dict[str, float]:
+    if round_delta_summary is None or round_delta_summary.empty:
+        return {}
+    required = {"blend_name", "actual_points_delta"}
+    if not required.issubset(round_delta_summary.columns):
+        return {}
+
+    lookup: dict[str, float] = {}
+    for blend_name, blend_rows in round_delta_summary.groupby("blend_name", sort=True):
+        positive_deltas = (
+            pd.to_numeric(blend_rows["actual_points_delta"], errors="coerce")
+            .dropna()
+            .loc[lambda values: values.gt(0.0)]
+            .sort_values(ascending=False, kind="mergesort")
+        )
+        positive_total = float(positive_deltas.sum())
+        if positive_total <= 0.0:
+            lookup[str(blend_name)] = float("inf")
+        else:
+            lookup[str(blend_name)] = float(positive_deltas.head(2).sum() / positive_total)
+    return lookup
 
 
 def _joined_model_predictions(
@@ -829,6 +910,12 @@ def _validate_control_reproduction(
             feature_pack=feature_pack,
         )
         try:
+            _validate_control_source_context(
+                child_path=child_path,
+                season=season,
+                control_model=control_model,
+                feature_pack=feature_pack,
+            )
             control_rounds = _read_control_round_results(
                 experiment_path=experiment_path,
                 season=season,
@@ -862,6 +949,31 @@ def _validate_control_reproduction(
             )
     frame = pd.DataFrame(invalid_rows, columns=pd.Index(_INVALID_ROW_COLUMNS))
     return frame.empty, frame
+
+
+def _validate_control_source_context(
+    *,
+    child_path: Path,
+    season: int,
+    control_model: str,
+    feature_pack: str,
+) -> None:
+    context = load_policy_source_context(child_path)
+    mismatches: list[str] = []
+    if context.season != int(season):
+        mismatches.append(f"season metadata {context.season} does not match requested season {season}")
+    if context.model_id != control_model:
+        mismatches.append(f"model_id metadata {context.model_id!r} does not match control_model {control_model!r}")
+    if context.feature_pack != feature_pack:
+        mismatches.append(f"feature_pack metadata {context.feature_pack!r} does not match requested {feature_pack!r}")
+    if context.budget_policy != "moving":
+        mismatches.append(f"budget_policy metadata {context.budget_policy!r} is not 'moving'")
+    if context.fixture_mode != "none":
+        mismatches.append(f"fixture_mode metadata {context.fixture_mode!r} is not 'none'")
+    if context.matchup_context_mode != "none":
+        mismatches.append(f"matchup_context_mode metadata {context.matchup_context_mode!r} is not 'none'")
+    if mismatches:
+        raise FixedBlendDiagnosticError("; ".join(mismatches))
 
 
 def _start_round_for_control(experiment_path: Path, season: int, control_model: str, feature_pack: str) -> int:
