@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import cartola.backtesting.fixed_blend_diagnostic as fixed_blend_diagnostic
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.fixed_blend_diagnostic import (
     FixedBlendDiagnosticError,
@@ -394,6 +395,150 @@ def test_run_fixed_blend_diagnostic_marks_non_moving_source_metadata_invalid(tmp
     assert manifest["source_valid"] is False
     assert ranked_summary["source_valid"].tolist() == [False]
     assert ranked_summary["decision_status"].tolist() == ["invalid"]
+    assert "budget_policy" in " ".join(invalid_rows["reason"].astype(str))
+
+
+def test_run_fixed_blend_diagnostic_marks_initial_budget_mismatch_invalid(tmp_path: Path) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "blend_diagnostics"
+    model_a = _candidate_frame(rounds=(5, 6), score_column="model_a_score", score_offset=0.0)
+    model_b = model_a.rename(columns={"model_a_score": "model_b_score"}).assign(
+        model_b_score=model_a["model_a_score"] + 0.5,
+    )
+    _write_experiment_child(
+        experiment_path,
+        season=2025,
+        model_id="model_a",
+        feature_pack="ppg",
+        predictions=model_a,
+        score_column="model_a_score",
+    )
+    _write_experiment_child(
+        experiment_path,
+        season=2025,
+        model_id="model_b",
+        feature_pack="ppg",
+        predictions=model_b,
+        score_column="model_b_score",
+    )
+
+    output_path = run_fixed_blend_diagnostic(
+        experiment_path=experiment_path,
+        seasons=(2025,),
+        feature_pack="ppg",
+        control_model="model_a",
+        blend_specs=parse_blend_specs(("blend_a=model_a:0.5,model_b:0.5",)),
+        initial_budget=40.0,
+        current_year=2026,
+        output_root=output_root,
+    )
+
+    manifest = json.loads((output_path / "fixed_blend_manifest.json").read_text(encoding="utf-8"))
+    invalid_rows = pd.read_csv(output_path / "invalid_rows.csv")
+    ranked_summary = pd.read_csv(output_path / "blend_ranked_summary.csv")
+
+    assert manifest["source_valid"] is False
+    assert ranked_summary["decision_status"].tolist() == ["invalid"]
+    assert "initial_budget" in " ".join(invalid_rows["reason"].astype(str))
+
+
+def test_run_fixed_blend_diagnostic_uses_single_load_control_reproduction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "blend_diagnostics"
+    model_a = _candidate_frame(rounds=(5, 6), score_column="model_a_score", score_offset=0.0)
+    model_b = model_a.rename(columns={"model_a_score": "model_b_score"}).assign(
+        model_b_score=model_a["model_a_score"] + 0.5,
+    )
+    _write_experiment_child(
+        experiment_path,
+        season=2025,
+        model_id="model_a",
+        feature_pack="ppg",
+        predictions=model_a,
+        score_column="model_a_score",
+    )
+    _write_experiment_child(
+        experiment_path,
+        season=2025,
+        model_id="model_b",
+        feature_pack="ppg",
+        predictions=model_b,
+        score_column="model_b_score",
+    )
+
+    def fail_per_round_reproduction(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("per-round reproduction should not be called")
+
+    monkeypatch.setattr(
+        fixed_blend_diagnostic,
+        "reproduce_no_policy_round",
+        fail_per_round_reproduction,
+        raising=False,
+    )
+
+    output_path = run_fixed_blend_diagnostic(
+        experiment_path=experiment_path,
+        seasons=(2025,),
+        feature_pack="ppg",
+        control_model="model_a",
+        blend_specs=parse_blend_specs(("blend_a=model_a:0.5,model_b:0.5",)),
+        initial_budget=50.0,
+        current_year=2026,
+        output_root=output_root,
+    )
+
+    assert json.loads((output_path / "fixed_blend_manifest.json").read_text(encoding="utf-8"))["source_valid"] is True
+
+
+def test_run_fixed_blend_diagnostic_marks_component_non_moving_metadata_invalid(tmp_path: Path) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "blend_diagnostics"
+    model_a = _candidate_frame(rounds=(5, 6), score_column="model_a_score", score_offset=0.0)
+    model_b = model_a.rename(columns={"model_a_score": "model_b_score"}).assign(
+        model_b_score=model_a["model_a_score"] + 0.5,
+    )
+    _write_experiment_child(
+        experiment_path,
+        season=2025,
+        model_id="model_a",
+        feature_pack="ppg",
+        predictions=model_a,
+        score_column="model_a_score",
+    )
+    component_child = _write_experiment_child(
+        experiment_path,
+        season=2025,
+        model_id="model_b",
+        feature_pack="ppg",
+        predictions=model_b,
+        score_column="model_b_score",
+    )
+    metadata_path = component_child / "run_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["budget_policy"] = "fixed"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    output_path = run_fixed_blend_diagnostic(
+        experiment_path=experiment_path,
+        seasons=(2025,),
+        feature_pack="ppg",
+        control_model="model_a",
+        blend_specs=parse_blend_specs(("blend_a=model_a:0.5,model_b:0.5",)),
+        initial_budget=50.0,
+        current_year=2026,
+        output_root=output_root,
+    )
+
+    manifest = json.loads((output_path / "fixed_blend_manifest.json").read_text(encoding="utf-8"))
+    invalid_rows = pd.read_csv(output_path / "invalid_rows.csv")
+    ranked_summary = pd.read_csv(output_path / "blend_ranked_summary.csv")
+
+    assert manifest["source_valid"] is False
+    assert ranked_summary["decision_status"].tolist() == ["invalid"]
+    assert "model_b" in " ".join(invalid_rows["reason"].astype(str))
     assert "budget_policy" in " ".join(invalid_rows["reason"].astype(str))
 
 

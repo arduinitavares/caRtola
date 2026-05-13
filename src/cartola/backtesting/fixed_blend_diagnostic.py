@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import combinations
 from pathlib import Path
+from typing import Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -15,14 +16,12 @@ from cartola.backtesting.budgeting import advance_budget, initial_budget_state
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.experiment_metrics import calibration_slope_intercept, top_k_rows_by_round
 from cartola.backtesting.optimizer import optimize_squad
-from cartola.backtesting.policy_simulation import (
-    PolicySimulationError,
-    load_policy_source_context,
-    reproduce_no_policy_round,
-)
+from cartola.backtesting.optimizer_policies import NO_POLICY, normalize_policy_candidates
+from cartola.backtesting.policy_simulation import PolicySimulationError, PolicySourceContext, load_policy_source_context
 from cartola.backtesting.scoring_contract import actual_scores_with_captain
 
 _WEIGHT_SUM_TOLERANCE = 1e-9
+_REPRODUCTION_TOLERANCE = 1e-6
 _SORT_COLUMNS = ("rodada", "id_atleta", "id_clube", "posicao")
 _BASE_COLUMNS = (
     "rodada",
@@ -416,7 +415,7 @@ def build_blend_ranked_summary(
         aggregate_delta = float(summary["actual_points_delta"].sum())
         season_2025_rows = summary.loc[summary["season"].astype(int).eq(2025), "actual_points_delta"]
         season_2025_delta = float(season_2025_rows.iloc[0]) if not season_2025_rows.empty else 0.0
-        row = {
+        row: dict[str, object] = {
             "blend_name": str(blend_name),
             "source_valid": bool(source_valid),
             "control_actual_points": float(summary["control_actual_points"].sum()),
@@ -557,7 +556,15 @@ def run_fixed_blend_diagnostic(
         seasons=seasons,
         control_model=control_model,
         feature_pack=feature_pack,
+        initial_budget=initial_budget,
     )
+    components_valid, component_invalid_rows = _validate_component_source_contexts(
+        experiment_path=experiment_path,
+        seasons=seasons,
+        feature_pack=feature_pack,
+        blend_specs=blend_specs,
+    )
+    source_valid = source_valid and components_valid
     replay_results = [
         run_blend_replay_for_season(
             experiment_path=experiment_path,
@@ -571,7 +578,7 @@ def run_fixed_blend_diagnostic(
     blend_round_results = _concat_or_empty([result.round_rows for result in replay_results])
     blend_selected_players = _concat_or_empty([result.selected_player_rows for result in replay_results])
     replay_invalid_rows = _concat_or_empty([result.invalid_rows for result in replay_results])
-    invalid_rows = _concat_or_empty([reproduction_invalid_rows, replay_invalid_rows])
+    invalid_rows = _concat_or_empty([reproduction_invalid_rows, component_invalid_rows, replay_invalid_rows])
 
     per_season_summary = build_blend_per_season_summary(
         experiment_path=experiment_path,
@@ -793,7 +800,7 @@ def _top50_delta_lookup(top50_spearman_delta: pd.DataFrame | None) -> dict[str, 
 def _neutral_if_missing(value: object, *, neutral: float) -> float:
     if value is None or pd.isna(value):
         return neutral
-    numeric = float(value)
+    numeric = float(cast("str | int | float", value))
     if not np.isfinite(numeric):
         return neutral
     return numeric
@@ -802,7 +809,7 @@ def _neutral_if_missing(value: object, *, neutral: float) -> float:
 def _none_if_missing(value: object) -> float | None:
     if value is None or pd.isna(value):
         return None
-    numeric = float(value)
+    numeric = float(cast("str | int | float", value))
     if not np.isfinite(numeric):
         return None
     return numeric
@@ -885,7 +892,12 @@ def _complementarity_row(
     }
 
 
-def _finite_corr(left: pd.Series, right: pd.Series, *, method: str = "pearson") -> float:
+def _finite_corr(
+    left: pd.Series,
+    right: pd.Series,
+    *,
+    method: Literal["pearson", "kendall", "spearman"] = "pearson",
+) -> float:
     if left.nunique(dropna=True) < 2 or right.nunique(dropna=True) < 2:
         return 0.0
     value = left.corr(right, method=method)
@@ -900,6 +912,7 @@ def _validate_control_reproduction(
     seasons: tuple[int, ...],
     control_model: str,
     feature_pack: str,
+    initial_budget: float,
 ) -> tuple[bool, pd.DataFrame]:
     invalid_rows: list[dict[str, object]] = []
     for season in seasons:
@@ -922,20 +935,20 @@ def _validate_control_reproduction(
                 control_model=control_model,
                 feature_pack=feature_pack,
             )
+            _validate_initial_budget_matches_control(
+                control_rounds=control_rounds,
+                requested_initial_budget=initial_budget,
+                season=season,
+            )
             round_numbers = sorted(control_rounds["rodada"].astype(int).unique().tolist())
-            for round_number in round_numbers:
-                result = reproduce_no_policy_round(child_path, round_number=round_number)
-                if result.status != "ok":
-                    invalid_rows.append(
-                        {
-                            "season": int(season),
-                            "rodada": int(round_number),
-                            "blend_name": None,
-                            "source": "control_reproduction",
-                            "solver_status": result.status,
-                            "reason": result.failure_reason,
-                        }
-                    )
+            invalid_rows.extend(
+                _reproduce_control_child_once(
+                    child_path=child_path,
+                    season=season,
+                    context=load_policy_source_context(child_path),
+                    round_numbers=tuple(round_numbers),
+                )
+            )
         except (PolicySimulationError, FixedBlendDiagnosticError, ValueError) as exc:
             invalid_rows.append(
                 {
@@ -951,6 +964,181 @@ def _validate_control_reproduction(
     return frame.empty, frame
 
 
+def _validate_component_source_contexts(
+    *,
+    experiment_path: Path,
+    seasons: tuple[int, ...],
+    feature_pack: str,
+    blend_specs: tuple[BlendSpec, ...],
+) -> tuple[bool, pd.DataFrame]:
+    invalid_rows: list[dict[str, object]] = []
+    seen: set[tuple[int, str]] = set()
+    for season in seasons:
+        for blend_spec in blend_specs:
+            for component in blend_spec.components:
+                key = (int(season), component.model_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                child_path = child_dir_for(
+                    experiment_path,
+                    season=season,
+                    model_id=component.model_id,
+                    feature_pack=feature_pack,
+                )
+                try:
+                    _validate_source_context(
+                        child_path=child_path,
+                        season=season,
+                        model_id=component.model_id,
+                        feature_pack=feature_pack,
+                    )
+                except (PolicySimulationError, FixedBlendDiagnosticError, ValueError) as exc:
+                    invalid_rows.append(
+                        {
+                            "season": int(season),
+                            "rodada": None,
+                            "blend_name": None,
+                            "source": "component_metadata",
+                            "solver_status": "error",
+                            "reason": f"component model_id={component.model_id!r}: {exc}",
+                        }
+                    )
+    frame = pd.DataFrame(invalid_rows, columns=pd.Index(_INVALID_ROW_COLUMNS))
+    return frame.empty, frame
+
+
+def _validate_initial_budget_matches_control(
+    *,
+    control_rounds: pd.DataFrame,
+    requested_initial_budget: float,
+    season: int,
+) -> None:
+    first_budget = float(pd.to_numeric(control_rounds["budget_before_round"], errors="raise").iloc[0])
+    if abs(first_budget - float(requested_initial_budget)) > _REPRODUCTION_TOLERANCE:
+        raise FixedBlendDiagnosticError(
+            "requested initial_budget does not match source first budget_before_round "
+            f"for season={season}: requested={requested_initial_budget} source={first_budget}"
+        )
+
+
+def _reproduce_control_child_once(
+    *,
+    child_path: Path,
+    season: int,
+    context: PolicySourceContext,
+    round_numbers: tuple[int, ...],
+) -> list[dict[str, object]]:
+    player_predictions = _read_source_csv(child_path / "player_predictions.csv")
+    round_results = _read_source_csv(child_path / "round_results.csv")
+    selected_players = _read_source_csv(child_path / "selected_players.csv")
+    invalid_rows: list[dict[str, object]] = []
+    for round_number in round_numbers:
+        try:
+            mismatch_reasons = _control_reproduction_mismatch_reasons(
+                context=context,
+                player_predictions=player_predictions,
+                round_results=round_results,
+                selected_players=selected_players,
+                round_number=round_number,
+            )
+        except (FixedBlendDiagnosticError, ValueError) as exc:
+            mismatch_reasons = [str(exc)]
+        if mismatch_reasons:
+            invalid_rows.append(
+                {
+                    "season": int(season),
+                    "rodada": int(round_number),
+                    "blend_name": None,
+                    "source": "control_reproduction",
+                    "solver_status": "mismatch",
+                    "reason": ", ".join(mismatch_reasons),
+                }
+            )
+    return invalid_rows
+
+
+def _control_reproduction_mismatch_reasons(
+    *,
+    context: PolicySourceContext,
+    player_predictions: pd.DataFrame,
+    round_results: pd.DataFrame,
+    selected_players: pd.DataFrame,
+    round_number: int,
+) -> list[str]:
+    source_round = _source_round_result(round_results, context=context, round_number=round_number)
+    source_selected = _source_selected_players(selected_players, context=context, round_number=round_number)
+    candidates = _round_candidates(player_predictions, context=context, round_number=round_number)
+    normalized_candidates = normalize_policy_candidates(candidates, score_column=context.score_column)
+    budget_before_round = float(source_round["budget_before_round"])
+    result = optimize_squad(
+        normalized_candidates,
+        score_column=context.score_column,
+        config=BacktestConfig(
+            season=context.season,
+            start_round=round_number,
+            budget=budget_before_round,
+            fixture_mode="none",
+            matchup_context_mode="none",
+        ),
+        budget=budget_before_round,
+        policy=NO_POLICY,
+    )
+    actual_scores = _actual_scores_for_selected(
+        result.selected,
+        blend_name=context.strategy,
+        round_number=round_number,
+        solver_status=result.status,
+    )
+    return _control_reproduction_mismatch_reasons_for_result(
+        source_round=source_round,
+        source_selected=source_selected,
+        solver_status=result.status,
+        selected_ids=_selected_ids(result.selected),
+        captain_id=result.captain_id,
+        formation=result.formation_name,
+        budget_used=result.budget_used,
+        predicted_points_with_captain=result.predicted_points_with_captain,
+        actual_points_with_captain=actual_scores["actual_points_with_captain"],
+    )
+
+
+def _control_reproduction_mismatch_reasons_for_result(
+    *,
+    source_round: pd.Series,
+    source_selected: pd.DataFrame,
+    solver_status: str,
+    selected_ids: tuple[int, ...],
+    captain_id: int | None,
+    formation: str | None,
+    budget_used: float,
+    predicted_points_with_captain: float,
+    actual_points_with_captain: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if str(source_round["solver_status"]) != solver_status:
+        reasons.append("solver_status")
+    if _selected_ids(source_selected) != selected_ids:
+        reasons.append("selected_ids")
+    if _optional_int(source_round["captain_id"]) != captain_id:
+        reasons.append("captain_id")
+    if str(source_round["formation"]) != str(formation):
+        reasons.append("formation")
+    if abs(float(source_round["budget_used"]) - float(budget_used)) > _REPRODUCTION_TOLERANCE:
+        reasons.append("budget_used")
+    if (
+        abs(float(source_round["predicted_points_with_captain"]) - float(predicted_points_with_captain))
+        > _REPRODUCTION_TOLERANCE
+    ):
+        reasons.append("predicted_points")
+    if (
+        abs(float(source_round["actual_points_with_captain"]) - float(actual_points_with_captain))
+        > _REPRODUCTION_TOLERANCE
+    ):
+        reasons.append("actual_points")
+    return reasons
+
+
 def _validate_control_source_context(
     *,
     child_path: Path,
@@ -958,12 +1146,22 @@ def _validate_control_source_context(
     control_model: str,
     feature_pack: str,
 ) -> None:
+    _validate_source_context(child_path=child_path, season=season, model_id=control_model, feature_pack=feature_pack)
+
+
+def _validate_source_context(
+    *,
+    child_path: Path,
+    season: int,
+    model_id: str,
+    feature_pack: str,
+) -> None:
     context = load_policy_source_context(child_path)
     mismatches: list[str] = []
     if context.season != int(season):
         mismatches.append(f"season metadata {context.season} does not match requested season {season}")
-    if context.model_id != control_model:
-        mismatches.append(f"model_id metadata {context.model_id!r} does not match control_model {control_model!r}")
+    if context.model_id != model_id:
+        mismatches.append(f"model_id metadata {context.model_id!r} does not match requested model_id {model_id!r}")
     if context.feature_pack != feature_pack:
         mismatches.append(f"feature_pack metadata {context.feature_pack!r} does not match requested {feature_pack!r}")
     if context.budget_policy != "moving":
@@ -974,6 +1172,99 @@ def _validate_control_source_context(
         mismatches.append(f"matchup_context_mode metadata {context.matchup_context_mode!r} is not 'none'")
     if mismatches:
         raise FixedBlendDiagnosticError("; ".join(mismatches))
+
+
+def _read_source_csv(path: Path) -> pd.DataFrame:
+    try:
+        return pd.read_csv(path)
+    except (OSError, UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise FixedBlendDiagnosticError(f"Failed to read source artifact {path.name}: {path}") from exc
+
+
+def _source_round_result(
+    round_results: pd.DataFrame,
+    *,
+    context: PolicySourceContext,
+    round_number: int,
+) -> pd.Series:
+    round_values = _whole_number_column(round_results, artifact_name="round_results.csv", column="rodada")
+    rows = round_results.loc[
+        round_values.eq(int(round_number))
+        & round_results["strategy"].astype(str).eq(context.strategy)
+    ]
+    if rows.empty:
+        raise FixedBlendDiagnosticError(
+            f"Missing round_results row for round={round_number} strategy={context.strategy!r}."
+        )
+    if len(rows) > 1:
+        raise FixedBlendDiagnosticError(
+            f"Multiple round_results rows for round={round_number} strategy={context.strategy!r}."
+        )
+    return rows.iloc[0]
+
+
+def _source_selected_players(
+    selected_players: pd.DataFrame,
+    *,
+    context: PolicySourceContext,
+    round_number: int,
+) -> pd.DataFrame:
+    round_values = _whole_number_column(selected_players, artifact_name="selected_players.csv", column="rodada")
+    source_selected = selected_players.loc[
+        round_values.eq(int(round_number))
+        & selected_players["strategy"].astype(str).eq(context.strategy)
+    ].copy()
+    if source_selected.empty:
+        raise FixedBlendDiagnosticError(
+            f"Missing selected_players rows for round={round_number} strategy={context.strategy!r}."
+        )
+    selected_ids = _whole_number_column(source_selected, artifact_name="selected_players.csv", column="id_atleta")
+    duplicated_ids = sorted(selected_ids.loc[selected_ids.duplicated()].astype(int).unique().tolist())
+    if duplicated_ids:
+        raise FixedBlendDiagnosticError(
+            "Source selected_players.csv has duplicate id_atleta rows for "
+            f"round={round_number} strategy={context.strategy!r}: {duplicated_ids}"
+        )
+    return source_selected
+
+
+def _round_candidates(
+    player_predictions: pd.DataFrame,
+    *,
+    context: PolicySourceContext,
+    round_number: int,
+) -> pd.DataFrame:
+    round_values = _whole_number_column(player_predictions, artifact_name="player_predictions.csv", column="rodada")
+    candidates = player_predictions.loc[round_values.eq(int(round_number))].copy()
+    if candidates.empty:
+        raise FixedBlendDiagnosticError(f"Missing player_predictions rows for round={round_number}.")
+    if context.score_column not in candidates.columns:
+        raise FixedBlendDiagnosticError(f"Missing score column in player_predictions.csv: {context.score_column}")
+    return candidates
+
+
+def _whole_number_column(frame: pd.DataFrame, *, artifact_name: str, column: str) -> pd.Series:
+    if column not in frame.columns:
+        raise FixedBlendDiagnosticError(f"Missing required column in {artifact_name}: {column}")
+    values = pd.to_numeric(frame[column], errors="coerce")
+    if values.isna().any():
+        raise FixedBlendDiagnosticError(f"{artifact_name}.{column} must contain numeric values.")
+    if not np.isclose(values, np.round(values), atol=_REPRODUCTION_TOLERANCE).all():
+        raise FixedBlendDiagnosticError(f"{artifact_name}.{column} must contain whole-number values.")
+    return values.astype(int)
+
+
+def _selected_ids(selected: pd.DataFrame) -> tuple[int, ...]:
+    if selected.empty:
+        return ()
+    ids = _whole_number_column(selected, artifact_name="selected_players.csv", column="id_atleta")
+    return tuple(sorted(ids.astype(int).tolist()))
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or pd.isna(value):
+        return None
+    return int(cast("str | int | float", value))
 
 
 def _start_round_for_control(experiment_path: Path, season: int, control_model: str, feature_pack: str) -> int:
@@ -1053,7 +1344,7 @@ def _build_all_complementarity(
     pairs: set[tuple[str, str]] = set()
     for blend_spec in blend_specs:
         for left, right in combinations([component.model_id for component in blend_spec.components], 2):
-            pairs.add(tuple(sorted((left, right))))
+            pairs.add((left, right) if left <= right else (right, left))
     for model_a, model_b in sorted(pairs):
         frames.append(
             build_blend_complementarity(
