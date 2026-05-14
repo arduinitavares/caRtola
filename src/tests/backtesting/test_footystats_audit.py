@@ -261,6 +261,26 @@ def test_compare_footystats_bragantino_to_cartola_rbb(tmp_path: Path) -> None:
     assert comparison.unmapped_footystats_teams == []
 
 
+def test_compare_teams_to_cartola_ignores_numeric_club_name_placeholders(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2025"
+    season_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "atletas.clube_id": [263, 263],
+            "atletas.clube.id.full.name": ["263", "Botafogo"],
+        }
+    ).to_csv(season_dir / "rodada-1.csv", index=False)
+
+    comparison = audit.compare_teams_to_cartola(
+        season=2025,
+        footystats_team_names=["Botafogo"],
+        project_root=tmp_path,
+    )
+
+    assert comparison.cartola_clubs_by_normalized_name == {"botafogo": 263}
+    assert comparison.missing_cartola_teams == []
+
+
 def test_compare_teams_to_cartola_reports_duplicate_mapped_clubs(tmp_path: Path) -> None:
     season_dir = tmp_path / "data" / "01_raw" / "2025"
     season_dir.mkdir(parents=True)
