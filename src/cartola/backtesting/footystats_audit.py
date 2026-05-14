@@ -628,6 +628,8 @@ def _cartola_clubs_from_round_csvs(season_dir: Path) -> dict[str, int]:
             if pd.isna(club_id) or pd.isna(club_name):
                 continue
             normalized_name = normalize_team_name(str(club_name))
+            if normalized_name.isdigit():
+                continue
             cartola_clubs_by_normalized_name.setdefault(normalized_name, int(club_id))
 
     return cartola_clubs_by_normalized_name

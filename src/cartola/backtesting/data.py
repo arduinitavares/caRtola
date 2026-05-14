@@ -4,7 +4,7 @@ import json
 import re
 import unicodedata
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, Sequence, cast
 
 import pandas as pd
 
@@ -108,7 +108,11 @@ def load_season_data(season: int, project_root: str | Path = ".") -> pd.DataFram
     if not round_files:
         raise FileNotFoundError(f"No round CSV files found; no legacy market files found in season directory: {season_dir}")
 
-    return pd.concat((load_round_file(path) for path in round_files), ignore_index=True)
+    has_entry_flag = _round_files_have_entry_flag(round_files)
+    season_frame = pd.concat((load_round_file(path) for path in round_files), ignore_index=True)
+    if not has_entry_flag:
+        season_frame["entrou_em_campo"] = _infer_entry_flags_from_game_counts(season_frame)
+    return season_frame
 
 
 def load_fixtures(season: int, project_root: str | Path = ".") -> pd.DataFrame:
@@ -259,6 +263,26 @@ def _legacy_market_round_number(path: Path) -> int:
     return int(match.group(1)) - 1
 
 
+def _round_files_have_entry_flag(paths: Sequence[Path]) -> bool:
+    for path in paths:
+        if _LEGACY_MARKET_FILE_RE.match(path.name):
+            return True
+        columns = set(pd.read_csv(path, nrows=0).columns)
+        if "entrou_em_campo" in columns or "atletas.entrou_em_campo" in columns:
+            return True
+    return False
+
+
+def _infer_entry_flags_from_game_counts(frame: pd.DataFrame) -> pd.Series:
+    ordered = frame[["id_atleta", "rodada", "num_jogos"]].copy()
+    ordered["_source_index"] = ordered.index
+    ordered["num_jogos"] = pd.to_numeric(ordered["num_jogos"], errors="coerce").fillna(0)
+    ordered = ordered.sort_values(["id_atleta", "rodada", "_source_index"])
+    previous_games = ordered.groupby("id_atleta", sort=False)["num_jogos"].shift(fill_value=0)
+    ordered["entrou_em_campo"] = ordered["num_jogos"] > previous_games
+    return ordered.sort_values("_source_index")["entrou_em_campo"].set_axis(frame.index)
+
+
 def _read_legacy_market_frame(path: Path) -> pd.DataFrame:
     payload = json.loads(path.read_text(encoding="latin-1"))
     raw_athletes = payload.get("atletas", [])
@@ -391,11 +415,17 @@ def _map_values(
     source: Path,
     label: str,
 ) -> pd.Series:
+    known_name_lookup = {_canonical_value(name): name for name in known_names}
+
     def map_one(value: object) -> str | None:
         if pd.isna(value):
             return None
-        if isinstance(value, str) and value in known_names:
-            return value
+        if isinstance(value, str):
+            stripped_value = value.strip()
+            if stripped_value in known_names:
+                return stripped_value
+            if canonical_name := known_name_lookup.get(_canonical_value(stripped_value)):
+                return canonical_name
 
         numeric_value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
         if pd.notna(numeric_value):
@@ -413,6 +443,10 @@ def _map_values(
     if unknown_values:
         raise ValueError(f"Unknown {label} values in {source}: {unknown_values}")
     return mapped
+
+
+def _canonical_value(value: str) -> str:
+    return unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").strip().lower()
 
 
 def _convert_numeric_columns(frame: pd.DataFrame) -> None:

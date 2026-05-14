@@ -209,6 +209,24 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
     shrinkage,
   - preserves H005 as research-only and fail-closed when source identity,
     mechanism support, comparability, budget, ranking, or calibration gates fail.
+- M006 fixed-blend diagnostic:
+  - `scripts/run_fixed_blend_diagnostic.py` replays fixed XGBoost/Ridge blends
+    from completed production-parity artifacts without training a learned
+    stacker,
+  - validates source control reproduction, component metadata, candidate
+    identity, moving-budget comparability, and no-fixture/no-matchup context,
+  - writes `fixed_blend_manifest.json`, `blend_complementarity.csv`,
+    `blend_round_results.csv`, `blend_selected_players.csv`,
+    `blend_per_season_summary.csv`, `blend_ranked_summary.csv`,
+    `blend_decision.json`, `invalid_rows.csv`, and `fixed_blend_report.html`,
+  - produced a weak-positive research lead for `xgb80_ridge20` but no
+    promotion candidate.
+- 2020 raw-season compatibility work:
+  - accepts accented normalized status strings such as `Provável`,
+  - infers `entrou_em_campo` from cumulative `num_jogos` when older round CSVs
+    do not provide explicit entry flags,
+  - ignores numeric Cartola club-name placeholders when auditing FootyStats
+    team mapping.
 - Standard scoring metadata:
   - `scoring_contract_version=cartola_standard_2026_v1`,
   - `captain_scoring_enabled=True`,
@@ -334,6 +352,36 @@ should not be promoted, and it should not be followed by another direct
 count-reliability tweak. The broader lesson is that the EBM lead was too weak
 once translated into a frozen feature pack. Future feature hypotheses should
 come from a fresh diagnostic or a materially different signal family.
+
+M006 fixed-blend evidence is now complete for the first frozen blend matrix:
+
+- output:
+  `data/08_reporting/blend_diagnostics/fixed_blend_started_at=20260514T000703093758Z`;
+- source experiment:
+  `data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260513T165550180815Z__matrix=9064290978ca`;
+- source valid: `true`;
+- control:
+  `xgboost_depth2_l2_heavy + ppg_xg`;
+- tested blends:
+  `xgb90_ridge10`, `xgb80_ridge20`, and `xgb70_ridge30`;
+- `xgb80_ridge20` status: `weak_positive_research_lead`;
+- `xgb80_ridge20` aggregate actual-points delta: `+226.38`;
+- `xgb80_ridge20` improved seasons: `4 / 5`;
+- `xgb80_ridge20` 2025 delta: `+91.31`;
+- `xgb80_ridge20` disaster rounds under 45 delta: `-7`;
+- `xgb80_ridge20` selected calibration slope: `1.0426`;
+- `xgb80_ridge20` top-50 Spearman delta: `-0.0012`;
+- `xgb80_ridge20` was not a `candidate_blend` because budget/drawdown
+  downside gates were not strong enough;
+- `xgb90_ridge10` status: `inconclusive`, aggregate delta `+12.99`;
+- `xgb70_ridge30` status: `rejected`, aggregate delta `+119.09`, but with a
+  large 2022 regression of `-103.77`.
+
+Interpretation: fixed blending is not dead. The `80% XGBoost / 20% Ridge`
+profile is the first post-H005 research lead with meaningful aggregate lift,
+season support, calibration, and disaster-round improvement. It is not yet a
+live default because the moving-budget path still shows enough downside risk to
+require a focused validation generation.
 
 The no-fixture live default promotion matrix is complete for `2021`, `2022`,
 `2023`, `2024`, and `2025` with `fixture_mode=none`, moving-budget semantics,
@@ -612,6 +660,21 @@ uv run --frozen python scripts/run_model_experiments.py \
   --profile-runtime
 ```
 
+M006 fixed XGBoost/Ridge blend diagnostic:
+
+```bash
+uv run --frozen python scripts/run_fixed_blend_diagnostic.py \
+  --experiment-path data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260513T165550180815Z__matrix=9064290978ca \
+  --seasons 2021,2022,2023,2024,2025 \
+  --feature-pack ppg_xg \
+  --control-model xgboost_depth2_l2_heavy \
+  --blend xgb90_ridge10=xgboost_depth2_l2_heavy:0.9,ridge:0.1 \
+  --blend xgb80_ridge20=xgboost_depth2_l2_heavy:0.8,ridge:0.2 \
+  --blend xgb70_ridge30=xgboost_depth2_l2_heavy:0.7,ridge:0.3 \
+  --initial-budget 100 \
+  --current-year 2026
+```
+
 Oracle knowledge discovery for a completed experiment:
 
 ```bash
@@ -786,17 +849,49 @@ Quality gate:
 uv run --frozen scripts/pyrepo-check --all
 ```
 
-**Next Milestone: Live-Lineup Risk Guardrails**
+**Next Milestone: M006b Blend Validation And 2020 Expansion**
 
-Goal: make live squad recommendations operationally safer before spending more
-time on marginal feature-pack hypotheses.
+Goal: decide whether the `xgb80_ridge20` weak-positive lead is stable enough to
+become a promotion candidate or should remain research-only.
 
-Why now: H001-H005 did not produce promotable research evidence, and the live
-default has now been corrected to the promoted
-`xgboost_depth2_l2_heavy + ppg_xg` no-fixture profile. The remaining direct
-product-risk gap is lineup safety: `Provavel` is not confirmed-lineup evidence,
-capture age is not yet surfaced as a hard review signal, and selected low-sample
-players can enter the squad without a prominent risk summary.
+Why now: M006 is the first recent research milestone to produce meaningful
+positive evidence after H001-H005 were rejected. The best blend gained
+`+226.38` aggregate points, improved `4 / 5` seasons, improved 2025 by
+`+91.31`, reduced disaster rounds, and kept selected-player calibration inside
+the guardrail. The remaining blocker is budget/downside risk, not point signal.
+
+Scope:
+
+- Run a focused validation generation for only `xgb80_ridge20` versus the
+  promoted XGBoost control.
+- Include `2020` if the compatibility audit confirms the new loader fixes make
+  the season comparable; otherwise run a documented 2020 diagnostic-only slice.
+- Report budget risk separately from point lift:
+  final budget delta, min-budget delta, max drawdown delta, budget-constrained
+  rounds, and per-season path plots.
+- Add explicit 2020 source-compatibility status to the decision artifact.
+- Add progress logging to the fixed-blend diagnostic so long MILP replay runs
+  are observable.
+- Do not build learned stacking or RF gating until `xgb80_ridge20` clears this
+  focused validation.
+
+Acceptance:
+
+- M006b writes a deterministic decision artifact with statuses:
+  `candidate_blend`, `weak_positive_research_lead`, `inconclusive`, `rejected`,
+  or `diagnostic_only_2020`.
+- A candidate requires positive aggregate lift, at least `4 / 6` improved
+  seasons if 2020 is valid or `4 / 5` if not, no 2025 regression, no severe
+  budget-path regression, and no increase in disaster rounds.
+- The decision artifact includes a plain recommendation:
+  promote blend, keep XGBoost default and monitor blend, or reject blend.
+- `xgboost_depth2_l2_heavy + ppg_xg` remains the live default unless M006b
+  clears the frozen promotion gates.
+
+**Following Milestone: Live-Lineup Risk Guardrails**
+
+Goal: make live squad recommendations operationally safer after the current
+model-selection question is closed.
 
 Scope:
 
@@ -805,32 +900,21 @@ Scope:
 - Surface market-capture age, capture policy, selected-player status mix,
   low-appearance/low-history flags, and selected-player DNP/null-risk context.
 - Add CLI/report warnings that are visible before a human trusts the squad.
-- Keep this as a guardrail/reporting milestone; the model default change is
-  already handled by the promotion artifact above, so do not change optimizer
+- Keep this as a guardrail/reporting milestone; do not change optimizer
   objective or promotion policy in the same milestone.
-- Defer external confirmed-lineup integration and manual player exclusion to a
-  later milestone unless the guardrail summary proves insufficient.
-
-Acceptance:
-
-- Live/replay recommendation metadata records the risk summary path.
-- `recommended_squad.csv` or a companion risk CSV identifies selected low-sample
-  and stale-capture risks deterministically.
-- CLI output warns when capture age, `status`, or selected-player history fails
-  the configured review thresholds.
-- Unit tests cover stale capture metadata, selected-player risk flags, and the
-  no-warning path for a clean synthetic squad.
-- The default live command remains runnable:
-  `uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --current-year 2026`.
 
 **Roadmap**
-1. Build the live-lineup risk guardrails milestone.
-   - Treat this as the next delivery before another H006-style feature
-     hypothesis.
+1. Build M006b blend validation.
+   - Focus only on `xgb80_ridge20`.
+   - Include 2020 only after compatibility is verified, or mark it
+     diagnostic-only.
+   - Treat budget/drawdown as the primary promotion blocker to resolve.
+   - Do not build learned stackers, RF gating, or AutoML before M006b closes.
+2. Build the live-lineup risk guardrails milestone after M006b.
    - The milestone improves recommendation trust, not model score quality.
    - It must not silently block all live recommendations; it should make risk
      explicit and fail only on deliberately configured hard thresholds.
-2. Keep live model selection pinned to the promoted moving-budget default.
+3. Keep live model selection pinned to the promoted moving-budget default.
    - Current default: `xgboost_depth2_l2_heavy + ppg_xg + fixture_mode=none`.
    - Keep `random_forest + ppg` available as the historical baseline, not as a
      live recommendation default.
@@ -840,12 +924,12 @@ Acceptance:
      artifact with the same comparability guardrails.
    - For single-round live recommendations, `--budget` still means the caller-provided current available budget for that one open round.
    - Strict matchup mode is available only as an opt-in research/live candidate until it survives real strict pre-lock rounds.
-3. Use strict matchup mode in the next open round only after capturing strict fixture evidence.
+4. Use strict matchup mode in the next open round only after capturing strict fixture evidence.
    - Capture strict fixture snapshots before generating the recommendation.
    - First candidate to test: `xgboost_depth2_slow + ppg_xg + cartola_matchup_v1`, because it beat Ridge in all three exploratory seasons and fixed the 2025 regression seen in the faster aggregate winner.
    - Inspect `run_metadata.json` for fixture manifest paths/hashes and `candidate_predictions.csv` before trusting the squad.
    - Do not fall back to exploratory fixtures in live mode.
-4. Treat the older fixed XGBoost sensitivity result as superseded by the
+5. Treat the older fixed XGBoost sensitivity result as superseded by the
    no-fixture production-parity promotion rerun.
    - XGBoost is now allowed in live no-fixture defaults only for the promoted
      profile `xgboost_depth2_l2_heavy + ppg_xg`.
@@ -859,38 +943,38 @@ Acceptance:
    - Future Optuna work should use a seeded `TPESampler`, SQLite storage, a frozen search space, explicit trial manifests, and final full-backtest reruns for finalists; pruned or predictive-only trials must never be promotion-eligible.
    - Defer LightGBM and CatBoost until the promoted XGBoost default has enough
      live monitoring evidence to justify another model-family generation.
-5. Use generated Plotly experiment reports as the standard review surface.
+6. Use generated Plotly experiment reports as the standard review surface.
    - Start with `squad_performance_comparison.html` and `calibration_plots.html`.
    - Use `ranked_summary.csv`, `per_season_summary.csv`, `prediction_metrics.csv`, `calibration_deciles.csv`, and `comparability_report.json` as source-of-truth artifacts.
    - Do not trust any ranking if comparability failed.
-6. Use `scripts/run_live_round.py` for each 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
-7. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
+7. Use `scripts/run_live_round.py` for each 2026 open round and inspect `recommended_squad.csv`, `candidate_predictions.csv`, `run_metadata.json`, and `live_workflow_metadata.json` before making lineup decisions.
+8. Capture strict pre-lock fixture snapshots every live round with `scripts/capture_strict_round_fixture.py`.
    - Manual v1 command captures snapshot evidence and generates strict `fixtures_strict` CSV/manifest.
    - These snapshots are now consumed by opt-in strict matchup live recommendations.
-8. Harden moving-budget evidence before any future default replacement.
+9. Harden moving-budget evidence before any future default replacement.
    - Rerun the relevant candidate and baseline controls with moving budget.
    - Compare only artifacts with `budget_policy=moving`; treat missing `budget_policy` as old fixed-budget evidence.
    - Inspect `initial_budget`, `final_budget`, `total_budget_delta`, `min_budget`, `max_budget_drawdown`, and `budget_constrained_rounds` alongside points.
    - Validate that selected player and tecnico rows always preserve finite historical `variacao` in completed rounds.
-9. Keep budget modeling realistic but deliberately simple.
+10. Keep budget modeling realistic but deliberately simple.
    - Historical multi-round backtests use official historical `variacao`; no hidden Cartola price formula is reverse-engineered.
    - Budget updates are strategy-specific and happen only after selection/scoring.
    - Do not reintroduce a normal fixed-budget mode.
    - Live open-round recommendations remain single-round until completed-round replay data exists to update the budget path.
-10. Defer wider matchup features until strict/live matchup v1 has real-round evidence:
+11. Defer wider matchup features until strict/live matchup v1 has real-round evidence:
    - home/away split priors,
    - shorter roll3 variants,
    - odds/goal-environment fields,
    - or DNP probability modeling if selection reliability becomes the bigger live-game bottleneck.
-11. Add DNP probability modeling if needed:
+12. Add DNP probability modeling if needed:
     - predict `p_play`,
     - use `expected_points = predicted_points * p_play`.
-12. Keep adaptive hyperparameter search behind the promoted fixed-candidate baseline.
+13. Keep adaptive hyperparameter search behind the promoted fixed-candidate baseline.
     - XGBoost is now the live no-fixture default, but future tuning should still use frozen generations with full-backtest reruns.
     - Possible later candidates: CatBoost or LightGBM, one family at a time.
     - Optuna remains a future search engine, not v1 implementation scope.
     - Do not start broad grid search over external libraries before fixed candidates, strict/live matchup integration, and live reliability guardrails are understood.
-13. Use oracle knowledge discovery as a diagnostic surface, not a model-selection surface.
+14. Use oracle knowledge discovery as a diagnostic surface, not a model-selection surface.
     - Start with `oracle_knowledge_discovery.html`, `profile_gap_summary.csv`, and `model_vs_oracle_recall.csv`.
     - Useful questions: whether oracle squads and model squads differ in home/away exposure, opponent-overlap exposure, same-club concentration, favorite proxy, and predicted-rank recall.
     - Do not treat a single profile gap as a validated policy. Convert it into a frozen hypothesis, then validate through the normal walk-forward experiment workflow.
@@ -900,9 +984,11 @@ Acceptance:
 These items are useful, but they are no longer the next prediction-quality bottleneck:
 
 1. Fix historical loader compatibility for structurally complete failing seasons:
-   - inspect 2020, 2019, and 2018 load errors from the compatibility audit JSON,
+   - rerun the compatibility audit after the 2020 loader fixes,
+   - inspect remaining 2019 and 2018 load errors from the compatibility audit JSON,
    - add schema normalization only where needed,
-   - rerun the audit until those seasons reach `load_status=ok`.
+   - rerun the audit until eligible structurally complete seasons reach
+     `load_status=ok`.
 2. Re-evaluate model/feature experiments with 2021 and 2022 included as frozen generations:
    - start with no-fixture `production-parity` over `2021,2022,2023,2024,2025`,
    - treat this as a new experiment generation, not a replacement for the original `2023-2025` evidence,

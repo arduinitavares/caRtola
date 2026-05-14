@@ -15,7 +15,7 @@ from cartola.backtesting.data import (
 
 
 def _base_raw_round(**overrides: object) -> pd.DataFrame:
-    data = {
+    data: dict[str, object] = {
         "atletas.rodada_id": [1],
         "atletas.status_id": [7],
         "atletas.posicao_id": [5],
@@ -114,6 +114,14 @@ def test_normalize_round_frame_accepts_already_normalized_status_and_position_va
     assert normalized.loc[0, "posicao"] == "ata"
 
 
+def test_normalize_round_frame_accepts_accented_status_values() -> None:
+    raw = _base_raw_round(**{"atletas.status_id": ["Provável"], "atletas.posicao_id": ["ata"]})
+
+    normalized = normalize_round_frame(raw, source=Path("rodada-1.csv"))
+
+    assert normalized.loc[0, "status"] == "Provavel"
+
+
 def test_normalize_round_frame_fills_blank_scout_values_with_zero() -> None:
     raw = _base_raw_round(G=[None], V=[""])
 
@@ -173,6 +181,65 @@ def test_load_round_file_reads_and_normalizes_csv(tmp_path: Path) -> None:
     assert "pontos" not in loaded.columns
     assert "jogos" not in loaded.columns
     assert "" not in loaded.columns
+
+
+def test_load_season_data_infers_entry_flags_from_cumulative_game_counts(tmp_path: Path) -> None:
+    season_dir = tmp_path / "data" / "01_raw" / "2099"
+    season_dir.mkdir(parents=True)
+    round_one = pd.concat(
+        [
+            _base_raw_round(
+                **{
+                    "atletas.status_id": ["Provável"],
+                    "atletas.atleta_id": [10],
+                    "atletas.pontos_num": [0.0],
+                    "atletas.jogos_num": [0],
+                }
+            ),
+            _base_raw_round(
+                **{
+                    "atletas.status_id": ["Provável"],
+                    "atletas.atleta_id": [20],
+                    "atletas.pontos_num": [0.0],
+                    "atletas.jogos_num": [1],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    round_two = pd.concat(
+        [
+            _base_raw_round(
+                **{
+                    "atletas.rodada_id": [2],
+                    "atletas.status_id": ["Provável"],
+                    "atletas.atleta_id": [10],
+                    "atletas.pontos_num": [5.0],
+                    "atletas.jogos_num": [1],
+                }
+            ),
+            _base_raw_round(
+                **{
+                    "atletas.rodada_id": [2],
+                    "atletas.status_id": ["Provável"],
+                    "atletas.atleta_id": [20],
+                    "atletas.pontos_num": [0.0],
+                    "atletas.jogos_num": [1],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    round_one.to_csv(season_dir / "rodada-1.csv", index=False)
+    round_two.to_csv(season_dir / "rodada-2.csv", index=False)
+
+    loaded = load_season_data(2099, project_root=tmp_path)
+
+    entry_by_player_round = loaded.set_index(["id_atleta", "rodada"])["entrou_em_campo"].to_dict()
+    assert entry_by_player_round[(10, 1)] is False
+    assert entry_by_player_round[(10, 2)] is True
+    assert entry_by_player_round[(20, 1)] is True
+    assert entry_by_player_round[(20, 2)] is False
 
 
 def test_load_round_file_reads_legacy_market_json(tmp_path: Path) -> None:
@@ -268,7 +335,7 @@ def test_load_season_data_reports_empty_directory(tmp_path: Path) -> None:
 def _write_fixture_round(root: Path, round_number: int, rows: list[dict[str, object]]) -> None:
     fixture_dir = root / "data" / "01_raw" / "fixtures" / "2025"
     fixture_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows, columns=["rodada", "id_clube_home", "id_clube_away", "data"]).to_csv(
+    pd.DataFrame(rows, columns=pd.Index(["rodada", "id_clube_home", "id_clube_away", "data"])).to_csv(
         fixture_dir / f"partidas-{round_number}.csv",
         index=False,
     )

@@ -136,6 +136,15 @@ Steps:
   `data/08_reporting/experiments/model_feature/group=h005-count-aware-matchup-shrinkage__started_at=20260513T115300476279Z__matrix=ede90899ae80`; decision status `invalid`, mechanism audit status `invalid`, recomputed count match `ok`, aggregate actual-points delta `-164.14`, 2025 delta `-186.80`.
 - H005 is research-only and should not be promoted or directly iterated as another count-reliability tweak. The latest run failed strict audit identity checks and was materially negative even though comparability, fixture identity, candidate signature, and optimizer status were ok.
 
+## M006 Fixed-Blend Diagnostic Workflow
+
+- Artifact-backed M006 fixed-blend diagnostic for the current production-parity source:
+  `uv run --frozen python scripts/run_fixed_blend_diagnostic.py --experiment-path data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260513T165550180815Z__matrix=9064290978ca --seasons 2021,2022,2023,2024,2025 --feature-pack ppg_xg --control-model xgboost_depth2_l2_heavy --blend xgb90_ridge10=xgboost_depth2_l2_heavy:0.9,ridge:0.1 --blend xgb80_ridge20=xgboost_depth2_l2_heavy:0.8,ridge:0.2 --blend xgb70_ridge30=xgboost_depth2_l2_heavy:0.7,ridge:0.3 --initial-budget 100 --current-year 2026`
+- M006 outputs are written under `data/08_reporting/blend_diagnostics/fixed_blend_started_at=.../` and include `fixed_blend_manifest.json`, `blend_complementarity.csv`, `blend_round_results.csv`, `blend_selected_players.csv`, `blend_per_season_summary.csv`, `blend_ranked_summary.csv`, `blend_decision.json`, `invalid_rows.csv`, and `fixed_blend_report.html`.
+- M006 is fixed-blend only: no learned stacker, RF gating, or AutoML. A `candidate_blend` decision is research evidence that still requires explicit promotion before changing live defaults.
+- Latest M006 run:
+  `data/08_reporting/blend_diagnostics/fixed_blend_started_at=20260514T000703093758Z`; source valid, `candidate_count=0`, best status `weak_positive_research_lead` for `xgb80_ridge20`, aggregate actual-points delta `+226.38`, improved `4 / 5` seasons, 2025 delta `+91.31`. Treat it as a bounded research lead, not a live-default change.
+
 ## Ridge Tuning Workflow
 
 - Constrained Ridge alpha tuning:
