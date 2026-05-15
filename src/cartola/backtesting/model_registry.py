@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, Protocol, SupportsFloat, SupportsIndex, cast
+from typing import Literal, Protocol, SupportsFloat, SupportsIndex, SupportsInt, cast
 
 import pandas as pd
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
@@ -35,6 +35,7 @@ ModelId = Literal[
     "xgboost_depth3_slow",
 ]
 _FloatConvertible = str | bytes | bytearray | SupportsFloat | SupportsIndex
+_IntConvertible = str | bytes | bytearray | SupportsInt | SupportsIndex
 
 
 class PointPredictor(Protocol):
@@ -350,9 +351,15 @@ def _validate_model_param_overrides(
 ) -> dict[str, object]:
     if not model_params:
         return {}
-    if model_id != "ridge":
-        raise ValueError("Model parameter overrides are only supported for ridge in v1")
+    if model_id == "ridge":
+        return _validate_ridge_param_overrides(model_params)
+    if model_id.startswith("xgboost_"):
+        return _validate_xgboost_param_overrides(model_id, model_params)
 
+    raise ValueError(f"Model parameter overrides are not supported for {model_id}")
+
+
+def _validate_ridge_param_overrides(model_params: Mapping[str, object]) -> dict[str, object]:
     allowed = {"alpha"}
     unknown = sorted(set(model_params) - allowed)
     if unknown:
@@ -362,6 +369,56 @@ def _validate_model_param_overrides(
     if alpha <= 0:
         raise ValueError("ridge alpha must be positive")
     return {"alpha": alpha}
+
+
+def _validate_xgboost_param_overrides(model_id: ModelId, model_params: Mapping[str, object]) -> dict[str, object]:
+    allowed = {
+        "n_estimators",
+        "max_depth",
+        "learning_rate",
+        "min_child_weight",
+        "subsample",
+        "colsample_bytree",
+        "reg_lambda",
+        "reg_alpha",
+        "gamma",
+    }
+    unknown = sorted(set(model_params) - allowed)
+    if unknown:
+        raise ValueError(f"Unsupported model parameter for {model_id}: {unknown[0]}")
+
+    validated: dict[str, object] = {}
+    if "n_estimators" in model_params:
+        value = int(cast(_IntConvertible, model_params["n_estimators"]))
+        if value < 1:
+            raise ValueError("xgboost n_estimators must be positive")
+        validated["n_estimators"] = value
+    if "max_depth" in model_params:
+        value = int(cast(_IntConvertible, model_params["max_depth"]))
+        if value < 1:
+            raise ValueError("xgboost max_depth must be positive")
+        validated["max_depth"] = value
+    for key in (
+        "learning_rate",
+        "min_child_weight",
+        "reg_lambda",
+        "reg_alpha",
+        "gamma",
+    ):
+        if key in model_params:
+            value = float(cast(_FloatConvertible, model_params[key]))
+            if value < 0:
+                raise ValueError(f"xgboost {key} must be non-negative")
+            if key == "learning_rate" and value <= 0:
+                raise ValueError("xgboost learning_rate must be positive")
+            validated[key] = value
+    for key in ("subsample", "colsample_bytree"):
+        if key in model_params:
+            value = float(cast(_FloatConvertible, model_params[key]))
+            if value <= 0 or value > 1:
+                raise ValueError(f"xgboost {key} must be in (0, 1]")
+            validated[key] = value
+    return validated
 
 
 def model_n_jobs_for_metadata(model_id: str, *, requested_n_jobs: int) -> int | None:

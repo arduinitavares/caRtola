@@ -53,6 +53,18 @@ def test_discover_seasons_includes_numeric_dirs_with_round_files(tmp_path: Path)
     assert seasons[0].max_round == 2
 
 
+def test_discover_seasons_filters_requested_seasons(tmp_path: Path) -> None:
+    _touch_round(tmp_path, 2020, "rodada-1.csv")
+    _touch_round(tmp_path, 2021, "rodada-1.csv")
+    _touch_round(tmp_path, 2022, "rodada-1.csv")
+
+    config = audit.AuditConfig(project_root=tmp_path, current_year=2026, seasons=(2020, 2022))
+
+    seasons = audit.discover_seasons(config)
+
+    assert [season.season for season in seasons] == [2020, 2022]
+
+
 def test_discover_seasons_ignores_round_zero_market_snapshot(tmp_path: Path) -> None:
     _touch_round(tmp_path, 2022, "rodada-0.csv")
     for round_number in range(1, 39):
@@ -469,6 +481,8 @@ def test_parse_args_accepts_current_year_and_output_root() -> None:
         [
             "--project-root",
             "/tmp/cartola",
+            "--seasons",
+            "2020,2025",
             "--start-round",
             "6",
             "--complete-round-threshold",
@@ -483,6 +497,7 @@ def test_parse_args_accepts_current_year_and_output_root() -> None:
     )
 
     assert args.project_root == Path("/tmp/cartola")
+    assert args.seasons == "2020,2025"
     assert args.start_round == 6
     assert args.complete_round_threshold == 20
     assert args.expected_complete_rounds == 22
@@ -508,10 +523,10 @@ def test_main_runs_audit_and_prints_report_paths(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(audit, "run_compatibility_audit", fake_run)
 
-    exit_code = audit.main(["--project-root", str(tmp_path), "--current-year", "2026"])
+    exit_code = audit.main(["--project-root", str(tmp_path), "--current-year", "2026", "--seasons", "2020"])
 
     assert exit_code == 0
-    assert observed_configs == [audit.AuditConfig(project_root=tmp_path, current_year=2026)]
+    assert observed_configs == [audit.AuditConfig(project_root=tmp_path, current_year=2026, seasons=(2020,))]
     output = capsys.readouterr().out
     assert "Compatibility audit complete" in output
     assert "season_compatibility.csv" in output

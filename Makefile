@@ -15,16 +15,16 @@ clean:
 	@rm -f .coverage.*
 
 ruff:
-	@uv run --frozen scripts/pyrepo-check ruff
+	@pyrepo-check ruff
 
 ty:
-	@uv run --frozen scripts/pyrepo-check ty
+	@pyrepo-check ty
 
 bandit:
-	@uv run --frozen scripts/pyrepo-check bandit
+	@pyrepo-check bandit
 
 quality:
-	@uv run --frozen scripts/pyrepo-check --all
+	@pyrepo-check --all
 
 pre-commit:
 	@pre-commit run --all-files

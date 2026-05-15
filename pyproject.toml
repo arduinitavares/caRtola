@@ -9,6 +9,7 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "kedro==0.18.2",
     "numpy>=2,<3",
+    "optuna>=4,<5",
     "pandas>=2.2,<3",
     "plotly>=6.7,<7",
     "pulp>=2.9,<3",
@@ -84,4 +85,8 @@ include = ["src/cartola"]
 respect-ignore-files = true
 
 [tool.bandit]
-exclude_dirs = ["notebooks", "data", ".venv", ".worktrees"]
+exclude_dirs = ["notebooks", "data", ".venv", ".worktrees", "src/tests"]
+
+[tool.pyrepo-check]
+ruff_targets = ["src/cartola", "src/tests", "scripts"]
+bandit_targets = ["src/cartola"]

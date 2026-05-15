@@ -218,9 +218,20 @@ We now have a solid offline Cartola research/backtesting platform, not yet a “
   - writes `fixed_blend_manifest.json`, `blend_complementarity.csv`,
     `blend_round_results.csv`, `blend_selected_players.csv`,
     `blend_per_season_summary.csv`, `blend_ranked_summary.csv`,
-    `blend_decision.json`, `invalid_rows.csv`, and `fixed_blend_report.html`,
-  - produced a weak-positive research lead for `xgb80_ridge20` but no
-    promotion candidate.
+    `blend_decision.json`, `invalid_rows.csv`, `blend_budget_paths.html`, and
+    `fixed_blend_report.html`,
+  - produced a weak-positive research lead for `xgb80_ridge20` in M006, then
+    rejected it in M006b because the point lift came with unacceptable
+    budget-path risk.
+- M008 Ridge promotion decision:
+  - `scripts/run_ridge_promotion_decision.py` reads completed
+    production-parity artifacts and writes `ridge_promotion_decision.json/md`,
+  - compares `ridge + ppg_xg` against the current
+    `xgboost_depth2_l2_heavy + ppg_xg` no-fixture default and
+    `random_forest + ppg` baseline across 2020-2025,
+  - found Ridge is the aggregate points leader by `+450.82` over XGBoost and
+    `+1303.83` over baseline,
+  - kept the XGBoost default because Ridge failed balanced budget-risk gates.
 - 2020 raw-season compatibility work:
   - accepts accented normalized status strings such as `Provável`,
   - infers `entrou_em_campo` from cumulative `num_jogos` when older round CSVs
@@ -243,7 +254,12 @@ The multi-season audit shows the current pipeline is compatible with recent seas
 - `2026`: load, feature checks, and no-fixture backtest pass as a partial current-season smoke test; metrics are not comparable to complete seasons yet.
 - `2021`: legacy `Mercado_*.txt` Latin-1 JSON market files are now read directly; the loader skips `Mercado_1.txt` as the opening snapshot and treats `Mercado_2.txt` through `Mercado_39.txt` as rounds `1..38`. FootyStats 2021 is classified as an integration candidate, and a bounded `ppg_xg` no-fixture smoke backtest passes.
 - `2022`: now ignores the `rodada-0.csv` market snapshot during season loading and compatibility discovery; FootyStats 2022 is classified as an integration candidate, and a bounded `ppg_xg` no-fixture smoke backtest passes.
-- `2018`, `2019`, `2020`: structurally complete, but currently fail at load time and need schema compatibility work before they can expand the training/evaluation history.
+- `2020`: raw loading/schema compatibility now passes, and the 2020-2025
+  no-fixture production-parity rerun completed successfully. It is now usable
+  as no-fixture historical promotion evidence for comparable model-feature
+  experiments.
+- `2018`, `2019`: structurally complete, but still need compatibility work
+  before they can expand the training/evaluation history.
 
 Historical backtests and model experiments now use moving-budget semantics.
 For these runs, `--budget 100` means initial budget only: every strategy starts
@@ -849,72 +865,155 @@ Quality gate:
 uv run --frozen scripts/pyrepo-check --all
 ```
 
-**Next Milestone: M006b Blend Validation And 2020 Expansion**
+**Completed Milestone: M006b Blend Validation And 2020 Expansion**
 
 Goal: decide whether the `xgb80_ridge20` weak-positive lead is stable enough to
 become a promotion candidate or should remain research-only.
 
-Why now: M006 is the first recent research milestone to produce meaningful
-positive evidence after H001-H005 were rejected. The best blend gained
-`+226.38` aggregate points, improved `4 / 5` seasons, improved 2025 by
-`+91.31`, reduced disaster rounds, and kept selected-player calibration inside
-the guardrail. The remaining blocker is budget/downside risk, not point signal.
+Decision: rejected as a promotion candidate. Keep
+`xgboost_depth2_l2_heavy + ppg_xg + fixture_mode=none` as the live default.
 
-Scope:
+Evidence:
 
-- Run a focused validation generation for only `xgb80_ridge20` versus the
-  promoted XGBoost control.
-- Include `2020` if the compatibility audit confirms the new loader fixes make
-  the season comparable; otherwise run a documented 2020 diagnostic-only slice.
-- Report budget risk separately from point lift:
+- Focused M006b artifact:
+  `data/08_reporting/blend_diagnostics/fixed_blend_started_at=20260514T125438183260Z`.
+- Source reproduction passed for all promotion seasons (`2021-2025`).
+- `xgb80_ridge20` retained the point lead: aggregate actual-points delta
+  `+226.38`, improved `4 / 5` seasons, 2025 delta `+91.31`, selected-player
+  calibration slope `1.0426`, and top-50 Spearman delta `-0.0012`.
+- The stricter budget-risk gate failed: worst final-budget delta `-13.73`,
+  worst max-drawdown delta `+10.16`, and `+4` aggregate
+  budget-constrained rounds.
+- 2020 was blocked when M006b was run. That blocker is now resolved for the
+  no-fixture production-parity workflow, but this M006b blend artifact remains
+  2021-2025-only unless rerun from a 2020-inclusive source experiment.
+
+Delivered:
+
+- Focused validation for only `xgb80_ridge20` versus the promoted XGBoost
+  control.
+- Explicit promotion-season handling via `--promotion-seasons`, allowing 2020
+  to be represented separately from promotion-grade seasons.
+- Budget risk reported separately from point lift:
   final budget delta, min-budget delta, max drawdown delta, budget-constrained
-  rounds, and per-season path plots.
-- Add explicit 2020 source-compatibility status to the decision artifact.
-- Add progress logging to the fixed-blend diagnostic so long MILP replay runs
-  are observable.
-- Do not build learned stacking or RF gating until `xgb80_ridge20` clears this
-  focused validation.
+  rounds, and per-season budget path plots in `blend_budget_paths.html`.
+- Progress logging in `scripts/run_fixed_blend_diagnostic.py`.
+- Focused `--seasons` filtering in the season compatibility audit so future
+  checks can target one season without running the entire history.
 
-Acceptance:
+Command:
 
-- M006b writes a deterministic decision artifact with statuses:
-  `candidate_blend`, `weak_positive_research_lead`, `inconclusive`, `rejected`,
-  or `diagnostic_only_2020`.
-- A candidate requires positive aggregate lift, at least `4 / 6` improved
-  seasons if 2020 is valid or `4 / 5` if not, no 2025 regression, no severe
-  budget-path regression, and no increase in disaster rounds.
-- The decision artifact includes a plain recommendation:
-  promote blend, keep XGBoost default and monitor blend, or reject blend.
-- `xgboost_depth2_l2_heavy + ppg_xg` remains the live default unless M006b
-  clears the frozen promotion gates.
+```bash
+uv run --frozen python scripts/run_fixed_blend_diagnostic.py \
+  --experiment-path data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260513T165550180815Z__matrix=9064290978ca \
+  --seasons 2021,2022,2023,2024,2025 \
+  --promotion-seasons 2021,2022,2023,2024,2025 \
+  --feature-pack ppg_xg \
+  --control-model xgboost_depth2_l2_heavy \
+  --blend xgb80_ridge20=xgboost_depth2_l2_heavy:0.8,ridge:0.2 \
+  --initial-budget 100 \
+  --current-year 2026
+```
 
-**Following Milestone: Live-Lineup Risk Guardrails**
+**Completed Milestone: M008 Ridge Promotion Decision**
 
-Goal: make live squad recommendations operationally safer after the current
-model-selection question is closed.
+Goal: decide whether the 2020-expanded production-parity evidence is strong
+enough to promote `ridge + ppg_xg` over the current XGBoost no-fixture default.
 
-Scope:
+Decision: `candidate_requires_budget_guardrail`. Keep
+`xgboost_depth2_l2_heavy + ppg_xg + fixture_mode=none` as the live default until
+budget/risk guardrails are implemented and a fresh decision clears promotion.
 
-- Add a live risk summary artifact for `run_live_round.py` and
-  `recommend_squad.py` outputs.
-- Surface market-capture age, capture policy, selected-player status mix,
-  low-appearance/low-history flags, and selected-player DNP/null-risk context.
-- Add CLI/report warnings that are visible before a human trusts the squad.
-- Keep this as a guardrail/reporting milestone; do not change optimizer
-  objective or promotion policy in the same milestone.
+Evidence:
+
+- Source experiment:
+  `data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260514T174628080193Z__matrix=af65eb4223e9`.
+- Decision artifact:
+  `data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260514T174628080193Z__matrix=af65eb4223e9/ridge_promotion_decision.json`.
+- `ridge + ppg_xg` total actual points: `11671.95`.
+- `xgboost_depth2_l2_heavy + ppg_xg` total actual points: `11221.13`.
+- Direct Ridge lift over XGBoost: `+450.82`.
+- Direct season deltas:
+  `2020=+273.90`, `2021=-0.57`, `2022=+161.67`,
+  `2023=-115.94`, `2024=-25.41`, `2025=+157.17`.
+- Calibration: strict gate failed, but exception passed with
+  `selected_calibration_slope=0.6596` and stable ranking metrics.
+- Budget risk failed: Ridge worst min budget `68.89`, max drawdown delta
+  `+20.59` versus control, and `+3` budget-constrained rounds.
+
+Delivered:
+
+- Artifact-backed Ridge promotion decision command.
+- Frozen balanced gates separating point lift, calibration, and budget risk.
+- JSON and Markdown decision artifacts written beside the source experiment.
+- Explicit blocker: Ridge cannot replace the XGBoost default until budget risk
+  is fixed or an XGBoost-tuned candidate closes the point gap safely.
+
+Command:
+
+```bash
+uv run --frozen python scripts/run_ridge_promotion_decision.py \
+  --experiment-path data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260514T174628080193Z__matrix=af65eb4223e9 \
+  --candidate-model ridge \
+  --candidate-feature-pack ppg_xg \
+  --control-model xgboost_depth2_l2_heavy \
+  --control-feature-pack ppg_xg \
+  --baseline-model random_forest \
+  --baseline-feature-pack ppg \
+  --promotion-seasons 2020,2021,2022,2023,2024,2025
+```
+
+**Active Milestone: M009 XGBoost Optuna Balanced Tuning**
+
+Goal: test whether bounded Optuna tuning can produce an XGBoost profile with
+Ridge-like point upside and XGBoost-like budget safety.
+
+Delivered infrastructure:
+
+- `scripts/run_xgboost_optuna_tuning.py`.
+- `src/cartola/backtesting/xgboost_optuna_tuning.py`.
+- XGBoost model-parameter override validation for experiment-only tuning.
+- Optuna dependency locked in the project environment.
+- Frozen TPE search space around the current no-fixture XGBoost profile.
+- Balanced objective: point lift versus current XGBoost control minus budget,
+  recent-season, and calibration penalties.
+- Smoke artifact:
+  `data/08_reporting/experiments/model_tuning/xgboost_optuna_tuning_smoke_m009`.
+  This one-trial 2020-only run validates the runner and artifact shape; it is
+  not promotion evidence.
+
+Full M009 command:
+
+```bash
+uv run --frozen python scripts/run_xgboost_optuna_tuning.py \
+  --source-experiment-path data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260514T174628080193Z__matrix=af65eb4223e9 \
+  --seasons 2020,2021,2022,2023,2024,2025 \
+  --n-trials 40 \
+  --current-year 2026 \
+  --control-model xgboost_depth2_l2_heavy \
+  --control-feature-pack ppg_xg \
+  --feature-pack ppg_xg \
+  --jobs 12 \
+  --study-seed 123
+```
+
+Promotion rule:
+
+- Optuna output is research-only.
+- Select the top `3` trials from `optuna_trials.csv`.
+- Rerun those exact parameter configs through a frozen production-parity-style
+  validation before changing live defaults.
+- Reuse the balanced M008 gate shape: points, 2025 behavior, calibration, and
+  budget risk must all pass.
 
 **Roadmap**
-1. Build M006b blend validation.
-   - Focus only on `xgb80_ridge20`.
-   - Include 2020 only after compatibility is verified, or mark it
-     diagnostic-only.
-   - Treat budget/drawdown as the primary promotion blocker to resolve.
-   - Do not build learned stackers, RF gating, or AutoML before M006b closes.
-2. Build the live-lineup risk guardrails milestone after M006b.
-   - The milestone improves recommendation trust, not model score quality.
-   - It must not silently block all live recommendations; it should make risk
-     explicit and fail only on deliberately configured hard thresholds.
-3. Keep live model selection pinned to the promoted moving-budget default.
+1. Run the full M009 2020-2025 bounded Optuna search.
+   - Treat the smoke output as validation only.
+   - Do not tune on 2026 live failures.
+   - Do not promote directly from Optuna trial output.
+   - If no XGBoost candidate closes the point gap safely, return to live
+     budget/risk guardrails before reconsidering Ridge.
+2. Keep live model selection pinned to the promoted moving-budget default.
    - Current default: `xgboost_depth2_l2_heavy + ppg_xg + fixture_mode=none`.
    - Keep `random_forest + ppg` available as the historical baseline, not as a
      live recommendation default.
@@ -924,6 +1023,11 @@ Scope:
      artifact with the same comparability guardrails.
    - For single-round live recommendations, `--budget` still means the caller-provided current available budget for that one open round.
    - Strict matchup mode is available only as an opt-in research/live candidate until it survives real strict pre-lock rounds.
+3. Treat 2020 as usable no-fixture promotion evidence, but rerun research-only
+   artifacts before making 2020-inclusive claims for those specific workflows.
+   - The full 2020-2025 production-parity artifact is comparable and usable.
+   - Older M006/M006b blend artifacts remain 2021-2025-only unless rerun from a
+     2020-inclusive source experiment.
 4. Use strict matchup mode in the next open round only after capturing strict fixture evidence.
    - Capture strict fixture snapshots before generating the recommendation.
    - First candidate to test: `xgboost_depth2_slow + ppg_xg + cartola_matchup_v1`, because it beat Ridge in all three exploratory seasons and fixed the 2025 regression seen in the faster aggregate winner.
@@ -939,8 +1043,7 @@ Scope:
    - On macOS, XGBoost requires the native OpenMP runtime (`libomp`) to be installed before the XGBoost children can run.
    - Defer RandomForest/ExtraTrees tuning until calibration wrappers are designed; tree models still fail calibration guardrails.
    - Defer HGB tuning despite the runtime fix; it is now operationally usable, but it did not beat Ridge.
-   - Defer Optuna until the fixed XGBoost sensitivity pass shows a season-stable local region, not a single lucky aggregate winner.
-   - Future Optuna work should use a seeded `TPESampler`, SQLite storage, a frozen search space, explicit trial manifests, and final full-backtest reruns for finalists; pruned or predictive-only trials must never be promotion-eligible.
+   - M009 now implements bounded Optuna with a seeded `TPESampler`, frozen search space, explicit trial artifacts, and final full-backtest reruns required for finalists; pruned or predictive-only trials must never be promotion-eligible.
    - Defer LightGBM and CatBoost until the promoted XGBoost default has enough
      live monitoring evidence to justify another model-family generation.
 6. Use generated Plotly experiment reports as the standard review surface.
@@ -984,7 +1087,9 @@ Scope:
 These items are useful, but they are no longer the next prediction-quality bottleneck:
 
 1. Fix historical loader compatibility for structurally complete failing seasons:
-   - rerun the compatibility audit after the 2020 loader fixes,
+   - rerun the focused compatibility audit with
+     `uv run --frozen python scripts/audit_backtest_compatibility.py --seasons 2020 --current-year 2026`
+     after investigating the 2020 CBC hang,
    - inspect remaining 2019 and 2018 load errors from the compatibility audit JSON,
    - add schema normalization only where needed,
    - rerun the audit until eligible structurally complete seasons reach

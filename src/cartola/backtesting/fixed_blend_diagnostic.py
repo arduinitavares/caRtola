@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import combinations
@@ -12,7 +13,7 @@ import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from cartola.backtesting.budgeting import advance_budget, initial_budget_state
+from cartola.backtesting.budgeting import BUDGET_CONSTRAINT_TOLERANCE, advance_budget, initial_budget_state
 from cartola.backtesting.config import BacktestConfig
 from cartola.backtesting.experiment_metrics import calibration_slope_intercept, top_k_rows_by_round
 from cartola.backtesting.optimizer import optimize_squad
@@ -45,6 +46,7 @@ _INVALID_ROW_COLUMNS = (
     "solver_status",
     "reason",
 )
+FixedBlendProgressCallback = Callable[[str], None]
 
 
 class FixedBlendDiagnosticError(ValueError):
@@ -94,6 +96,9 @@ def decide_blend_candidate(
     worst_2_round_delta: float,
     top_two_concentration: float,
     non_optimal_delta: int,
+    budget_constrained_rounds_delta: int = 0,
+    required_candidate_improved_seasons: int = 3,
+    required_weak_improved_seasons: int = 3,
 ) -> FixedBlendDecision:
     if not source_valid:
         return FixedBlendDecision(blend_name=blend_name, status="invalid", reason="source reproduction failed.")
@@ -112,12 +117,13 @@ def decide_blend_candidate(
 
     if (
         aggregate_delta >= 85.0
-        and improved_seasons >= 3
+        and improved_seasons >= required_candidate_improved_seasons
         and worst_season_delta >= -25.0
         and season_2025_delta >= -15.0
         and final_budget_delta >= -10.0
         and min_budget_delta >= -10.0
         and max_drawdown_delta <= 10.0
+        and budget_constrained_rounds_delta <= 0
         and 0.75 <= selected_calibration_slope <= 1.25
         and top50_spearman_delta >= -0.03
         and disaster_rounds_under45_delta <= 0
@@ -127,21 +133,22 @@ def decide_blend_candidate(
         return FixedBlendDecision(
             blend_name=blend_name,
             status="candidate_blend",
-            reason="passes fixed_blend_v1 candidate gates.",
+            reason="passes fixed-blend candidate gates.",
         )
 
     if (
         aggregate_delta >= 40.0
-        and improved_seasons >= 3
+        and improved_seasons >= required_weak_improved_seasons
         and worst_season_delta >= -35.0
         and season_2025_delta >= -25.0
         and final_budget_delta >= -15.0
+        and budget_constrained_rounds_delta <= 2
         and top_two_concentration <= 0.65
     ):
         return FixedBlendDecision(
             blend_name=blend_name,
             status="weak_positive_research_lead",
-            reason="passes fixed_blend_v1 weak-positive research gates.",
+            reason="passes fixed-blend weak-positive research gates.",
         )
 
     if -20.0 <= aggregate_delta < 40.0 and final_budget_delta >= -20.0 and max_drawdown_delta <= 20.0:
@@ -151,7 +158,7 @@ def decide_blend_candidate(
             reason="small aggregate movement within inconclusive band.",
         )
 
-    return FixedBlendDecision(blend_name=blend_name, status="rejected", reason="failed fixed_blend_v1 gates.")
+    return FixedBlendDecision(blend_name=blend_name, status="rejected", reason="failed fixed-blend gates.")
 
 
 def parse_blend_specs(raw_specs: tuple[str, ...]) -> tuple[BlendSpec, ...]:
@@ -313,6 +320,7 @@ def run_blend_replay_for_season(
                     "budget_remaining": budget_update.budget_remaining,
                     "budget_peak": budget_update.budget_peak,
                     "budget_drawdown": budget_update.budget_drawdown,
+                    "is_budget_constrained": budget_update.is_budget_constrained,
                     "predicted_points": result.predicted_points_with_captain,
                     "predicted_points_base": result.predicted_points_base,
                     "captain_bonus_predicted": result.captain_bonus_predicted,
@@ -376,6 +384,11 @@ def build_blend_per_season_summary(
                     "control_max_drawdown": control_metrics["max_drawdown"],
                     "blend_max_drawdown": blend_metrics["max_drawdown"],
                     "max_drawdown_delta": blend_metrics["max_drawdown"] - control_metrics["max_drawdown"],
+                    "control_budget_constrained_rounds": control_metrics["budget_constrained_rounds"],
+                    "blend_budget_constrained_rounds": blend_metrics["budget_constrained_rounds"],
+                    "budget_constrained_rounds_delta": (
+                        blend_metrics["budget_constrained_rounds"] - control_metrics["budget_constrained_rounds"]
+                    ),
                     "control_non_optimal_rounds": control_metrics["non_optimal_rounds"],
                     "blend_non_optimal_rounds": blend_metrics["non_optimal_rounds"],
                     "non_optimal_delta": blend_metrics["non_optimal_rounds"] - control_metrics["non_optimal_rounds"],
@@ -401,38 +414,47 @@ def build_blend_ranked_summary(
     source_valid: bool,
     top50_spearman_delta: pd.DataFrame | None = None,
     round_delta_summary: pd.DataFrame | None = None,
+    promotion_seasons: tuple[int, ...] | None = None,
+    required_candidate_improved_seasons: int = 3,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     top50_lookup = _top50_delta_lookup(top50_spearman_delta)
     top_two_lookup = _top_two_round_delta_concentration_lookup(round_delta_summary)
     for blend_name, summary in per_season_summary.groupby("blend_name", sort=True):
+        promotion_summary = _promotion_summary(summary, promotion_seasons=promotion_seasons)
         selected = selected_players.loc[selected_players["blend_name"].astype(str).eq(str(blend_name))]
+        if promotion_seasons is not None and "season" in selected.columns:
+            selected = selected.loc[selected["season"].astype(int).isin(set(promotion_seasons))]
         calibration = calibration_slope_intercept(
             pd.to_numeric(selected.get("predicted_points", pd.Series(dtype=float)), errors="coerce"),
             pd.to_numeric(selected.get("pontuacao", pd.Series(dtype=float)), errors="coerce"),
         )
         selected_calibration_slope = _neutral_if_missing(calibration.get("calibration_slope"), neutral=1.0)
-        aggregate_delta = float(summary["actual_points_delta"].sum())
-        season_2025_rows = summary.loc[summary["season"].astype(int).eq(2025), "actual_points_delta"]
+        aggregate_delta = float(promotion_summary["actual_points_delta"].sum())
+        season_2025_rows = promotion_summary.loc[promotion_summary["season"].astype(int).eq(2025), "actual_points_delta"]
         season_2025_delta = float(season_2025_rows.iloc[0]) if not season_2025_rows.empty else 0.0
         row: dict[str, object] = {
             "blend_name": str(blend_name),
             "source_valid": bool(source_valid),
-            "control_actual_points": float(summary["control_actual_points"].sum()),
-            "blend_actual_points": float(summary["blend_actual_points"].sum()),
+            "promotion_season_count": int(promotion_summary["season"].nunique()),
+            "control_actual_points": float(promotion_summary["control_actual_points"].sum()),
+            "blend_actual_points": float(promotion_summary["blend_actual_points"].sum()),
             "aggregate_delta": aggregate_delta,
-            "improved_seasons": int((summary["actual_points_delta"] > 0).sum()),
-            "worst_season_delta": float(summary["actual_points_delta"].min()),
+            "improved_seasons": int((promotion_summary["actual_points_delta"] > 0).sum()),
+            "worst_season_delta": float(promotion_summary["actual_points_delta"].min()),
             "season_2025_delta": season_2025_delta,
-            "aggregate_final_budget_delta": float(summary["final_budget_delta"].sum()),
-            "aggregate_min_budget_delta": float(summary["min_budget_delta"].sum()),
-            "aggregate_max_drawdown_delta": float(summary["max_drawdown_delta"].sum()),
-            "final_budget_delta": float(summary["final_budget_delta"].min()),
-            "min_budget_delta": float(summary["min_budget_delta"].min()),
-            "max_drawdown_delta": float(summary["max_drawdown_delta"].max()),
-            "non_optimal_delta": int(summary["non_optimal_delta"].sum()),
-            "disaster_rounds_under45_delta": int(summary["disaster_rounds_under45_delta"].sum()),
-            "worst_2_round_delta": float(summary["worst_2_round_delta"].min()),
+            "aggregate_final_budget_delta": float(promotion_summary["final_budget_delta"].sum()),
+            "aggregate_min_budget_delta": float(promotion_summary["min_budget_delta"].sum()),
+            "aggregate_max_drawdown_delta": float(promotion_summary["max_drawdown_delta"].sum()),
+            "final_budget_delta": float(promotion_summary["final_budget_delta"].min()),
+            "min_budget_delta": float(promotion_summary["min_budget_delta"].min()),
+            "max_drawdown_delta": float(promotion_summary["max_drawdown_delta"].max()),
+            "control_budget_constrained_rounds": int(promotion_summary["control_budget_constrained_rounds"].sum()),
+            "blend_budget_constrained_rounds": int(promotion_summary["blend_budget_constrained_rounds"].sum()),
+            "budget_constrained_rounds_delta": int(promotion_summary["budget_constrained_rounds_delta"].sum()),
+            "non_optimal_delta": int(promotion_summary["non_optimal_delta"].sum()),
+            "disaster_rounds_under45_delta": int(promotion_summary["disaster_rounds_under45_delta"].sum()),
+            "worst_2_round_delta": float(promotion_summary["worst_2_round_delta"].min()),
             "top_two_concentration": top_two_lookup.get(str(blend_name), float("inf")),
             "selected_calibration_slope": selected_calibration_slope,
             "selected_calibration_intercept": _none_if_missing(calibration.get("calibration_intercept")),
@@ -455,6 +477,8 @@ def build_blend_ranked_summary(
             worst_2_round_delta=float(row["worst_2_round_delta"]),
             top_two_concentration=float(row["top_two_concentration"]),
             non_optimal_delta=int(row["non_optimal_delta"]),
+            budget_constrained_rounds_delta=int(row["budget_constrained_rounds_delta"]),
+            required_candidate_improved_seasons=required_candidate_improved_seasons,
         )
         row["decision_status"] = decision.status
         row["decision_reason"] = decision.reason
@@ -543,14 +567,26 @@ def run_fixed_blend_diagnostic(
     *,
     experiment_path: Path,
     seasons: tuple[int, ...],
+    promotion_seasons: tuple[int, ...] | None = None,
     feature_pack: str,
     control_model: str,
     blend_specs: tuple[BlendSpec, ...],
     initial_budget: float,
     current_year: int,
     output_root: Path,
+    progress_callback: FixedBlendProgressCallback | None = None,
 ) -> Path:
+    normalized_promotion_seasons = _normalize_promotion_seasons(seasons, promotion_seasons=promotion_seasons)
+    diagnostic_only_seasons = tuple(season for season in seasons if season not in set(normalized_promotion_seasons))
+    design_revision = "fixed_blend_m006b_v1" if promotion_seasons is not None else "fixed_blend_v1"
+    required_candidate_improved_seasons = _required_candidate_improved_seasons(normalized_promotion_seasons)
     output_path = output_root / f"fixed_blend_started_at={_timestamp_id()}"
+    _emit_progress(
+        progress_callback,
+        f"START fixed blend diagnostic seasons={','.join(str(season) for season in seasons)} "
+        f"promotion_seasons={','.join(str(season) for season in normalized_promotion_seasons)}",
+    )
+    _emit_progress(progress_callback, "START source validation")
     source_valid, reproduction_invalid_rows = _validate_control_reproduction(
         experiment_path=experiment_path,
         seasons=seasons,
@@ -564,14 +600,22 @@ def run_fixed_blend_diagnostic(
         feature_pack=feature_pack,
         blend_specs=blend_specs,
     )
-    source_valid = source_valid and components_valid
+    source_invalid_rows = _concat_or_empty([reproduction_invalid_rows, component_invalid_rows])
+    source_valid_by_season = _source_valid_by_season(seasons=seasons, invalid_rows=source_invalid_rows)
+    source_valid = all(source_valid_by_season[season] for season in normalized_promotion_seasons)
+    _emit_progress(progress_callback, f"DONE source validation promotion_source_valid={source_valid}")
     replay_results = [
-        run_blend_replay_for_season(
+        _run_blend_replay_for_season_with_progress(
             experiment_path=experiment_path,
             season=season,
             feature_pack=feature_pack,
             blend_specs=blend_specs,
-            config=BacktestConfig(season=season, start_round=_start_round_for_control(experiment_path, season, control_model, feature_pack), budget=initial_budget),
+            config=BacktestConfig(
+                season=season,
+                start_round=_start_round_for_control(experiment_path, season, control_model, feature_pack),
+                budget=initial_budget,
+            ),
+            progress_callback=progress_callback,
         )
         for season in seasons
     ]
@@ -596,7 +640,7 @@ def run_fixed_blend_diagnostic(
     )
     top50_delta = _compute_top50_spearman_deltas(
         experiment_path=experiment_path,
-        seasons=seasons,
+        seasons=normalized_promotion_seasons,
         feature_pack=feature_pack,
         control_model=control_model,
         blend_specs=blend_specs,
@@ -606,7 +650,9 @@ def run_fixed_blend_diagnostic(
         blend_selected_players,
         source_valid=source_valid,
         top50_spearman_delta=top50_delta,
-        round_delta_summary=round_delta_summary,
+        round_delta_summary=_filter_seasons(round_delta_summary, normalized_promotion_seasons),
+        promotion_seasons=normalized_promotion_seasons,
+        required_candidate_improved_seasons=required_candidate_improved_seasons,
     )
     complementarity = _build_all_complementarity(
         experiment_path=experiment_path,
@@ -623,8 +669,20 @@ def run_fixed_blend_diagnostic(
         initial_budget=initial_budget,
         current_year=current_year,
         source_valid=source_valid,
+        design_revision=design_revision,
+        promotion_seasons=normalized_promotion_seasons,
+        diagnostic_only_seasons=diagnostic_only_seasons,
+        source_valid_by_season=source_valid_by_season,
     )
-    decision_payload = _decision_payload(ranked_summary, source_valid=source_valid)
+    decision_payload = _decision_payload(
+        ranked_summary,
+        source_valid=source_valid,
+        season_source_status=_season_source_status(
+            seasons=seasons,
+            promotion_seasons=normalized_promotion_seasons,
+            source_valid_by_season=source_valid_by_season,
+        ),
+    )
     _write_fixed_blend_artifacts(
         output_path=output_path,
         manifest=manifest,
@@ -636,6 +694,7 @@ def run_fixed_blend_diagnostic(
         decision_payload=decision_payload,
         invalid_rows=invalid_rows,
     )
+    _emit_progress(progress_callback, f"DONE fixed blend diagnostic output={output_path}")
     return output_path
 
 
@@ -766,15 +825,31 @@ def _season_round_metrics(rounds: pd.DataFrame) -> dict[str, float | int]:
         else (budget_after.cummax() - budget_after)
     )
     solver_status = sorted_rounds["solver_status"].astype(str)
+    budget_constrained_rounds = _budget_constrained_round_count(sorted_rounds)
     return {
         "actual_points": float(actual_points.sum()),
         "final_budget": float(budget_after.iloc[-1]),
         "min_budget": float(pd.concat([budget_before, budget_after], ignore_index=True).min()),
         "max_drawdown": float(drawdown.max()),
+        "budget_constrained_rounds": budget_constrained_rounds,
         "non_optimal_rounds": int((solver_status != "Optimal").sum()),
         "disaster_rounds_under45": int((actual_points < _DISASTER_POINTS_THRESHOLD).sum()),
         "worst_2_round_total": _worst_rolling_two_total(actual_points),
     }
+
+
+def _budget_constrained_round_count(rounds: pd.DataFrame) -> int:
+    if "is_budget_constrained" in rounds.columns:
+        constrained = rounds["is_budget_constrained"].fillna(False).astype(bool)
+        return int(constrained.sum())
+    if "budget_remaining" in rounds.columns:
+        remaining = pd.to_numeric(rounds["budget_remaining"], errors="coerce").astype(float)
+        return int((remaining <= BUDGET_CONSTRAINT_TOLERANCE).sum())
+    if {"budget_before_round", "budget_used"}.issubset(rounds.columns):
+        before = pd.to_numeric(rounds["budget_before_round"], errors="coerce").astype(float)
+        used = pd.to_numeric(rounds["budget_used"], errors="coerce").astype(float)
+        return int(((before - used) <= BUDGET_CONSTRAINT_TOLERANCE).sum())
+    return 0
 
 
 def _worst_rolling_two_total(actual_points: pd.Series) -> float:
@@ -783,6 +858,22 @@ def _worst_rolling_two_total(actual_points: pd.Series) -> float:
     if len(actual_points) == 1:
         return float(actual_points.iloc[0])
     return float(actual_points.rolling(window=2).sum().dropna().min())
+
+
+def _promotion_summary(summary: pd.DataFrame, *, promotion_seasons: tuple[int, ...] | None) -> pd.DataFrame:
+    if promotion_seasons is None:
+        promotion_summary = summary.copy()
+    else:
+        promotion_summary = summary.loc[summary["season"].astype(int).isin(set(promotion_seasons))].copy()
+    if promotion_summary.empty:
+        raise FixedBlendDiagnosticError("No per-season summary rows remain for promotion seasons.")
+    return promotion_summary
+
+
+def _filter_seasons(frame: pd.DataFrame, seasons: tuple[int, ...]) -> pd.DataFrame:
+    if frame.empty or "season" not in frame.columns:
+        return frame.copy()
+    return frame.loc[frame["season"].astype(int).isin(set(seasons))].copy()
 
 
 def _top50_delta_lookup(top50_spearman_delta: pd.DataFrame | None) -> dict[str, float]:
@@ -1006,6 +1097,84 @@ def _validate_component_source_contexts(
                     )
     frame = pd.DataFrame(invalid_rows, columns=pd.Index(_INVALID_ROW_COLUMNS))
     return frame.empty, frame
+
+
+def _run_blend_replay_for_season_with_progress(
+    *,
+    experiment_path: Path,
+    season: int,
+    feature_pack: str,
+    blend_specs: tuple[BlendSpec, ...],
+    config: BacktestConfig,
+    progress_callback: FixedBlendProgressCallback | None,
+) -> BlendReplayResult:
+    _emit_progress(progress_callback, f"START replay season={season}")
+    result = run_blend_replay_for_season(
+        experiment_path=experiment_path,
+        season=season,
+        feature_pack=feature_pack,
+        blend_specs=blend_specs,
+        config=config,
+    )
+    _emit_progress(progress_callback, f"DONE replay season={season} rows={len(result.round_rows)}")
+    return result
+
+
+def _normalize_promotion_seasons(
+    seasons: tuple[int, ...],
+    *,
+    promotion_seasons: tuple[int, ...] | None,
+) -> tuple[int, ...]:
+    if promotion_seasons is None:
+        return seasons
+    if not promotion_seasons:
+        raise FixedBlendDiagnosticError("At least one promotion season is required.")
+    season_set = set(seasons)
+    unknown = sorted(set(promotion_seasons) - season_set)
+    if unknown:
+        raise FixedBlendDiagnosticError(f"promotion seasons must be included in seasons: {unknown}")
+    if len(set(promotion_seasons)) != len(promotion_seasons):
+        raise FixedBlendDiagnosticError("Duplicate promotion seasons are not allowed.")
+    return promotion_seasons
+
+
+def _required_candidate_improved_seasons(promotion_seasons: tuple[int, ...]) -> int:
+    if len(promotion_seasons) >= 5:
+        return 4
+    return min(3, len(promotion_seasons))
+
+
+def _source_valid_by_season(*, seasons: tuple[int, ...], invalid_rows: pd.DataFrame) -> dict[int, bool]:
+    invalid_seasons: set[int] = set()
+    if not invalid_rows.empty and "season" in invalid_rows.columns:
+        values = pd.to_numeric(invalid_rows["season"], errors="coerce").dropna().astype(int)
+        invalid_seasons = set(values.tolist())
+    return {int(season): int(season) not in invalid_seasons for season in seasons}
+
+
+def _season_source_status(
+    *,
+    seasons: tuple[int, ...],
+    promotion_seasons: tuple[int, ...],
+    source_valid_by_season: dict[int, bool],
+) -> list[dict[str, object]]:
+    promotion_set = set(promotion_seasons)
+    rows: list[dict[str, object]] = []
+    for season in seasons:
+        valid = bool(source_valid_by_season[int(season)])
+        if int(season) in promotion_set:
+            decision_status = "promotion_eligible" if valid else "invalid"
+        elif int(season) == 2020:
+            decision_status = "diagnostic_only_2020"
+        else:
+            decision_status = "diagnostic_only"
+        rows.append({"season": int(season), "source_valid": valid, "decision_status": decision_status})
+    return rows
+
+
+def _emit_progress(progress_callback: FixedBlendProgressCallback | None, message: str) -> None:
+    if progress_callback is not None:
+        progress_callback(message)
 
 
 def _validate_initial_budget_matches_control(
@@ -1368,18 +1537,28 @@ def _fixed_blend_manifest(
     initial_budget: float,
     current_year: int,
     source_valid: bool,
+    design_revision: str,
+    promotion_seasons: tuple[int, ...],
+    diagnostic_only_seasons: tuple[int, ...],
+    source_valid_by_season: dict[int, bool],
 ) -> dict[str, object]:
     return {
         "hypothesis_id": "M006",
-        "design_revision": "fixed_blend_v1",
+        "design_revision": design_revision,
         "source_experiment_path": str(experiment_path),
         "seasons": [int(season) for season in seasons],
+        "promotion_seasons": [int(season) for season in promotion_seasons],
+        "diagnostic_only_seasons": [int(season) for season in diagnostic_only_seasons],
         "feature_pack": feature_pack,
         "control_model": control_model,
         "initial_budget": float(initial_budget),
         "budget_policy": "moving",
         "current_year": int(current_year),
         "source_valid": bool(source_valid),
+        "source_valid_by_season": {
+            str(int(season)): bool(source_valid_by_season[int(season)])
+            for season in seasons
+        },
         "blend_specs": [
             {
                 "name": blend_spec.name,
@@ -1393,16 +1572,32 @@ def _fixed_blend_manifest(
     }
 
 
-def _decision_payload(ranked_summary: pd.DataFrame, *, source_valid: bool) -> dict[str, object]:
+def _decision_payload(
+    ranked_summary: pd.DataFrame,
+    *,
+    source_valid: bool,
+    season_source_status: list[dict[str, object]],
+) -> dict[str, object]:
     decisions = ranked_summary[
         ["blend_name", "decision_status", "decision_reason", "aggregate_delta"]
     ].to_dict(orient="records")
     candidate_count = int((ranked_summary["decision_status"].astype(str) == "candidate_blend").sum())
+    statuses = ranked_summary["decision_status"].astype(str)
     return {
         "source_valid": bool(source_valid),
         "candidate_count": candidate_count,
+        "recommendation": _decision_recommendation(statuses),
+        "season_source_status": season_source_status,
         "decisions": decisions,
     }
+
+
+def _decision_recommendation(statuses: pd.Series) -> str:
+    if (statuses == "candidate_blend").any():
+        return "promote_blend"
+    if statuses.isin(["weak_positive_research_lead", "inconclusive"]).any():
+        return "keep_xgboost_default_and_monitor_blend"
+    return "reject_blend"
 
 
 def _write_fixed_blend_artifacts(
@@ -1426,6 +1621,10 @@ def _write_fixed_blend_artifacts(
     ranked_summary.to_csv(output_path / "blend_ranked_summary.csv", index=False)
     _write_json(output_path / "blend_decision.json", decision_payload)
     invalid_rows.to_csv(output_path / "invalid_rows.csv", index=False)
+    (output_path / "blend_budget_paths.html").write_text(
+        _budget_paths_html(round_results=round_results, per_season_summary=per_season_summary),
+        encoding="utf-8",
+    )
     (output_path / "fixed_blend_report.html").write_text(
         _fixed_blend_report_html(
             manifest=manifest,
@@ -1459,6 +1658,7 @@ def _fixed_blend_report_html(
         _table_section("Per-Season Summary", per_season_summary),
         _table_section("Complementarity", complementarity),
         _table_section("Invalid Rows", invalid_rows),
+        "<h2>Budget Paths</h2><p>See <code>blend_budget_paths.html</code>.</p>",
         _json_section("Manifest", manifest),
     ]
     return "<!doctype html><html><head><meta charset='utf-8'><title>M006 Fixed Blend Diagnostic</title></head><body>" + "\n".join(sections) + "</body></html>"
@@ -1470,6 +1670,47 @@ def _json_section(title: str, payload: dict[str, object]) -> str:
 
 def _table_section(title: str, frame: pd.DataFrame) -> str:
     return f"<h2>{html.escape(title)}</h2>{frame.to_html(index=False, escape=True)}"
+
+
+def _budget_paths_html(*, round_results: pd.DataFrame, per_season_summary: pd.DataFrame) -> str:
+    if round_results.empty:
+        return "<!doctype html><html><body><h1>M006 Budget Paths</h1><p>No round results.</p></body></html>"
+    try:
+        import plotly.graph_objects as go
+    except ImportError as exc:
+        return (
+            "<!doctype html><html><body><h1>M006 Budget Paths</h1>"
+            f"<p>Plotly unavailable: {html.escape(str(exc))}</p>"
+            f"{_table_section('Per-Season Budget Summary', per_season_summary)}</body></html>"
+        )
+
+    figure = go.Figure()
+    ordered = round_results.sort_values(["blend_name", "season", "rodada"], kind="mergesort")
+    for group_key, group in ordered.groupby(["blend_name", "season"], sort=True):
+        blend_name, season = cast("tuple[object, object]", group_key)
+        figure.add_trace(
+            go.Scatter(
+                x=group["rodada"],
+                y=group["budget_after_round"],
+                mode="lines+markers",
+                name=f"{blend_name} {season}",
+                hovertemplate="round=%{x}<br>budget_after=%{y:.2f}<extra></extra>",
+            )
+        )
+    figure.update_layout(
+        title="M006 Blend Budget Paths",
+        xaxis_title="Round",
+        yaxis_title="Budget After Round",
+        template="plotly_white",
+    )
+    chart_html = figure.to_html(include_plotlyjs=True, full_html=False)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><title>M006 Budget Paths</title></head><body>"
+        "<h1>M006 Budget Paths</h1>"
+        f"{chart_html}"
+        f"{_table_section('Per-Season Budget Summary', per_season_summary)}"
+        "</body></html>"
+    )
 
 
 def _timestamp_id() -> str:

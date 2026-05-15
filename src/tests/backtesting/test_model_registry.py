@@ -143,6 +143,38 @@ def test_ridge_spec_matches_contract() -> None:
     assert estimator.alpha == 1.0
 
 
+def test_xgboost_model_parameter_overrides_are_validated() -> None:
+    params = effective_model_parameters(
+        "xgboost_depth2_l2_heavy",
+        {
+            "n_estimators": 450,
+            "max_depth": 3,
+            "learning_rate": 0.04,
+            "min_child_weight": 12.0,
+            "subsample": 0.75,
+            "colsample_bytree": 0.7,
+            "reg_lambda": 80.0,
+            "reg_alpha": 3.0,
+            "gamma": 0.5,
+        },
+    )
+
+    assert params["n_estimators"] == 450
+    assert params["max_depth"] == 3
+    assert params["learning_rate"] == 0.04
+    assert params["subsample"] == 0.75
+
+
+def test_xgboost_model_parameter_overrides_reject_unknown_parameter() -> None:
+    with pytest.raises(ValueError, match="Unsupported model parameter for xgboost_depth2_l2_heavy: scale_pos_weight"):
+        effective_model_parameters("xgboost_depth2_l2_heavy", {"scale_pos_weight": 1.0})
+
+
+def test_xgboost_model_parameter_overrides_reject_invalid_bounds() -> None:
+    with pytest.raises(ValueError, match="xgboost subsample must be in"):
+        effective_model_parameters("xgboost_depth2_l2_heavy", {"subsample": 1.2})
+
+
 @pytest.mark.parametrize(
     ("model_id", "expected"),
     [
@@ -376,8 +408,8 @@ def test_ridge_model_params_reject_non_positive_alpha(alpha: float) -> None:
         )
 
 
-def test_non_ridge_model_params_are_rejected_for_v1() -> None:
-    with pytest.raises(ValueError, match="Model parameter overrides are only supported for ridge"):
+def test_unsupported_model_params_are_rejected() -> None:
+    with pytest.raises(ValueError, match="Model parameter overrides are not supported for random_forest"):
         create_point_predictor(
             model_id="random_forest",
             random_seed=7,
@@ -424,8 +456,8 @@ def test_effective_model_parameters_rejects_unknown_ridge_key() -> None:
         effective_model_parameters("ridge", {"fit_intercept": False})
 
 
-def test_effective_model_parameters_rejects_non_ridge_override() -> None:
-    with pytest.raises(ValueError, match="Model parameter overrides are only supported for ridge"):
+def test_effective_model_parameters_rejects_unsupported_model_override() -> None:
+    with pytest.raises(ValueError, match="Model parameter overrides are not supported for random_forest"):
         effective_model_parameters("random_forest", {"min_samples_leaf": 10})
 
 

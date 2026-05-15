@@ -16,6 +16,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Cartola M006 fixed-blend diagnostic artifacts.")
     parser.add_argument("--experiment-path", type=Path, required=True)
     parser.add_argument("--seasons", default="2021,2022,2023,2024,2025")
+    parser.add_argument(
+        "--promotion-seasons",
+        default=None,
+        help="Comma-separated seasons used for promotion gates; omitted means all --seasons.",
+    )
     parser.add_argument("--feature-pack", default="ppg_xg")
     parser.add_argument("--control-model", default="xgboost_depth2_l2_heavy")
     parser.add_argument("--blend", action="append", required=True)
@@ -72,12 +77,14 @@ def main(argv: list[str] | None = None) -> int:
     output_path = run_fixed_blend_diagnostic(
         experiment_path=args.experiment_path,
         seasons=_parse_seasons(args.seasons),
+        promotion_seasons=_parse_seasons(args.promotion_seasons) if args.promotion_seasons else None,
         feature_pack=args.feature_pack,
         control_model=args.control_model,
         blend_specs=parse_blend_specs(tuple(args.blend)),
         initial_budget=args.initial_budget,
         current_year=args.current_year,
         output_root=args.output_root,
+        progress_callback=lambda message: print(message, flush=True),
     )
     print(output_path)
     return 0

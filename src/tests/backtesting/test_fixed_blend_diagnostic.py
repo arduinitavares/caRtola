@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -159,7 +160,7 @@ def test_decide_blend_candidate_applies_frozen_gates(
     overrides: dict[str, object],
     expected_status: str,
 ) -> None:
-    metrics: dict[str, object] = {
+    metrics: dict[str, Any] = {
         "blend_name": "blend_a",
         "source_valid": True,
         "aggregate_delta": 90.0,
@@ -175,6 +176,7 @@ def test_decide_blend_candidate_applies_frozen_gates(
         "worst_2_round_delta": -5.0,
         "top_two_concentration": 0.4,
         "non_optimal_delta": 0,
+        "budget_constrained_rounds_delta": 0,
     }
     metrics.update(overrides)
 
@@ -183,6 +185,42 @@ def test_decide_blend_candidate_applies_frozen_gates(
     assert decision.status == expected_status
     assert decision.blend_name == "blend_a"
     assert decision.reason
+
+
+def test_decide_blend_candidate_uses_m006b_candidate_season_and_budget_gates() -> None:
+    metrics: dict[str, Any] = {
+        "blend_name": "blend_a",
+        "source_valid": True,
+        "aggregate_delta": 120.0,
+        "improved_seasons": 3,
+        "worst_season_delta": -10.0,
+        "season_2025_delta": 15.0,
+        "final_budget_delta": -2.0,
+        "min_budget_delta": -2.0,
+        "max_drawdown_delta": 2.0,
+        "selected_calibration_slope": 1.0,
+        "top50_spearman_delta": 0.0,
+        "disaster_rounds_under45_delta": 0,
+        "worst_2_round_delta": -3.0,
+        "top_two_concentration": 0.4,
+        "non_optimal_delta": 0,
+        "budget_constrained_rounds_delta": 0,
+        "required_candidate_improved_seasons": 4,
+    }
+
+    decision = decide_blend_candidate(**metrics)
+
+    assert decision.status == "weak_positive_research_lead"
+
+    metrics["improved_seasons"] = 4
+    decision = decide_blend_candidate(**metrics)
+
+    assert decision.status == "candidate_blend"
+
+    metrics["budget_constrained_rounds_delta"] = 1
+    decision = decide_blend_candidate(**metrics)
+
+    assert decision.status == "weak_positive_research_lead"
 
 
 def test_build_blend_complementarity_joins_candidate_rows(tmp_path: Path) -> None:
@@ -279,6 +317,35 @@ def test_ranked_summary_uses_downside_preserving_budget_risk_columns() -> None:
     assert ranked.loc[0, "max_drawdown_delta"] == pytest.approx(25.0)
 
 
+def test_ranked_summary_filters_to_promotion_seasons_and_records_budget_constraints() -> None:
+    ranked = build_blend_ranked_summary(
+        _per_season_summary_rows(
+            [
+                {
+                    "season": 2020,
+                    "actual_points_delta": -200.0,
+                    "budget_constrained_rounds_delta": 10,
+                },
+                {
+                    "season": 2025,
+                    "actual_points_delta": 90.0,
+                    "budget_constrained_rounds_delta": 1,
+                },
+            ]
+        ),
+        _selected_players_for_ranked_summary(),
+        source_valid=True,
+        round_delta_summary=_round_delta_rows(),
+        promotion_seasons=(2025,),
+        required_candidate_improved_seasons=1,
+    )
+
+    assert ranked.loc[0, "promotion_season_count"] == 1
+    assert ranked.loc[0, "aggregate_delta"] == pytest.approx(90.0)
+    assert ranked.loc[0, "improved_seasons"] == 1
+    assert ranked.loc[0, "budget_constrained_rounds_delta"] == 1
+
+
 def test_run_fixed_blend_diagnostic_writes_artifacts_from_synthetic_source(tmp_path: Path) -> None:
     experiment_path = tmp_path / "experiment"
     output_root = tmp_path / "blend_diagnostics"
@@ -347,6 +414,70 @@ def test_run_fixed_blend_diagnostic_writes_artifacts_from_synthetic_source(tmp_p
         {"rejected", "inconclusive", "weak_positive_research_lead", "candidate_blend"}
     )
     assert pd.read_csv(output_path / "invalid_rows.csv").empty
+
+
+def test_run_fixed_blend_diagnostic_writes_m006b_artifacts_and_progress(tmp_path: Path) -> None:
+    experiment_path = tmp_path / "experiment"
+    output_root = tmp_path / "blend_diagnostics"
+    progress_messages: list[str] = []
+    for season in (2020, 2025):
+        model_a = _candidate_frame(rounds=(5, 6), score_column="model_a_score", score_offset=0.0)
+        model_b = model_a.rename(columns={"model_a_score": "model_b_score"}).assign(
+            model_b_score=model_a["model_a_score"] + 0.5,
+        )
+        _write_experiment_child(
+            experiment_path,
+            season=season,
+            model_id="model_a",
+            feature_pack="ppg",
+            predictions=model_a,
+            score_column="model_a_score",
+        )
+        _write_experiment_child(
+            experiment_path,
+            season=season,
+            model_id="model_b",
+            feature_pack="ppg",
+            predictions=model_b,
+            score_column="model_b_score",
+        )
+
+    output_path = run_fixed_blend_diagnostic(
+        experiment_path=experiment_path,
+        seasons=(2020, 2025),
+        promotion_seasons=(2025,),
+        feature_pack="ppg",
+        control_model="model_a",
+        blend_specs=parse_blend_specs(("blend_a=model_a:0.5,model_b:0.5",)),
+        initial_budget=50.0,
+        current_year=2026,
+        output_root=output_root,
+        progress_callback=progress_messages.append,
+    )
+
+    manifest = json.loads((output_path / "fixed_blend_manifest.json").read_text(encoding="utf-8"))
+    decision = json.loads((output_path / "blend_decision.json").read_text(encoding="utf-8"))
+    ranked_summary = pd.read_csv(output_path / "blend_ranked_summary.csv")
+    per_season_summary = pd.read_csv(output_path / "blend_per_season_summary.csv")
+
+    assert manifest["design_revision"] == "fixed_blend_m006b_v1"
+    assert manifest["seasons"] == [2020, 2025]
+    assert manifest["promotion_seasons"] == [2025]
+    assert manifest["diagnostic_only_seasons"] == [2020]
+    assert decision["recommendation"] in {
+        "promote_blend",
+        "keep_xgboost_default_and_monitor_blend",
+        "reject_blend",
+    }
+    assert decision["season_source_status"] == [
+        {"season": 2020, "source_valid": True, "decision_status": "diagnostic_only_2020"},
+        {"season": 2025, "source_valid": True, "decision_status": "promotion_eligible"},
+    ]
+    assert "budget_constrained_rounds_delta" in ranked_summary.columns
+    assert "control_budget_constrained_rounds" in per_season_summary.columns
+    assert (output_path / "blend_budget_paths.html").exists()
+    assert any("START replay season=2020" in message for message in progress_messages)
+    assert any("DONE fixed blend diagnostic" in message for message in progress_messages)
 
 
 def test_run_fixed_blend_diagnostic_marks_non_moving_source_metadata_invalid(tmp_path: Path) -> None:
@@ -709,6 +840,9 @@ def _per_season_summary_rows(overrides: list[dict[str, object]]) -> pd.DataFrame
             "control_max_drawdown": 5.0,
             "blend_max_drawdown": 5.0,
             "max_drawdown_delta": 0.0,
+            "control_budget_constrained_rounds": 0,
+            "blend_budget_constrained_rounds": 0,
+            "budget_constrained_rounds_delta": 0,
             "control_non_optimal_rounds": 0,
             "blend_non_optimal_rounds": 0,
             "non_optimal_delta": 0,

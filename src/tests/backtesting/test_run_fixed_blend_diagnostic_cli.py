@@ -26,6 +26,7 @@ def test_parse_args_builds_fixed_blend_defaults() -> None:
 
     assert args.experiment_path == Path("data/experiment")
     assert args.seasons == "2021,2022,2023,2024,2025"
+    assert args.promotion_seasons is None
     assert args.feature_pack == "ppg_xg"
     assert args.control_model == "xgboost_depth2_l2_heavy"
     assert args.blend == ["xgb90_ridge10=xgboost_depth2_l2_heavy:0.9,ridge:0.1"]
@@ -41,6 +42,8 @@ def test_parse_args_accepts_repeated_blends_and_overrides() -> None:
             "experiment",
             "--seasons",
             "2024,2025",
+            "--promotion-seasons",
+            "2025",
             "--feature-pack",
             "ppg",
             "--control-model",
@@ -59,6 +62,7 @@ def test_parse_args_accepts_repeated_blends_and_overrides() -> None:
     )
 
     assert args.seasons == "2024,2025"
+    assert args.promotion_seasons == "2025"
     assert args.feature_pack == "ppg"
     assert args.control_model == "model_a"
     assert args.blend == ["blend_a=model_a:0.8,model_b:0.2", "blend_b=model_a:0.7,model_b:0.3"]

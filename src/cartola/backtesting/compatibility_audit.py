@@ -64,6 +64,7 @@ STATUS_NOT_APPLICABLE = "not_applicable"
 @dataclass(frozen=True)
 class AuditConfig:
     project_root: Path = Path(".")
+    seasons: tuple[int, ...] | None = None
     start_round: int = 5
     complete_round_threshold: int = 38
     expected_complete_rounds: int = 38
@@ -205,6 +206,7 @@ def run_compatibility_audit(
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Cartola multi-season backtest compatibility audit.")
     parser.add_argument("--project-root", type=Path, default=Path("."))
+    parser.add_argument("--seasons", default=None, help="Comma-separated seasons to audit; omitted audits all discovered seasons.")
     parser.add_argument("--start-round", type=int, default=5)
     parser.add_argument("--complete-round-threshold", type=int, default=38)
     parser.add_argument("--expected-complete-rounds", type=int, default=38)
@@ -216,6 +218,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def config_from_args(args: argparse.Namespace) -> AuditConfig:
     return AuditConfig(
         project_root=args.project_root,
+        seasons=_parse_seasons(args.seasons) if args.seasons else None,
         start_round=args.start_round,
         complete_round_threshold=args.complete_round_threshold,
         expected_complete_rounds=args.expected_complete_rounds,
@@ -253,7 +256,11 @@ def discover_seasons(config: AuditConfig) -> list[SeasonDiscovery]:
         (path for path in raw_root.iterdir() if path.is_dir() and path.name.isdigit()),
         key=lambda path: int(path.name),
     )
+    requested_seasons = None if config.seasons is None else set(config.seasons)
     for season_path in season_paths:
+        season = int(season_path.name)
+        if requested_seasons is not None and season not in requested_seasons:
+            continue
         round_files = sorted(season_path.glob("rodada-*.csv"))
         legacy_market_files = sorted(
             season_path.glob("Mercado_*.txt"),
@@ -278,7 +285,7 @@ def discover_seasons(config: AuditConfig) -> list[SeasonDiscovery]:
             error = _error_detail("discovery", exc)
             discoveries.append(
                 SeasonDiscovery(
-                    season=int(season_path.name),
+                    season=season,
                     season_path=season_path,
                     round_files=round_files,
                     round_file_count=len(round_files),
@@ -295,7 +302,7 @@ def discover_seasons(config: AuditConfig) -> list[SeasonDiscovery]:
 
         discoveries.append(
             SeasonDiscovery(
-                season=int(season_path.name),
+                season=season,
                 season_path=season_path,
                 round_files=usable_round_files,
                 round_file_count=len(usable_round_files),
@@ -306,6 +313,15 @@ def discover_seasons(config: AuditConfig) -> list[SeasonDiscovery]:
         )
 
     return discoveries
+
+
+def _parse_seasons(raw: str) -> tuple[int, ...]:
+    seasons = tuple(int(value.strip()) for value in raw.split(",") if value.strip())
+    if not seasons:
+        raise ValueError("At least one season is required.")
+    if len(set(seasons)) != len(seasons):
+        raise ValueError("Duplicate seasons are not allowed.")
+    return seasons
 
 
 def _discovery_round_number(path: Path) -> int:
