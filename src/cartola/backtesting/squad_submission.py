@@ -259,6 +259,22 @@ def _selected_position_counts(selected: pd.DataFrame) -> dict[str, int]:
     return counts
 
 
+def _normalize_position_counts(position_counts: dict[str, int], expected_counts: dict[str, int]) -> dict[str, int]:
+    position_keys = set(position_counts) | set(expected_counts)
+    return {position: position_counts.get(position, 0) for position in sorted(position_keys)}
+
+
+def _selected_athlete_rows(selected: pd.DataFrame) -> list[dict[str, object]]:
+    selected_rows = cast("list[dict[str, object]]", selected.to_dict("records"))
+    seen_athlete_ids: set[int] = set()
+    for index, selected_row in enumerate(selected_rows):
+        athlete_id = _int_value(selected_row.get("id_atleta"), f"selected[{index}].id_atleta")
+        if athlete_id in seen_athlete_ids:
+            raise SquadSubmissionError(f"Duplicate selected athlete in recommendation artifact: id_atleta={athlete_id}")
+        seen_athlete_ids.add(athlete_id)
+    return selected_rows
+
+
 def _validate_open_status(
     artifact: RecommendationArtifact,
     status_payload: JsonValue,
@@ -299,11 +315,11 @@ def _validate_open_status(
 
 
 def _status_is_playable(market_row: dict[str, object]) -> bool:
-    try:
-        if _int_value(market_row.get("status_id"), "market.status_id") == 7:
-            return True
-    except SquadSubmissionError:
-        pass
+    if "status_id" in market_row:
+        try:
+            return _int_value(market_row.get("status_id"), "market.status_id") == 7
+        except SquadSubmissionError:
+            return False
 
     raw_status = market_row.get("status")
     if isinstance(raw_status, dict):
@@ -337,12 +353,16 @@ def validate_artifact_against_public_market(
         raise SquadSubmissionError(f"Recommendation formation is not available in Cartola schemes: formation={formation}")
 
     selected_position_counts = _selected_position_counts(artifact.selected)
-    if selected_position_counts != scheme.position_counts:
+    normalized_selected_position_counts = _normalize_position_counts(selected_position_counts, scheme.position_counts)
+    normalized_scheme_position_counts = _normalize_position_counts(scheme.position_counts, selected_position_counts)
+    if normalized_selected_position_counts != normalized_scheme_position_counts:
         raise SquadSubmissionError(
             f"Recommendation formation counts do not match Cartola scheme: "
-            f"formation={formation} selected={selected_position_counts} scheme={scheme.position_counts}",
+            f"formation={formation} "
+            f"selected={normalized_selected_position_counts} scheme={normalized_scheme_position_counts}",
         )
 
+    selected_rows = _selected_athlete_rows(artifact.selected)
     market_positions = _market_position_map(market_payload)
     market_athletes = _market_athlete_index(market_payload)
     not_comparable_fields: set[str] = set()
@@ -350,7 +370,6 @@ def validate_artifact_against_public_market(
     if not has_club_column:
         not_comparable_fields.add("id_clube")
 
-    selected_rows = cast("list[dict[str, object]]", artifact.selected.to_dict("records"))
     for index, selected_row in enumerate(selected_rows):
         athlete_id = _int_value(selected_row.get("id_atleta"), f"selected[{index}].id_atleta")
         market_row = market_athletes.get(athlete_id)
@@ -398,7 +417,7 @@ def validate_artifact_against_public_market(
         "market_season": market_season,
         "formation": formation,
         "formation_scheme_id": scheme.scheme_id,
-        "selected_position_counts": selected_position_counts,
+        "selected_position_counts": normalized_selected_position_counts,
         "account_budget_verified": False,
         "not_comparable_fields": sorted(not_comparable_fields),
     }

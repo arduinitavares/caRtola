@@ -196,6 +196,34 @@ def test_validate_artifact_against_public_market_accepts_valid_current_market(tm
     assert report["not_comparable_fields"] == []
 
 
+def test_validate_artifact_against_public_market_accepts_valid_zero_position_formation(tmp_path: Path) -> None:
+    run_dir = _write_canonical_live_recommendation_run(tmp_path)
+    artifact = load_recommendation_artifact(project_root=tmp_path, recommendation_path=run_dir)
+    artifact.summary["formation"] = "3-4-3"
+    artifact.metadata["formation"] = "3-4-3"
+    lat_index = artifact.selected.index[artifact.selected["posicao"] == "lat"].tolist()
+    artifact.selected.loc[lat_index[0], "posicao"] = "zag"
+    artifact.selected.loc[lat_index[1], "posicao"] = "mei"
+
+    report = validate_artifact_against_public_market(
+        artifact,
+        _status_payload(deadline=4_102_444_800),
+        [
+            {
+                "nome": "3-4-3",
+                "esquema_id": 5,
+                "posicoes": {"gol": 1, "lat": 0, "zag": 3, "mei": 4, "ata": 3, "tec": 1},
+            },
+        ],
+        _market_payload_from_artifact(artifact),
+        now=datetime(2026, 5, 16, 12, 0, tzinfo=UTC),
+        safety_margin_seconds=120,
+    )
+
+    assert report["formation_scheme_id"] == 5
+    assert report["selected_position_counts"] == {"ata": 3, "gol": 1, "lat": 0, "mei": 4, "tec": 1, "zag": 3}
+
+
 def test_validate_artifact_against_public_market_rejects_closed_market(tmp_path: Path) -> None:
     run_dir = _write_canonical_live_recommendation_run(tmp_path)
     artifact = load_recommendation_artifact(project_root=tmp_path, recommendation_path=run_dir)
@@ -244,6 +272,48 @@ def test_validate_artifact_against_public_market_rejects_current_market_status_d
     first_athlete["status"] = {"id": 2, "nome": "Dúvida"}
 
     with pytest.raises(SquadSubmissionError, match="status drift"):
+        validate_artifact_against_public_market(
+            artifact,
+            _status_payload(deadline=4_102_444_800),
+            _schemes_payload(),
+            market_payload,
+            now=datetime(2026, 5, 16, 12, 0, tzinfo=UTC),
+            safety_margin_seconds=120,
+        )
+
+
+def test_validate_artifact_against_public_market_rejects_authoritative_status_id_drift(tmp_path: Path) -> None:
+    run_dir = _write_canonical_live_recommendation_run(tmp_path)
+    artifact = load_recommendation_artifact(project_root=tmp_path, recommendation_path=run_dir)
+    market_payload = _market_payload_from_artifact(artifact)
+    athlete_rows = market_payload["atletas"]
+    assert isinstance(athlete_rows, list)
+    typed_athlete_rows = cast("list[dict[str, object]]", athlete_rows)
+    first_athlete = typed_athlete_rows[0]
+    first_athlete["status_id"] = 2
+    first_athlete["status"] = {"id": 7, "nome": "Provável"}
+
+    with pytest.raises(SquadSubmissionError, match="status drift"):
+        validate_artifact_against_public_market(
+            artifact,
+            _status_payload(deadline=4_102_444_800),
+            _schemes_payload(),
+            market_payload,
+            now=datetime(2026, 5, 16, 12, 0, tzinfo=UTC),
+            safety_margin_seconds=120,
+        )
+
+
+def test_validate_artifact_against_public_market_rejects_duplicate_selected_athletes(tmp_path: Path) -> None:
+    run_dir = _write_canonical_live_recommendation_run(tmp_path)
+    artifact = load_recommendation_artifact(project_root=tmp_path, recommendation_path=run_dir)
+    market_payload = _market_payload_from_artifact(artifact)
+    artifact.selected.loc[artifact.selected.index[1], "id_atleta"] = artifact.selected.loc[
+        artifact.selected.index[0],
+        "id_atleta",
+    ]
+
+    with pytest.raises(SquadSubmissionError, match="Duplicate selected athlete"):
         validate_artifact_against_public_market(
             artifact,
             _status_payload(deadline=4_102_444_800),
