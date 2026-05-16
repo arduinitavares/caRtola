@@ -820,8 +820,8 @@ def run_submission(
         "would_submit": False,
         "submitted_at_utc": None,
         "http_status": None,
-        "auth_token_present": False,
-        "auth_token_source": "not_required",
+        "auth_token_present": False,  # nosec B105
+        "auth_token_source": "not_required",  # nosec B105
         "payload_sha256": payload_sha256,
     }
     _write_json(plan_path, plan)
