@@ -114,7 +114,9 @@ def canonical_payload_sha256(payload: dict[str, Any]) -> str:
 def fetch_public_json(url: str, timeout_seconds: float) -> JsonValue:
     import requests  # type: ignore[import-untyped]
 
-    response = requests.get(url, timeout=timeout_seconds)
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get(url, timeout=timeout_seconds)
     if response.status_code != 200:
         raise SquadSubmissionError(
             f"Cartola public request failed: url={url} status={response.status_code}",

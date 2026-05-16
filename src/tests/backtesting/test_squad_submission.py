@@ -19,6 +19,7 @@ from cartola.backtesting.squad_submission import (
     SquadSubmissionError,
     SubmissionConfig,
     canonical_payload_sha256,
+    fetch_public_json,
     load_recommendation_artifact,
     parse_schemes,
     run_submission,
@@ -187,6 +188,42 @@ def test_canonical_payload_sha256_normalizes_submission_ids_to_integers() -> Non
     integer_payload = {"esquema": 4, "atletas": [3, 1, 2], "capitao": 3}
 
     assert canonical_payload_sha256(string_payload) == canonical_payload_sha256(integer_payload)
+
+
+def test_fetch_public_json_disables_ambient_requests_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    import requests  # type: ignore[import-untyped]
+
+    observed: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True}
+
+    class FakeSession:
+        trust_env = True
+
+        def get(self, url: str, timeout: float) -> FakeResponse:
+            observed["url"] = url
+            observed["timeout"] = timeout
+            observed["trust_env_at_get"] = self.trust_env
+            return FakeResponse()
+
+    def top_level_get(url: str, timeout: float) -> NoReturn:
+        raise AssertionError("fetch_public_json must use an explicit requests.Session")
+
+    monkeypatch.setattr(requests, "Session", FakeSession)
+    monkeypatch.setattr(requests, "get", top_level_get)
+
+    payload = fetch_public_json(CARTOLA_STATUS_ENDPOINT, 12.5)
+
+    assert payload == {"ok": True}
+    assert observed == {
+        "url": CARTOLA_STATUS_ENDPOINT,
+        "timeout": 12.5,
+        "trust_env_at_get": False,
+    }
 
 
 def test_parse_schemes_extracts_formation_id_and_counts() -> None:
