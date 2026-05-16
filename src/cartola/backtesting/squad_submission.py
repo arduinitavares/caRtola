@@ -186,12 +186,25 @@ def _validate_recommendation_path(project_root: Path, recommendation_path: Path)
     return path
 
 
+def _resolve_required_artifact_file(project_root: Path, path: Path) -> Path:
+    try:
+        return _resolve_project_path(project_root, path)
+    except SquadSubmissionError as exc:
+        raise SquadSubmissionError(f"Artifact file must resolve inside project_root: path={path}") from exc
+
+
+def _resolve_optional_artifact_file(project_root: Path, path: Path) -> Path | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    return _resolve_required_artifact_file(project_root, path)
+
+
 def load_recommendation_artifact(*, project_root: Path, recommendation_path: Path) -> RecommendationArtifact:
     path = _validate_recommendation_path(project_root, recommendation_path)
-    selected_path = path / "recommended_squad.csv"
-    summary_path = path / "recommendation_summary.json"
-    metadata_path = path / "run_metadata.json"
-    live_workflow_path = path / "live_workflow_metadata.json"
+    selected_path = _resolve_required_artifact_file(project_root, path / "recommended_squad.csv")
+    summary_path = _resolve_required_artifact_file(project_root, path / "recommendation_summary.json")
+    metadata_path = _resolve_required_artifact_file(project_root, path / "run_metadata.json")
+    live_workflow_path = _resolve_optional_artifact_file(project_root, path / "live_workflow_metadata.json")
 
     try:
         selected = pd.read_csv(selected_path)
@@ -200,14 +213,14 @@ def load_recommendation_artifact(*, project_root: Path, recommendation_path: Pat
 
     summary = _read_json_object(summary_path)
     metadata = _read_json_object(metadata_path)
-    live_workflow_metadata = _read_json_object(live_workflow_path) if live_workflow_path.exists() else None
+    live_workflow_metadata = _read_json_object(live_workflow_path) if live_workflow_path is not None else None
 
     source_artifact_hashes = {
         "recommended_squad.csv": _sha256_file(selected_path),
         "recommendation_summary.json": _sha256_file(summary_path),
         "run_metadata.json": _sha256_file(metadata_path),
     }
-    if live_workflow_path.exists():
+    if live_workflow_path is not None:
         source_artifact_hashes["live_workflow_metadata.json"] = _sha256_file(live_workflow_path)
 
     return RecommendationArtifact(

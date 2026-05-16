@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import NoReturn
@@ -19,6 +20,10 @@ from cartola.backtesting.squad_submission import (
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _write_canonical_live_recommendation_run(project_root: Path) -> Path:
@@ -126,11 +131,11 @@ def test_load_recommendation_artifact_reads_canonical_live_run(tmp_path: Path) -
     assert artifact.target_round == 16
     assert artifact.selected.shape[0] == 12
     assert artifact.summary["formation"] == "4-3-3"
-    assert artifact.source_artifact_hashes.keys() == {
-        "recommended_squad.csv",
-        "recommendation_summary.json",
-        "run_metadata.json",
-        "live_workflow_metadata.json",
+    assert artifact.source_artifact_hashes == {
+        "recommended_squad.csv": _file_sha256(run_dir / "recommended_squad.csv"),
+        "recommendation_summary.json": _file_sha256(run_dir / "recommendation_summary.json"),
+        "run_metadata.json": _file_sha256(run_dir / "run_metadata.json"),
+        "live_workflow_metadata.json": _file_sha256(run_dir / "live_workflow_metadata.json"),
     }
 
 
@@ -140,3 +145,19 @@ def test_load_recommendation_artifact_rejects_non_canonical_backtest_path(tmp_pa
 
     with pytest.raises(SquadSubmissionError, match="canonical live recommendation"):
         load_recommendation_artifact(project_root=tmp_path, recommendation_path=backtest_path)
+
+
+def test_load_recommendation_artifact_rejects_artifact_symlink_outside_project(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    run_dir = _write_canonical_live_recommendation_run(project_root)
+    outside_csv = tmp_path / "outside-recommended-squad.csv"
+    outside_csv.write_text((run_dir / "recommended_squad.csv").read_text(encoding="utf-8"), encoding="utf-8")
+    artifact_path = run_dir / "recommended_squad.csv"
+    artifact_path.unlink()
+    try:
+        artifact_path.symlink_to(outside_csv)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(msg=f"Symlink creation is unsupported: {exc}")
+
+    with pytest.raises(SquadSubmissionError, match="inside project_root"):
+        load_recommendation_artifact(project_root=project_root, recommendation_path=run_dir)
