@@ -1006,6 +1006,16 @@ Promotion rule:
 - Reuse the balanced M008 gate shape: points, 2025 behavior, calibration, and
   budget risk must all pass.
 
+
+**M010 Cartola Submission Plan Phase 1**
+
+Build the safe artifact-to-plan workflow for reviewed live recommendations.
+Scope is plan generation only: public market validation, current-athlete drift
+checks, canonical payload hashing, and timestamped audit artifacts. Real
+authenticated POST remains blocked with `CONTRACT_UNVERIFIED`; Phase 2 needs a
+verified save/read-back contract and authenticated team identity preflight
+before any POST can be enabled.
+
 **Roadmap**
 1. Run the full M009 2020-2025 bounded Optuna search.
    - Treat the smoke output as validation only.

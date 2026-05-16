@@ -203,6 +203,15 @@ Steps:
 - `recommended_squad.csv` keeps per-player `predicted_points` raw; use `predicted_points_with_captain` and `actual_points_with_captain` for captain-adjusted totals when present.
 - Replay recommendation summaries include oracle comparison fields when candidate `pontuacao` is complete: `oracle_actual_points`, `oracle_gap`, `oracle_capture_rate`, and `oracle_optimizer_status`; live recommendations leave these fields null.
 
+
+## Cartola Submission Plan Workflow
+
+- Phase 1 only: build a sanitized submission plan from a reviewed live recommendation artifact:
+  `uv run --frozen python scripts/submit_recommended_squad.py --recommendation-path data/08_reporting/recommendations/2026/round-16/live/runs/run_started_at=20260516T130042922935Z`
+- Outputs are written under timestamped attempt directories such as `submission_attempts/attempt_started_at=20260516T130042000000Z/` beside the recommendation run and include `submission_plan.json` and `submission_result.json`.
+- Real submit is intentionally disabled in Phase 1. Any invocation with `--confirm-submit` must fail with `CONTRACT_UNVERIFIED` before loading `.env`, reading `CARTOLA_GLB_TOKEN`, constructing an authenticated HTTP client, or constructing any POST request.
+- Phase 2 requires a separate spec with verified save/read-back contract, authenticated team identity preflight, account budget verification, and `CARTOLA_EXPECTED_TEAM_ID`.
+
 ## Strict Fixture Capture
 
 - Capture strict pre-lock fixture evidence for the open market round:
