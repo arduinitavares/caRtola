@@ -4,13 +4,17 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import Callable, NoReturn, cast
 
 import pytest
 
 from cartola.backtesting.squad_submission import (
+    CARTOLA_MARKET_ENDPOINT,
+    CARTOLA_SCHEMES_ENDPOINT,
+    CARTOLA_STATUS_ENDPOINT,
     CONTRACT_UNVERIFIED,
     ContractUnverifiedError,
+    JsonValue,
     RecommendationArtifact,
     SquadSubmissionError,
     SubmissionConfig,
@@ -150,6 +154,23 @@ def _market_payload_from_artifact(artifact: RecommendationArtifact) -> dict[str,
         },
         "atletas": athlete_rows,
     }
+
+
+def _fetch_public_for_artifact(artifact: RecommendationArtifact) -> Callable[[str, float], JsonValue]:
+    payloads: dict[str, JsonValue] = {
+        CARTOLA_STATUS_ENDPOINT: cast("JsonValue", _status_payload(deadline=4_102_444_800)),
+        CARTOLA_SCHEMES_ENDPOINT: cast("JsonValue", _schemes_payload()),
+        CARTOLA_MARKET_ENDPOINT: cast("JsonValue", _market_payload_from_artifact(artifact)),
+    }
+
+    def fetch(url: str, timeout_seconds: float) -> JsonValue:
+        assert timeout_seconds > 0
+        try:
+            return payloads[url]
+        except KeyError as exc:
+            raise AssertionError(f"unexpected public endpoint: {url}") from exc
+
+    return fetch
 
 
 def test_canonical_payload_sha256_is_stable_and_preserves_athlete_order() -> None:
@@ -342,6 +363,78 @@ def test_confirm_submit_fails_contract_unverified_before_fetch_or_auth(tmp_path:
         run_submission(config, fetch=fetch)
 
     assert calls == []
+
+
+def test_run_submission_writes_plan_and_result_under_unique_attempt(tmp_path: Path) -> None:
+    run_dir = _write_canonical_live_recommendation_run(tmp_path)
+    artifact = load_recommendation_artifact(project_root=tmp_path, recommendation_path=run_dir)
+
+    result = run_submission(
+        SubmissionConfig(project_root=tmp_path, recommendation_path=run_dir),
+        fetch=_fetch_public_for_artifact(artifact),
+        clock=lambda: datetime(2026, 5, 16, 13, 0, 42, tzinfo=UTC),
+    )
+
+    assert result.status == "plan_only"
+    assert result.attempt_directory is not None
+    assert result.submission_plan_path is not None
+    assert result.submission_result_path is not None
+    assert result.submission_plan_path.exists()
+    assert result.submission_result_path.exists()
+    assert result.submission_plan_path.parent == result.attempt_directory
+    assert result.submission_result_path.parent == result.attempt_directory
+    assert result.attempt_directory.parent == run_dir / "submission_attempts"
+    assert result.attempt_directory.name.startswith("attempt_started_at=")
+
+    plan = json.loads(result.submission_plan_path.read_text(encoding="utf-8"))
+    audit = json.loads(result.submission_result_path.read_text(encoding="utf-8"))
+
+    assert plan["plan_status"] == "ready_for_review"
+    assert plan["payload"]["esquema"] == 3
+    assert len(plan["payload"]["atletas"]) == 12
+    assert plan["payload"]["capitao"] == 6
+    assert plan["payload_sha256"] == result.payload_sha256
+    assert plan["validation_report"]["account_budget_verified"] is False
+    assert audit["submission_status"] == "plan_only"
+    assert audit["would_submit"] is False
+    assert audit["auth_token_present"] is False
+    assert audit["auth_token_source"] == "not_required"
+
+
+def test_run_submission_rejects_non_approved_model_without_override(tmp_path: Path) -> None:
+    run_dir = _write_canonical_live_recommendation_run(tmp_path)
+    metadata_path = run_dir / "run_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["model_id"] = "ridge"
+    _write_json(metadata_path, metadata)
+    artifact = load_recommendation_artifact(project_root=tmp_path, recommendation_path=run_dir)
+
+    with pytest.raises(SquadSubmissionError, match="non-approved model"):
+        run_submission(
+            SubmissionConfig(project_root=tmp_path, recommendation_path=run_dir),
+            fetch=_fetch_public_for_artifact(artifact),
+        )
+
+
+def test_run_submission_allows_non_approved_model_for_plan_with_override_reason(tmp_path: Path) -> None:
+    run_dir = _write_canonical_live_recommendation_run(tmp_path)
+    metadata_path = run_dir / "run_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["model_id"] = "ridge"
+    _write_json(metadata_path, metadata)
+    artifact = load_recommendation_artifact(project_root=tmp_path, recommendation_path=run_dir)
+
+    result = run_submission(
+        SubmissionConfig(
+            project_root=tmp_path,
+            recommendation_path=run_dir,
+            allow_non_approved_model=True,
+            override_reason="manual comparison plan",
+        ),
+        fetch=_fetch_public_for_artifact(artifact),
+    )
+
+    assert result.status == "plan_only"
 
 
 def test_load_recommendation_artifact_reads_canonical_live_run(tmp_path: Path) -> None:

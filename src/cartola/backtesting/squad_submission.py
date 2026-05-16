@@ -163,6 +163,14 @@ def _float_value(value: object, field_name: str) -> float:
     return numeric_value
 
 
+def _bool_series(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
 def _strip_accents(value: object) -> str:
     normalized = unicodedata.normalize("NFKD", str(value).strip())
     return "".join(character for character in normalized if not unicodedata.combining(character)).lower()
@@ -423,6 +431,210 @@ def validate_artifact_against_public_market(
     }
 
 
+def _validate_selected_squad(artifact: RecommendationArtifact) -> dict[str, object]:
+    required_columns = {
+        "id_atleta",
+        "apelido",
+        "id_clube",
+        "posicao",
+        "status",
+        "preco_pre_rodada",
+        "is_captain",
+    }
+    missing_columns = sorted(required_columns.difference(artifact.selected.columns))
+    if missing_columns:
+        raise SquadSubmissionError(
+            f"recommended squad artifact is missing required columns: columns={missing_columns}",
+        )
+
+    selected_rows = _selected_athlete_rows(artifact.selected)
+    selected_count = len(selected_rows)
+    if selected_count != 12:
+        raise SquadSubmissionError(f"recommended squad must contain exactly 12 selected rows: count={selected_count}")
+
+    captain_rows: list[tuple[int, dict[str, object]]] = []
+    for index, row in enumerate(selected_rows):
+        _string_value(row.get("apelido"), f"selected[{index}].apelido")
+        _int_value(row.get("id_clube"), f"selected[{index}].id_clube")
+        _string_value(row.get("status"), f"selected[{index}].status")
+        _float_value(row.get("preco_pre_rodada"), f"selected[{index}].preco_pre_rodada")
+        if _bool_series(row.get("is_captain")):
+            captain_rows.append((index, row))
+
+    position_counts = _selected_position_counts(artifact.selected)
+    tecnico_count = position_counts.get("tec", 0)
+    if tecnico_count != 1:
+        raise SquadSubmissionError(f"recommended squad must contain exactly one tecnico: count={tecnico_count}")
+    non_tecnico_count = selected_count - tecnico_count
+    if non_tecnico_count != 11:
+        raise SquadSubmissionError(
+            f"recommended squad must contain exactly 11 non-tecnico athletes: count={non_tecnico_count}",
+        )
+
+    if len(captain_rows) != 1:
+        raise SquadSubmissionError(f"recommended squad must contain exactly one captain: count={len(captain_rows)}")
+    captain_index, captain_row = captain_rows[0]
+    captain_position = _strip_accents(captain_row.get("posicao"))
+    if captain_position == "tec":
+        raise SquadSubmissionError("recommended squad captain must not be tecnico")
+
+    summary_mode = _string_value(artifact.summary.get("mode"), "recommendation_summary.mode")
+    metadata_mode = _string_value(artifact.metadata.get("mode"), "run_metadata.mode")
+    if summary_mode != "live" or metadata_mode != "live":
+        raise SquadSubmissionError(
+            f"recommended squad must be a live recommendation: summary_mode={summary_mode} metadata_mode={metadata_mode}",
+        )
+
+    budget_used = _float_value(artifact.summary.get("budget_used"), "recommendation_summary.budget_used")
+    raw_budget = artifact.summary.get("budget", artifact.metadata.get("budget"))
+    budget = _float_value(raw_budget, "recommendation budget")
+    if budget_used - budget > 0.01:
+        raise SquadSubmissionError(
+            f"recommended squad exceeds available budget: budget_used={budget_used:.2f} budget={budget:.2f}",
+        )
+
+    captain_id = _int_value(captain_row.get("id_atleta"), f"selected[{captain_index}].id_atleta")
+    captain_name = _string_value(captain_row.get("apelido"), f"selected[{captain_index}].apelido")
+    return {
+        "selected_count": selected_count,
+        "tecnico_count": tecnico_count,
+        "non_tecnico_count": non_tecnico_count,
+        "captain_id": captain_id,
+        "captain_name": captain_name,
+        "budget": budget,
+        "budget_used": budget_used,
+    }
+
+
+def _approved_profile_observations(artifact: RecommendationArtifact, field_name: str) -> list[tuple[str, str]]:
+    if field_name == "model_id":
+        sources = (
+            ("run_metadata.model_id", artifact.metadata.get("model_id")),
+            ("recommendation_summary.strategy", artifact.summary.get("strategy")),
+            ("recommendation_summary.model_id", artifact.summary.get("model_id")),
+        )
+    else:
+        sources = (
+            (f"run_metadata.{field_name}", artifact.metadata.get(field_name)),
+            (f"recommendation_summary.{field_name}", artifact.summary.get(field_name)),
+        )
+
+    observations: list[tuple[str, str]] = []
+    for source_name, raw_value in sources:
+        if raw_value is None:
+            continue
+        observations.append((source_name, _string_value(raw_value, source_name)))
+    if not observations:
+        raise SquadSubmissionError(f"approved profile field is missing from recommendation artifacts: {field_name}")
+    return observations
+
+
+def _validate_approved_profile(
+    artifact: RecommendationArtifact,
+    config: SubmissionConfig,
+) -> dict[str, object]:
+    observed_profile: dict[str, str] = {}
+    mismatches: list[dict[str, str]] = []
+    for field_name, approved_value in APPROVED_PROFILE.items():
+        observations = _approved_profile_observations(artifact, field_name)
+        observed_profile[field_name] = observations[0][1]
+        for source_name, observed_value in observations:
+            if observed_value != approved_value:
+                mismatches.append(
+                    {
+                        "field": field_name,
+                        "source": source_name,
+                        "observed": observed_value,
+                        "approved": approved_value,
+                    },
+                )
+
+    override_reason = (config.override_reason or "").strip()
+    if mismatches and not config.allow_non_approved_model:
+        mismatch_text = ", ".join(
+            f"{mismatch['source']}={mismatch['observed']} expected={mismatch['approved']}"
+            for mismatch in mismatches
+        )
+        raise SquadSubmissionError(
+            f"non-approved model/profile cannot be used for Phase 1 plan generation: {mismatch_text}",
+        )
+    if mismatches and not override_reason:
+        raise SquadSubmissionError("non-approved model/profile override_reason is required for a plan-only override")
+
+    return {
+        "approved_profile": dict(APPROVED_PROFILE),
+        "observed_profile": observed_profile,
+        "mismatches": mismatches,
+        "allow_non_approved_model": config.allow_non_approved_model,
+        "override_reason": override_reason if mismatches else None,
+        "submit_allowed": False,
+    }
+
+
+def _build_payload(
+    artifact: RecommendationArtifact,
+    validation_report: dict[str, object],
+) -> dict[str, object]:
+    selected_rows = _selected_athlete_rows(artifact.selected)
+    captain_rows = [row for row in selected_rows if _bool_series(row.get("is_captain"))]
+    if len(captain_rows) != 1:
+        raise SquadSubmissionError(f"recommended squad must contain exactly one captain: count={len(captain_rows)}")
+    return {
+        "esquema": _int_value(validation_report.get("formation_scheme_id"), "validation_report.formation_scheme_id"),
+        "atletas": [
+            _int_value(row.get("id_atleta"), f"selected[{index}].id_atleta")
+            for index, row in enumerate(selected_rows)
+        ],
+        "capitao": _int_value(captain_rows[0].get("id_atleta"), "selected captain id_atleta"),
+    }
+
+
+def _utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _attempt_directory(run_dir: Path, now: datetime) -> Path:
+    attempt_root = run_dir / "submission_attempts"
+    try:
+        attempt_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SquadSubmissionError(f"Unable to create submission attempt root: path={attempt_root}") from exc
+
+    timestamp = _utc_datetime(now).strftime("%Y%m%dT%H%M%S%fZ")
+    base_name = f"attempt_started_at={timestamp}"
+    for suffix in range(1000):
+        candidate_name = base_name if suffix == 0 else f"{base_name}_{suffix}"
+        candidate = attempt_root / candidate_name
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise SquadSubmissionError(f"Unable to create submission attempt directory: path={candidate}") from exc
+        return candidate
+    raise SquadSubmissionError(f"Unable to create unique submission attempt directory: path={attempt_root}")
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise SquadSubmissionError(f"Unable to write JSON artifact: path={path}") from exc
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _public_payloads(config: SubmissionConfig, fetch: Fetch) -> tuple[JsonValue, JsonValue, JsonValue]:
+    status_payload = fetch(CARTOLA_STATUS_ENDPOINT, config.timeout_seconds)
+    schemes_payload = fetch(CARTOLA_SCHEMES_ENDPOINT, config.timeout_seconds)
+    market_payload = fetch(CARTOLA_MARKET_ENDPOINT, config.timeout_seconds)
+    return status_payload, schemes_payload, market_payload
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -546,7 +758,77 @@ def run_submission(
     fetch: Fetch = fetch_public_json,
     clock: Clock = utc_now,
 ) -> SquadSubmissionResult:
-    del fetch, clock
     if config.confirm_submit:
         raise ContractUnverifiedError(CONTRACT_UNVERIFIED)
-    raise SquadSubmissionError("recommendation_path is required for Phase 1 plan generation")
+    if config.submission_plan is not None:
+        raise SquadSubmissionError("submission_plan replay is reserved for future Phase 2 implementation")
+    if config.recommendation_path is None:
+        raise SquadSubmissionError("recommendation_path is required for Phase 1 plan generation")
+
+    artifact = load_recommendation_artifact(
+        project_root=config.project_root,
+        recommendation_path=config.recommendation_path,
+    )
+    selected_report = _validate_selected_squad(artifact)
+    profile_report = _validate_approved_profile(artifact, config)
+
+    now = _utc_datetime(clock())
+    status_payload, schemes_payload, market_payload = _public_payloads(config, fetch)
+    validation_report = validate_artifact_against_public_market(
+        artifact,
+        status_payload,
+        schemes_payload,
+        market_payload,
+        now=now,
+        safety_margin_seconds=config.safety_margin_seconds,
+    )
+    validation_report["selected_squad"] = selected_report
+    validation_report["approved_profile"] = profile_report
+
+    payload = _build_payload(artifact, validation_report)
+    payload_sha256 = canonical_payload_sha256(payload)
+    attempt_directory = _attempt_directory(artifact.path, now)
+    plan_path = attempt_directory / "submission_plan.json"
+    result_path = attempt_directory / "submission_result.json"
+
+    captain_id = _int_value(selected_report.get("captain_id"), "selected_squad.captain_id")
+    observed_profile = cast("dict[str, str]", profile_report["observed_profile"])
+    plan: dict[str, object] = {
+        "plan_status": "ready_for_review",
+        "phase": "phase1_plan_only",
+        "recommendation_path": str(artifact.path),
+        "payload": payload,
+        "payload_sha256": payload_sha256,
+        "source_artifact_hashes": artifact.source_artifact_hashes,
+        "target_round": artifact.target_round,
+        "season": artifact.season,
+        "formation": validation_report["formation"],
+        "selected_count": selected_report["selected_count"],
+        "captain_id": captain_id,
+        "captain_name": selected_report["captain_name"],
+        "model_id": observed_profile["model_id"],
+        "footystats_mode": observed_profile["footystats_mode"],
+        "fixture_mode": observed_profile["fixture_mode"],
+        "matchup_context_mode": observed_profile["matchup_context_mode"],
+        "scoring_contract_version": observed_profile["scoring_contract_version"],
+        "validation_report": validation_report,
+    }
+    result_payload: dict[str, object] = {
+        "submission_status": "plan_only",
+        "would_submit": False,
+        "submitted_at_utc": None,
+        "http_status": None,
+        "auth_token_present": False,
+        "auth_token_source": "not_required",
+        "payload_sha256": payload_sha256,
+    }
+    _write_json(plan_path, plan)
+    _write_json(result_path, result_payload)
+
+    return SquadSubmissionResult(
+        attempt_directory=attempt_directory,
+        submission_plan_path=plan_path,
+        submission_result_path=result_path,
+        payload_sha256=payload_sha256,
+        status="plan_only",
+    )
