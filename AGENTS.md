@@ -23,8 +23,8 @@ Steps:
 ## Setup And Quality
 
 - Install local dev dependencies with `uv sync --dev`.
-- Reproduce the GitHub Actions quality gate with `uv sync --locked --dev` and `uv run --frozen scripts/pyrepo-check --all`.
-- `scripts/pyrepo-check` supports targeted checks: `ruff`, `ty`, `bandit`, and `pytest`.
+- Reproduce the GitHub Actions quality gate with `uv sync --locked --dev` and `uv run --frozen pyrepo-check --all`.
+- The installed `pyrepo-check` command supports targeted checks: `ruff`, `annotations`, `annotations-fix`, `ty`, `bandit`, and `pytest`.
 - Annotation presence is enforced by Ruff `ANN` rules; run only that gate with `uv run --frozen ruff check src/cartola src/tests scripts --select ANN`.
 - Run tests directly with `uv run --frozen pytest` when a narrower pytest workflow is useful.
 - Use `make clean` to remove Python caches, build artifacts, coverage fragments, `references/`, and `results/`.
