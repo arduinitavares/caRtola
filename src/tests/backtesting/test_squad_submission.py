@@ -232,6 +232,28 @@ def test_validate_artifact_against_public_market_rejects_price_drift(tmp_path: P
         )
 
 
+def test_validate_artifact_against_public_market_rejects_current_market_status_drift(tmp_path: Path) -> None:
+    run_dir = _write_canonical_live_recommendation_run(tmp_path)
+    artifact = load_recommendation_artifact(project_root=tmp_path, recommendation_path=run_dir)
+    market_payload = _market_payload_from_artifact(artifact)
+    athlete_rows = market_payload["atletas"]
+    assert isinstance(athlete_rows, list)
+    typed_athlete_rows = cast("list[dict[str, object]]", athlete_rows)
+    first_athlete = typed_athlete_rows[0]
+    first_athlete["status_id"] = 2
+    first_athlete["status"] = {"id": 2, "nome": "Dúvida"}
+
+    with pytest.raises(SquadSubmissionError, match="status drift"):
+        validate_artifact_against_public_market(
+            artifact,
+            _status_payload(deadline=4_102_444_800),
+            _schemes_payload(),
+            market_payload,
+            now=datetime(2026, 5, 16, 12, 0, tzinfo=UTC),
+            safety_margin_seconds=120,
+        )
+
+
 def test_confirm_submit_fails_contract_unverified_before_fetch_or_auth(tmp_path: Path) -> None:
     calls: list[str] = []
 

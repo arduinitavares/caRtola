@@ -298,7 +298,7 @@ def _validate_open_status(
     return market_round, market_season
 
 
-def _status_is_playable(market_row: dict[str, object], artifact_status: object) -> bool:
+def _status_is_playable(market_row: dict[str, object]) -> bool:
     try:
         if _int_value(market_row.get("status_id"), "market.status_id") == 7:
             return True
@@ -310,7 +310,7 @@ def _status_is_playable(market_row: dict[str, object], artifact_status: object) 
         status_row = cast("dict[str, object]", raw_status)
         if _strip_accents(status_row.get("nome")) == "provavel":
             return True
-    return _strip_accents(artifact_status) == "provavel"
+    return False
 
 
 def _artifact_formation(artifact: RecommendationArtifact) -> str:
@@ -390,7 +390,7 @@ def validate_artifact_against_public_market(
                 f"selected={selected_price:.2f} market={market_price:.2f}",
             )
 
-        if not _status_is_playable(market_row, selected_row.get("status")):
+        if not _status_is_playable(market_row):
             raise SquadSubmissionError(f"Selected athlete status drift: id_atleta={athlete_id}")
 
     return {
