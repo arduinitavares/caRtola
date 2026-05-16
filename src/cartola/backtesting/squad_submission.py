@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from numbers import Integral, Real
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import pandas as pd
 
@@ -14,6 +17,8 @@ CONTRACT_UNVERIFIED = "CONTRACT_UNVERIFIED"
 CARTOLA_STATUS_ENDPOINT = "https://api.cartola.globo.com/mercado/status"
 CARTOLA_MARKET_ENDPOINT = "https://api.cartola.globo.com/atletas/mercado"
 CARTOLA_SCHEMES_ENDPOINT = "https://api.cartola.globo.com/esquemas"
+
+POSITION_ID_TO_CODE = {1: "gol", 2: "lat", 3: "zag", 4: "mei", 5: "ata", 6: "tec"}
 
 APPROVED_PROFILE: dict[str, str] = {
     "model_id": "xgboost_depth2_l2_heavy",
@@ -68,6 +73,13 @@ class RecommendationArtifact:
         return int(self.summary["target_round"])
 
 
+@dataclass(frozen=True)
+class FormationScheme:
+    scheme_id: int
+    name: str
+    position_counts: dict[str, int]
+
+
 class SquadSubmissionError(ValueError):
     pass
 
@@ -114,6 +126,282 @@ def fetch_public_json(url: str, timeout_seconds: float) -> JsonValue:
     if not isinstance(payload, (dict, list)):
         raise SquadSubmissionError(f"Cartola public JSON payload must be an object or array: url={url}")
     return payload
+
+
+def _int_value(value: object, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise SquadSubmissionError(f"{field_name} must be an integer, not a boolean")
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        numeric_value = float(value)
+        if math.isfinite(numeric_value) and numeric_value.is_integer():
+            return int(numeric_value)
+        raise SquadSubmissionError(f"{field_name} must be an integer")
+    if isinstance(value, str):
+        stripped = value.strip()
+        signless = stripped.removeprefix("-")
+        if stripped and signless.isdecimal():
+            return int(stripped)
+    raise SquadSubmissionError(f"{field_name} must be an integer")
+
+
+def _float_value(value: object, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise SquadSubmissionError(f"{field_name} must be a finite number, not a boolean")
+    if isinstance(value, Real):
+        numeric_value = float(value)
+    elif isinstance(value, str):
+        try:
+            numeric_value = float(value.strip())
+        except ValueError as exc:
+            raise SquadSubmissionError(f"{field_name} must be a finite number") from exc
+    else:
+        raise SquadSubmissionError(f"{field_name} must be a finite number")
+    if not math.isfinite(numeric_value):
+        raise SquadSubmissionError(f"{field_name} must be a finite number")
+    return numeric_value
+
+
+def _strip_accents(value: object) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value).strip())
+    return "".join(character for character in normalized if not unicodedata.combining(character)).lower()
+
+
+def _string_value(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise SquadSubmissionError(f"{field_name} must be a string")
+    stripped = value.strip()
+    if not stripped:
+        raise SquadSubmissionError(f"{field_name} must not be empty")
+    return stripped
+
+
+def parse_schemes(payload: JsonValue) -> dict[str, FormationScheme]:
+    if isinstance(payload, list):
+        scheme_rows = payload
+    elif isinstance(payload, dict):
+        scheme_rows = payload.get("esquemas")
+        if not isinstance(scheme_rows, list):
+            raise SquadSubmissionError("Cartola schemes payload must contain an esquemas list")
+    else:
+        raise SquadSubmissionError("Cartola schemes payload must be an object or list")
+
+    schemes: dict[str, FormationScheme] = {}
+    for index, row in enumerate(scheme_rows):
+        if not isinstance(row, dict):
+            raise SquadSubmissionError(f"Cartola scheme row must be an object: index={index}")
+        row = cast("dict[str, object]", row)
+        raw_name = row.get("nome", row.get("esquema"))
+        name = _string_value(raw_name, f"scheme[{index}].nome")
+        raw_scheme_id = row.get("esquema_id", row.get("id"))
+        scheme_id = _int_value(raw_scheme_id, f"scheme[{index}].esquema_id")
+        raw_positions = row.get("posicoes")
+        if not isinstance(raw_positions, dict):
+            raise SquadSubmissionError(f"Cartola scheme positions must be an object: formation={name}")
+        position_counts = {
+            _strip_accents(position_code): _int_value(count, f"scheme[{index}].posicoes.{position_code}")
+            for position_code, count in raw_positions.items()
+        }
+        schemes[name] = FormationScheme(scheme_id=scheme_id, name=name, position_counts=position_counts)
+    return schemes
+
+
+def _market_position_map(market_payload: JsonValue) -> dict[int, str]:
+    position_map = dict(POSITION_ID_TO_CODE)
+    if not isinstance(market_payload, dict):
+        return position_map
+
+    raw_positions = market_payload.get("posicoes")
+    if not isinstance(raw_positions, dict):
+        return position_map
+
+    for raw_key, raw_position in raw_positions.items():
+        if not isinstance(raw_position, dict):
+            continue
+        raw_position = cast("dict[str, object]", raw_position)
+        raw_position_id = raw_position.get("id", raw_key)
+        raw_position_code = raw_position.get("abreviacao", raw_position.get("slug", raw_position.get("nome")))
+        if raw_position_code is None:
+            continue
+        position_id = _int_value(raw_position_id, f"market.posicoes.{raw_key}.id")
+        position_map[position_id] = _strip_accents(raw_position_code)
+    return position_map
+
+
+def _market_athlete_index(market_payload: JsonValue) -> dict[int, dict[str, object]]:
+    if not isinstance(market_payload, dict):
+        raise SquadSubmissionError("Cartola market payload must be an object")
+    raw_athletes = market_payload.get("atletas")
+    if not isinstance(raw_athletes, list):
+        raise SquadSubmissionError("Cartola market payload must contain an atletas list")
+
+    athlete_index: dict[int, dict[str, object]] = {}
+    for index, raw_athlete in enumerate(raw_athletes):
+        if not isinstance(raw_athlete, dict):
+            raise SquadSubmissionError(f"Cartola market athlete row must be an object: index={index}")
+        raw_athlete = cast("dict[str, object]", raw_athlete)
+        athlete_id = _int_value(raw_athlete.get("atleta_id"), f"market.atletas[{index}].atleta_id")
+        if athlete_id in athlete_index:
+            raise SquadSubmissionError(f"Duplicate athlete in Cartola market payload: atleta_id={athlete_id}")
+        athlete_index[athlete_id] = raw_athlete
+    return athlete_index
+
+
+def _selected_position_counts(selected: pd.DataFrame) -> dict[str, int]:
+    if "posicao" not in selected.columns:
+        raise SquadSubmissionError("recommended squad artifact must contain a posicao column")
+
+    counts: dict[str, int] = {}
+    for raw_position in selected["posicao"].tolist():
+        position_code = _strip_accents(raw_position)
+        counts[position_code] = counts.get(position_code, 0) + 1
+    return counts
+
+
+def _validate_open_status(
+    artifact: RecommendationArtifact,
+    status_payload: JsonValue,
+    now: datetime,
+    safety_margin_seconds: int,
+) -> tuple[int, int]:
+    if not isinstance(status_payload, dict):
+        raise SquadSubmissionError("Cartola market status payload must be an object")
+
+    market_season = _int_value(status_payload.get("temporada"), "status.temporada")
+    market_round = _int_value(status_payload.get("rodada_atual"), "status.rodada_atual")
+    if market_season != artifact.season:
+        raise SquadSubmissionError(
+            f"Cartola market season does not match recommendation artifact: "
+            f"market_season={market_season} artifact_season={artifact.season}",
+        )
+    if market_round != artifact.target_round:
+        raise SquadSubmissionError(
+            f"Cartola market round does not match recommendation artifact: "
+            f"market_round={market_round} artifact_round={artifact.target_round}",
+        )
+
+    status_mercado = _int_value(status_payload.get("status_mercado"), "status.status_mercado")
+    if status_mercado != 1:
+        raise SquadSubmissionError(f"Cartola market is not open: status_mercado={status_mercado}")
+    if status_payload.get("game_over") is True:
+        raise SquadSubmissionError("Cartola market is not open: game_over=true")
+
+    raw_deadline = status_payload.get("fechamento")
+    if not isinstance(raw_deadline, dict):
+        raise SquadSubmissionError("Cartola market is not open: fechamento.timestamp is required")
+    raw_deadline = cast("dict[str, object]", raw_deadline)
+    deadline_timestamp = _float_value(raw_deadline.get("timestamp"), "status.fechamento.timestamp")
+    if deadline_timestamp - now.timestamp() < safety_margin_seconds:
+        raise SquadSubmissionError("Cartola market is not open: deadline is inside the safety margin")
+
+    return market_round, market_season
+
+
+def _status_is_playable(market_row: dict[str, object], artifact_status: object) -> bool:
+    try:
+        if _int_value(market_row.get("status_id"), "market.status_id") == 7:
+            return True
+    except SquadSubmissionError:
+        pass
+
+    raw_status = market_row.get("status")
+    if isinstance(raw_status, dict):
+        status_row = cast("dict[str, object]", raw_status)
+        if _strip_accents(status_row.get("nome")) == "provavel":
+            return True
+    return _strip_accents(artifact_status) == "provavel"
+
+
+def _artifact_formation(artifact: RecommendationArtifact) -> str:
+    raw_formation = artifact.summary.get("formation")
+    if raw_formation is None:
+        raw_formation = artifact.metadata.get("formation")
+    return _string_value(raw_formation, "recommendation formation")
+
+
+def validate_artifact_against_public_market(
+    artifact: RecommendationArtifact,
+    status_payload: JsonValue,
+    schemes_payload: JsonValue,
+    market_payload: JsonValue,
+    *,
+    now: datetime,
+    safety_margin_seconds: int,
+) -> dict[str, object]:
+    market_round, market_season = _validate_open_status(artifact, status_payload, now, safety_margin_seconds)
+    schemes = parse_schemes(schemes_payload)
+    formation = _artifact_formation(artifact)
+    scheme = schemes.get(formation)
+    if scheme is None:
+        raise SquadSubmissionError(f"Recommendation formation is not available in Cartola schemes: formation={formation}")
+
+    selected_position_counts = _selected_position_counts(artifact.selected)
+    if selected_position_counts != scheme.position_counts:
+        raise SquadSubmissionError(
+            f"Recommendation formation counts do not match Cartola scheme: "
+            f"formation={formation} selected={selected_position_counts} scheme={scheme.position_counts}",
+        )
+
+    market_positions = _market_position_map(market_payload)
+    market_athletes = _market_athlete_index(market_payload)
+    not_comparable_fields: set[str] = set()
+    has_club_column = "id_clube" in artifact.selected.columns
+    if not has_club_column:
+        not_comparable_fields.add("id_clube")
+
+    selected_rows = cast("list[dict[str, object]]", artifact.selected.to_dict("records"))
+    for index, selected_row in enumerate(selected_rows):
+        athlete_id = _int_value(selected_row.get("id_atleta"), f"selected[{index}].id_atleta")
+        market_row = market_athletes.get(athlete_id)
+        if market_row is None:
+            raise SquadSubmissionError(f"Selected athlete is missing from current Cartola market: id_atleta={athlete_id}")
+
+        selected_name = _string_value(selected_row.get("apelido"), f"selected[{index}].apelido")
+        market_name = _string_value(market_row.get("apelido"), f"market.atletas[{athlete_id}].apelido")
+        if selected_name != market_name:
+            raise SquadSubmissionError(
+                f"Selected athlete nickname drift: id_atleta={athlete_id} selected={selected_name} market={market_name}",
+            )
+
+        selected_position = _strip_accents(selected_row.get("posicao"))
+        market_position_id = _int_value(market_row.get("posicao_id"), f"market.atletas[{athlete_id}].posicao_id")
+        market_position = market_positions.get(market_position_id)
+        if market_position != selected_position:
+            raise SquadSubmissionError(
+                f"Selected athlete position drift: id_atleta={athlete_id} "
+                f"selected={selected_position} market={market_position}",
+            )
+
+        if has_club_column:
+            selected_club_id = _int_value(selected_row.get("id_clube"), f"selected[{index}].id_clube")
+            market_club_id = _int_value(market_row.get("clube_id"), f"market.atletas[{athlete_id}].clube_id")
+            if selected_club_id != market_club_id:
+                raise SquadSubmissionError(
+                    f"Selected athlete club drift: id_atleta={athlete_id} "
+                    f"selected={selected_club_id} market={market_club_id}",
+                )
+
+        selected_price = _float_value(selected_row.get("preco_pre_rodada"), f"selected[{index}].preco_pre_rodada")
+        market_price = _float_value(market_row.get("preco_num"), f"market.atletas[{athlete_id}].preco_num")
+        if abs(selected_price - market_price) > 0.01:
+            raise SquadSubmissionError(
+                f"Selected athlete price drift: id_atleta={athlete_id} "
+                f"selected={selected_price:.2f} market={market_price:.2f}",
+            )
+
+        if not _status_is_playable(market_row, selected_row.get("status")):
+            raise SquadSubmissionError(f"Selected athlete status drift: id_atleta={athlete_id}")
+
+    return {
+        "market_round": market_round,
+        "market_season": market_season,
+        "formation": formation,
+        "formation_scheme_id": scheme.scheme_id,
+        "selected_position_counts": selected_position_counts,
+        "account_budget_verified": False,
+        "not_comparable_fields": sorted(not_comparable_fields),
+    }
 
 
 def _sha256_file(path: Path) -> str:
