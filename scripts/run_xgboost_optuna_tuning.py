@@ -27,6 +27,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--feature-pack", default="ppg_xg")
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--study-seed", type=int, default=123)
+    parser.add_argument("--study-name", default="xgboost_optuna_tuning")
     parser.add_argument("--timeout-seconds", type=int, default=None)
     parser.add_argument("--profile-runtime", action="store_true")
     return parser.parse_args(argv)
@@ -55,6 +56,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             feature_pack=args.feature_pack,
             jobs=args.jobs,
             study_seed=args.study_seed,
+            study_name=args.study_name,
             timeout_seconds=args.timeout_seconds,
             profile_runtime=args.profile_runtime,
         )

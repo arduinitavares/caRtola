@@ -977,10 +977,15 @@ Delivered infrastructure:
 - Frozen TPE search space around the current no-fixture XGBoost profile.
 - Balanced objective: point lift versus current XGBoost control minus budget,
   recent-season, and calibration penalties.
+- Calibration-scope fix: selected-player calibration is computed only from the
+  tuned XGBoost strategy rows, not mixed baseline/price/model selected rows.
+- SQLite-backed Optuna storage with resume support. Reusing the same
+  `--output-root` and `--study-name` resumes the study, and `--n-trials` means
+  target completed trials.
 - Smoke artifact:
-  `data/08_reporting/experiments/model_tuning/xgboost_optuna_tuning_smoke_m009`.
-  This one-trial 2020-only run validates the runner and artifact shape; it is
-  not promotion evidence.
+  `/tmp/cartola-m009-fix-smoke`. This one-trial 2020-only run validates the
+  runner, SQLite persistence, and artifact shape after the calibration fix; it
+  is not promotion evidence.
 
 Full M009 command:
 
@@ -994,18 +999,21 @@ uv run --frozen python scripts/run_xgboost_optuna_tuning.py \
   --control-feature-pack ppg_xg \
   --feature-pack ppg_xg \
   --jobs 12 \
-  --study-seed 123
+  --study-seed 123 \
+  --study-name m009_xgboost_2020_2025_seed123
 ```
 
 Promotion rule:
 
 - Optuna output is research-only.
+- Discard M009 runs started before the calibration-scope fix; TPE used
+  corrupted objective scores and the search path cannot be repaired
+  post-hoc.
 - Select the top `3` trials from `optuna_trials.csv`.
 - Rerun those exact parameter configs through a frozen production-parity-style
   validation before changing live defaults.
 - Reuse the balanced M008 gate shape: points, 2025 behavior, calibration, and
   budget risk must all pass.
-
 
 **M010 Cartola Submission Plan Phase 1**
 
@@ -1019,6 +1027,8 @@ before any POST can be enabled.
 **Roadmap**
 1. Run the full M009 2020-2025 bounded Optuna search.
    - Treat the smoke output as validation only.
+   - Start a fresh output directory; only resume that same directory if the
+     fixed runner is interrupted.
    - Do not tune on 2026 live failures.
    - Do not promote directly from Optuna trial output.
    - If no XGBoost candidate closes the point gap safely, return to live

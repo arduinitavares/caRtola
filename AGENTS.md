@@ -166,12 +166,13 @@ Steps:
 ## M009 XGBoost Optuna Tuning Workflow
 
 - Bounded Optuna tuning around the current no-fixture XGBoost profile:
-  `uv run --frozen python scripts/run_xgboost_optuna_tuning.py --source-experiment-path data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260514T174628080193Z__matrix=af65eb4223e9 --seasons 2020,2021,2022,2023,2024,2025 --n-trials 40 --current-year 2026 --control-model xgboost_depth2_l2_heavy --control-feature-pack ppg_xg --feature-pack ppg_xg --jobs 12 --study-seed 123`
+  `uv run --frozen python scripts/run_xgboost_optuna_tuning.py --source-experiment-path data/08_reporting/experiments/model_feature/group=production-parity__started_at=20260514T174628080193Z__matrix=af65eb4223e9 --seasons 2020,2021,2022,2023,2024,2025 --n-trials 40 --current-year 2026 --control-model xgboost_depth2_l2_heavy --control-feature-pack ppg_xg --feature-pack ppg_xg --jobs 12 --study-seed 123 --study-name m009_xgboost_2020_2025_seed123`
 - M009 uses Optuna `TPESampler` with a frozen XGBoost search space: `max_depth` 1-3, `n_estimators` 100-600, `learning_rate` 0.01-0.08, `min_child_weight` 1-20, `subsample`/`colsample_bytree` 0.65-1.0, `reg_lambda` 5-200, `reg_alpha` 0-20, and `gamma` 0-10. Do not add `scale_pos_weight`; this is regression, not class-imbalance classification.
-- The tuning objective is balanced: actual-points lift versus the current XGBoost control minus penalties for budget floor failure, excess drawdown, budget-constrained rounds, 2025 regression, and selected-player calibration drift.
-- M009 outputs are written under `data/08_reporting/experiments/model_tuning/xgboost_optuna_tuning_started_at=.../` unless `--output-root` is provided, and include `xgboost_optuna_tuning.json`, `xgboost_optuna_tuning.md`, `optuna_trials.csv`, `best_candidate_config.json`, and per-trial backtest artifacts.
+- The tuning objective is balanced: actual-points lift versus the current XGBoost control minus penalties for budget floor failure, excess drawdown, budget-constrained rounds, 2025 regression, and selected-player calibration drift. Candidate calibration must be computed only from selected rows where `strategy == control_model`; any M009 run started before this calibration-scope fix is invalid evidence.
+- M009 outputs are written under `data/08_reporting/experiments/model_tuning/xgboost_optuna_tuning_started_at=.../` unless `--output-root` is provided, and include `xgboost_optuna_tuning.json`, `xgboost_optuna_tuning.md`, `optuna_trials.csv`, `best_candidate_config.json`, `optuna_study.sqlite`, and per-trial backtest artifacts.
+- M009 uses SQLite-backed Optuna storage with `load_if_exists=True`. To resume, pass the same `--output-root` and `--study-name`; `--n-trials` is interpreted as the target completed-trial count, not extra trials to append.
 - Latest M009 smoke check:
-  `data/08_reporting/experiments/model_tuning/xgboost_optuna_tuning_smoke_m009`; one 2020-only trial completed and wrote all expected artifacts. It is a runner validation only, not promotion evidence.
+  `/tmp/cartola-m009-fix-smoke`; one 2020-only trial completed after the calibration-scope fix and wrote SQLite plus all expected summary artifacts. It is a runner validation only, not promotion evidence.
 - Optuna proposes candidates only. Promotion still requires rerunning top configs through a frozen full production-parity-style validation and balanced decision gates before any live default change.
 
 ## Ridge Tuning Workflow
@@ -202,7 +203,6 @@ Steps:
 - Recommendation outputs are written under `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/`.
 - `recommended_squad.csv` keeps per-player `predicted_points` raw; use `predicted_points_with_captain` and `actual_points_with_captain` for captain-adjusted totals when present.
 - Replay recommendation summaries include oracle comparison fields when candidate `pontuacao` is complete: `oracle_actual_points`, `oracle_gap`, `oracle_capture_rate`, and `oracle_optimizer_status`; live recommendations leave these fields null.
-
 
 ## Cartola Submission Plan Workflow
 

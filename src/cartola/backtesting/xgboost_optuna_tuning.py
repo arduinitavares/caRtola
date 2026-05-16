@@ -59,7 +59,15 @@ class OptunaSamplers(Protocol):
 class OptunaModule(Protocol):
     samplers: OptunaSamplers
 
-    def create_study(self, *, direction: str, sampler: object) -> OptunaStudy: ...
+    def create_study(
+        self,
+        *,
+        direction: str,
+        sampler: object,
+        storage: str,
+        study_name: str,
+        load_if_exists: bool,
+    ) -> OptunaStudy: ...
 
 
 @dataclass(frozen=True)
@@ -167,7 +175,7 @@ def summarize_trial_results(
         worst_min_budget = min_budget if worst_min_budget is None else min(worst_min_budget, min_budget)
         worst_max_budget_drawdown = max(worst_max_budget_drawdown, float(summary_row["max_budget_drawdown"]))
         total_budget_constrained_rounds += int(summary_row["budget_constrained_rounds"])
-        selected_frames.append(result.selected_players)
+        selected_frames.append(_selected_players_for_strategy(result.selected_players, strategy=model_id))
 
     selected = pd.concat(selected_frames, ignore_index=True) if selected_frames else pd.DataFrame()
     calibration = calibration_slope_intercept(selected["predicted_points"], selected["pontuacao"]) if not selected.empty else {}
@@ -239,6 +247,7 @@ def run_xgboost_optuna_tuning(
     feature_pack: str = "ppg_xg",
     jobs: int = 1,
     study_seed: int = 123,
+    study_name: str = "xgboost_optuna_tuning",
     timeout_seconds: int | None = None,
     profile_runtime: bool = False,
 ) -> Path:
@@ -249,7 +258,7 @@ def run_xgboost_optuna_tuning(
 
     optuna = _load_optuna()
     output_path = _resolve_output_path(output_root)
-    output_path.mkdir(parents=True, exist_ok=False)
+    output_path.mkdir(parents=True, exist_ok=output_root is not None)
     control_metrics = load_control_metrics(
         experiment_path=source_experiment_path,
         control_model=control_model,
@@ -299,8 +308,14 @@ def run_xgboost_optuna_tuning(
     study = optuna.create_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=study_seed),
+        storage=_sqlite_storage_url(output_path / "optuna_study.sqlite"),
+        study_name=study_name,
+        load_if_exists=True,
     )
-    study.optimize(objective, n_trials=n_trials, timeout=timeout_seconds)
+    completed_trials_before_resume = _completed_trial_count(study.trials)
+    remaining_trials = max(0, n_trials - completed_trials_before_resume)
+    if remaining_trials:
+        study.optimize(objective, n_trials=remaining_trials, timeout=timeout_seconds)
 
     trials = _trial_rows(study.trials)
     trials.to_csv(output_path / "optuna_trials.csv", index=False, float_format=CSV_FLOAT_FORMAT)
@@ -318,8 +333,12 @@ def run_xgboost_optuna_tuning(
             "control_feature_pack": control_feature_pack,
             "feature_pack": feature_pack,
             "seasons": list(seasons),
-            "n_trials": n_trials,
+            "requested_n_trials": n_trials,
+            "completed_trials_before_resume": completed_trials_before_resume,
+            "completed_trial_count": _completed_trial_count(study.trials),
             "study_seed": study_seed,
+            "study_name": study_name,
+            "optuna_storage_path": str(output_path / "optuna_study.sqlite"),
             "objective": "balanced_points_minus_budget_recent_calibration_penalties",
             "best_trial_number": int(best_trial.number),
             "best_objective_score": best_value,
@@ -340,6 +359,12 @@ def _strategy_summary_row(summary: pd.DataFrame, *, strategy: str) -> pd.Series:
     return cast(pd.Series, rows.iloc[0])
 
 
+def _selected_players_for_strategy(selected_players: pd.DataFrame, *, strategy: str) -> pd.DataFrame:
+    if "strategy" not in selected_players.columns:
+        return selected_players
+    return selected_players[selected_players["strategy"] == strategy].copy()
+
+
 def _calibration_gap(slope: float | None) -> float:
     if slope is None:
         return 0.75
@@ -355,6 +380,14 @@ def _resolve_output_path(output_root: Path | None) -> Path:
         return output_root
     started_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     return Path("data/08_reporting/experiments/model_tuning") / f"xgboost_optuna_tuning_started_at={started_at}"
+
+
+def _sqlite_storage_url(path: Path) -> str:
+    return f"sqlite:///{path.as_posix()}"
+
+
+def _completed_trial_count(trials: list[OptunaFrozenTrial]) -> int:
+    return sum(1 for trial in trials if trial.value is not None)
 
 
 def _load_optuna() -> OptunaModule:

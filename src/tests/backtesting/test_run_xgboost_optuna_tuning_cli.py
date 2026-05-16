@@ -26,6 +26,8 @@ def test_parse_args_accepts_bounded_tuning_arguments() -> None:
             "40",
             "--study-seed",
             "17",
+            "--study-name",
+            "m009-resume",
             "--control-model",
             "xgboost_depth2_l2_heavy",
             "--control-feature-pack",
@@ -41,6 +43,7 @@ def test_parse_args_accepts_bounded_tuning_arguments() -> None:
     assert args.seasons == "2020,2021,2022,2023,2024,2025"
     assert args.n_trials == 40
     assert args.study_seed == 17
+    assert args.study_name == "m009-resume"
     assert args.control_model == "xgboost_depth2_l2_heavy"
     assert args.control_feature_pack == "ppg_xg"
     assert args.feature_pack == "ppg_xg"
@@ -55,6 +58,7 @@ def test_main_writes_tuning_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     def fake_run(**kwargs: object) -> Path:
         assert kwargs["source_experiment_path"] == source
         assert kwargs["output_root"] == output
+        assert kwargs["study_name"] == "xgboost_optuna_tuning"
         output.mkdir()
         (output / "xgboost_optuna_tuning.json").write_text(
             json.dumps({"best_trial_number": 0, "best_objective_score": 12.3}),
