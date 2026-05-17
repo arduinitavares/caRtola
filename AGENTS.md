@@ -171,8 +171,11 @@ Steps:
 - The tuning objective is balanced: actual-points lift versus the current XGBoost control minus penalties for budget floor failure, excess drawdown, budget-constrained rounds, 2025 regression, and selected-player calibration drift. Candidate calibration must be computed only from selected rows where `strategy == control_model`; any M009 run started before this calibration-scope fix is invalid evidence.
 - M009 outputs are written under `data/08_reporting/experiments/model_tuning/xgboost_optuna_tuning_started_at=.../` unless `--output-root` is provided, and include `xgboost_optuna_tuning.json`, `xgboost_optuna_tuning.md`, `optuna_trials.csv`, `best_candidate_config.json`, `optuna_study.sqlite`, and per-trial backtest artifacts.
 - M009 uses SQLite-backed Optuna storage with `load_if_exists=True`. To resume, pass the same `--output-root` and `--study-name`; `--n-trials` is interpreted as the target completed-trial count, not extra trials to append.
+- For long local M009 runs on macOS, wrap the command with `caffeinate -i` or attach `caffeinate -i -w <pid>` to the running Python process; display/lock settings alone did not prevent system sleep during the full run.
 - Latest M009 smoke check:
   `/tmp/cartola-m009-fix-smoke`; one 2020-only trial completed after the calibration-scope fix and wrote SQLite plus all expected summary artifacts. It is a runner validation only, not promotion evidence.
+- Latest full M009 run:
+  `data/08_reporting/experiments/model_tuning/xgboost_optuna_tuning_m009_fixed_seed123`; 40 trials completed, best `trial=003`, objective `125.76`, aggregate actual-points delta `+200.76` versus `xgboost_depth2_l2_heavy + ppg_xg`, 2025 delta `+250.94`, worst min-budget delta `+7.77`, max-drawdown delta `+4.68`, and `+3` budget-constrained rounds. It is a tuned-candidate research lead, not a live-default change; rerun the top config through frozen production-parity validation and balanced promotion gates before promotion.
 - Optuna proposes candidates only. Promotion still requires rerunning top configs through a frozen full production-parity-style validation and balanced decision gates before any live default change.
 
 ## Ridge Tuning Workflow
@@ -222,6 +225,6 @@ Steps:
 ## Cautions
 
 - `--fixture-mode strict` requires pre-lock snapshot/manifests under `data/01_raw/fixtures_strict/{season}/`; do not claim strict no-leakage fixture evaluation without those files.
-- Next milestone: run the full M009 2020-2025 bounded Optuna search, then rerun top candidates through frozen production-parity and balanced promotion gates. Until then, `Provavel` is not confirmed-lineup evidence, so inspect capture age, selected low-sample players, and current budget exposure before trusting live squads.
+- Next milestone: rerun the best M009 tuned candidates through frozen production-parity validation and balanced promotion gates. Until then, `Provavel` is not confirmed-lineup evidence, so inspect capture age, selected low-sample players, and current budget exposure before trusting live squads.
 - CI updates raw data with `uv run --frozen --no-dev python src/cartola/download_data.py` and then `src/cartola/update_readme.py`.
 - TODO: Verify the Docker workflow before relying on `make docker`; `Dockerfile` still references Poetry and Python 3.10 while the current project setup uses `uv` and Python 3.13.12.

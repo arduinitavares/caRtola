@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>app.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> or <div class="page"></div> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="technical-specification-cartola-cartola-fc-decision-platform">Technical Specification: caRtola Cartola FC Decision Platform</h1>
+<p><strong>Status:</strong> Draft<br>
+<strong>Version:</strong> 0.1<br>
+<strong>Created:</strong> 2026-05-16<br>
+<strong>Last Updated:</strong> 2026-05-16<br>
+<strong>Owner:</strong> caRtola maintainers<br>
+<strong>Reviewers:</strong> Unknown</p>
+<h2 id="1-summary">1. Summary</h2>
+<p>caRtola is a Python and Kedro based Cartola FC data science platform for historical analysis, leakage-safe backtesting, model research, live squad recommendation, and guarded submission planning. This specification defines the project-level product and technical contract that AgileForge can use as the canonical management spec for future planning. It consolidates repository behavior that is currently spread across the README, feature design specs, operational scripts, and repository instructions.</p>
+<h2 id="2-problem-statement">2. Problem Statement</h2>
+<p>Cartola lineup decisions are path-dependent, deadline-sensitive, and vulnerable to data leakage. The repository has evolved from historical data collection and exploratory modeling into a decision platform with multiple operational modes, but there is no single project-level spec that states what the platform must do, what evidence is acceptable for promotion, and which capabilities remain research-only.</p>
+<p>Observed facts:</p>
+<ul>
+<li>Historical Cartola data lives under <code>data/01_raw/</code> and reporting artifacts are written under <code>data/08_reporting/</code>.</li>
+<li>The active Python package is <code>src/cartola</code>; operational commands live under <code>scripts/</code>.</li>
+<li>Backtests and experiments now use moving-budget semantics and the <code>cartola_standard_2026_v1</code> scoring contract.</li>
+<li>Live recommendations default to <code>xgboost_depth2_l2_heavy + ppg_xg</code>, <code>fixture_mode=none</code>, and <code>matchup_context_mode=none</code>.</li>
+<li>Real authenticated squad submission is intentionally disabled in Phase 1; the current submission flow only produces a sanitized submission plan.</li>
+</ul>
+<p>Assumptions:</p>
+<ul>
+<li>AgileForge will ingest this file through <code>agileforge project create --spec-file specs/app.md</code> or a future spec update command.</li>
+<li>The initial AgileForge management scope is product and technical governance, not immediate implementation ticket generation.</li>
+</ul>
+<h2 id="3-goals-and-non-goals">3. Goals And Non-Goals</h2>
+<h3 id="goals">Goals</h3>
+<ul>
+<li>Provide one canonical project-level spec for caRtola that is suitable for AgileForge project management.</li>
+<li>Preserve leakage-safe historical evaluation rules for backtests, experiments, and replay recommendations.</li>
+<li>Define live recommendation behavior, artifact requirements, and approved production defaults.</li>
+<li>Separate production recommendation evidence from exploratory research, policy simulation, oracle discovery, and diagnostics.</li>
+<li>Define the guarded submission-planning workflow while explicitly preventing real authenticated submission in Phase 1.</li>
+<li>Make quality, security, privacy, performance, reliability, and migration expectations reviewable.</li>
+</ul>
+<h3 id="non-goals">Non-Goals</h3>
+<ul>
+<li>Do not define implementation tasks, sprint tickets, commit plans, or code changes.</li>
+<li>Do not authorize changing live model defaults from research artifacts alone.</li>
+<li>Do not enable real authenticated Cartola squad submission.</li>
+<li>Do not require browser automation as an operational interface.</li>
+<li>Do not require fixed-budget historical backtesting compatibility for new evidence.</li>
+<li>Do not require all old notebooks or R scripts to be migrated into the Python backtesting system.</li>
+<li>Do not treat exploratory reconstructed fixtures as strict no-leakage proof.</li>
+</ul>
+<h2 id="4-users-and-stakeholders">4. Users And Stakeholders</h2>
+<ul>
+<li><strong>Primary users:</strong> caRtola maintainers and operators who run historical experiments, audits, and live recommendation workflows.</li>
+<li><strong>Secondary users:</strong> data science contributors who add feature packs, models, diagnostics, and reports.</li>
+<li><strong>Operational stakeholders:</strong> the person making weekly Cartola lineup decisions before market lock.</li>
+<li><strong>External systems:</strong> Cartola market/status and athlete APIs, TheSportsDB fixture source, FootyStats local data exports, OpenMP/BLAS native runtimes, optional MLflow tracking, GitHub Actions, and AgileForge project management.</li>
+</ul>
+<h2 id="5-current-state">5. Current State</h2>
+<p>The repository is a Python <code>uv</code> project targeting Python <code>3.13.12</code>, with the main package under <code>src/cartola</code> and tests under <code>src/tests</code>. Kedro remains part of the project shape, while most current operational work is exposed through scripts and <code>cartola.backtesting</code> modules.</p>
+<p>Current delivered capabilities include:</p>
+<ul>
+<li>Historical season loading and compatibility audits across local Cartola raw seasons.</li>
+<li>Walk-forward backtesting with moving-budget semantics.</li>
+<li>Captain-aware optimizer using all official Cartola formations and a non-tecnico <code>1.5x</code> captain multiplier.</li>
+<li>Fixture modes: <code>none</code>, <code>exploratory</code>, and <code>strict</code> in historical contexts, with live strict fixture support only when pre-lock evidence exists.</li>
+<li>FootyStats feature modes: <code>none</code>, <code>ppg</code>, and <code>ppg_xg</code>.</li>
+<li>Matchup context mode <code>cartola_matchup_v1</code> for controlled research and strict live opt-in.</li>
+<li>Model-feature experiment runners, policy simulations, oracle discovery, EBM diagnostics, H004/H005 research, fixed-blend diagnostics, Ridge promotion decisions, and XGBoost Optuna tuning.</li>
+<li>One-command live recommendation through <code>scripts/run_live_round.py</code>.</li>
+<li>Phase 1 submission planning through <code>scripts/submit_recommended_squad.py</code>, with real submit disabled.</li>
+</ul>
+<p>Primary reference files:</p>
+<ul>
+<li><code>README.md</code></li>
+<li><code>AGENTS.md</code></li>
+<li><code>roadmap.md</code></li>
+<li><code>pyproject.toml</code></li>
+<li><code>docs/superpowers/specs/</code></li>
+<li><code>scripts/run_live_round.py</code></li>
+<li><code>scripts/recommend_squad.py</code></li>
+<li><code>scripts/submit_recommended_squad.py</code></li>
+<li><code>src/cartola/backtesting/</code></li>
+</ul>
+<h2 id="6-proposed-specification">6. Proposed Specification</h2>
+<h3 id="61-functional-requirements">6.1 Functional Requirements</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Requirement</th>
+<th>Acceptance Criteria</th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FR-001</td>
+<td>The project must load local historical Cartola market data for supported seasons.</td>
+<td>Compatibility audit reports each requested season as loadable, irregular, partial, or incompatible with explicit reasons.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-002</td>
+<td>Historical backtests must use moving-budget semantics.</td>
+<td>Each strategy records <code>budget_policy=moving</code>, <code>initial_budget</code>, per-round budget before/after, budget delta from selected <code>variacao</code>, final budget, min budget, and max drawdown.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-003</td>
+<td>Historical backtests must prevent future-round leakage.</td>
+<td>For target round <code>N</code>, model training uses only rows from rounds <code>&lt; N</code>; candidate optimization uses only rows from round <code>N</code>; reports record the evidence boundary.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-004</td>
+<td>Backtests and recommendations must use the <code>cartola_standard_2026_v1</code> scoring contract.</td>
+<td>Reports identify the scoring contract, evaluate all official formations, select exactly one non-tecnico captain, and expose captain-adjusted totals.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-005</td>
+<td>Live recommendation must capture or validate the open market round before recommendation.</td>
+<td><code>scripts/run_live_round.py</code> either captures a fresh live market snapshot or validates an existing live capture according to `capture_policy=fresh</td>
+<td>missing</td>
+</tr>
+<tr>
+<td>FR-006</td>
+<td>Live recommendation artifacts must be archived without overwriting earlier runs.</td>
+<td>Each one-command live run writes under <code>data/08_reporting/recommendations/{season}/round-{round}/live/runs/run_started_at=.../</code>.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-007</td>
+<td>Live recommendations must use the approved default profile unless the operator explicitly overrides it.</td>
+<td>Default CLI values are <code>model_id=xgboost_depth2_l2_heavy</code>, <code>footystats_mode=ppg_xg</code>, <code>fixture_mode=none</code>, and <code>matchup_context_mode=none</code>.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-008</td>
+<td>Strict fixture live recommendations must fail closed when strict evidence is missing.</td>
+<td><code>fixture_mode=strict</code> requires canonical strict fixture CSV and manifest files for the target season and round; missing or invalid evidence raises before recommendation.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-009</td>
+<td>Exploratory fixture evidence must not be represented as strict no-leakage proof.</td>
+<td>Reports and metadata distinguish <code>fixture_mode=exploratory</code> from <code>fixture_mode=strict</code>; promotion decisions cannot use exploratory-only evidence as strict validation.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-010</td>
+<td>FootyStats joins must be auditable and leakage-safe.</td>
+<td>Metadata records FootyStats mode, league slug, source paths or hashes, join diagnostics, and excludes unsafe post-match fields from pre-round features.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-011</td>
+<td>Matchup context must remain opt-in outside approved defaults.</td>
+<td><code>matchup_context_mode=cartola_matchup_v1</code> is unavailable unless a compatible fixture mode is selected; live defaults remain <code>none</code>.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-012</td>
+<td>Experiments must fail closed on comparability drift.</td>
+<td>Model-feature experiment reports include comparability signatures for source data, candidate pools, optimizer status, budget policy, fixture mode, feature pack, and model identity.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-013</td>
+<td>Promotion decisions must be based on frozen comparable artifacts.</td>
+<td>A model, feature pack, blend, policy, or tuned candidate changes live defaults only after a dedicated decision artifact passes stated guardrails.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-014</td>
+<td>Research diagnostics must be marked as non-production evidence.</td>
+<td>Oracle discovery, EBM diagnostics, policy simulation, and hypothesis diagnostics record discovery or research-only status and do not update live defaults.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-015</td>
+<td>Recommendation outputs must separate raw per-player predictions from captain-adjusted totals.</td>
+<td>Selected-player files keep <code>predicted_points</code> raw; summaries and round totals use <code>predicted_points_with_captain</code> and <code>actual_points_with_captain</code> when available.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-016</td>
+<td>Replay recommendations must attach actual results only after prediction and optimization.</td>
+<td>Replay mode can include actual points in outputs, but target-round actuals are not used before candidate scoring or optimization.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-017</td>
+<td>Live recommendation outputs must suppress finalized target-round outcomes.</td>
+<td>Live mode rejects finalized target-round evidence unless an explicit debug flag is used, and still omits actual/scout outcome columns from live outputs.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-018</td>
+<td>Phase 1 submission must produce a sanitized submission plan from an existing live recommendation artifact.</td>
+<td><code>scripts/submit_recommended_squad.py --recommendation-path ...</code> validates the artifact and current market, then writes <code>submission_plan.json</code> and <code>submission_result.json</code> under a unique attempt directory.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-019</td>
+<td>Real authenticated submission must be disabled in Phase 1.</td>
+<td>Any <code>--confirm-submit</code> invocation exits nonzero with <code>CONTRACT_UNVERIFIED</code> before loading <code>.env</code>, reading <code>CARTOLA_GLB_TOKEN</code>, creating an authenticated client, or constructing a POST request.</td>
+<td>Must</td>
+</tr>
+<tr>
+<td>FR-020</td>
+<td>Repository quality gates must remain reproducible.</td>
+<td><code>uv sync --locked --dev</code> and <code>uv run --frozen pyrepo-check --all</code> reproduce the GitHub Actions quality gate.</td>
+<td>Must</td>
+</tr>
+</tbody>
+</table>
+<h3 id="62-user-scenarios">6.2 User Scenarios</h3>
+<pre class="hljs"><code><div><span class="hljs-keyword">Scenario</span>: Run a historical no-fixture backtest
+  <span class="hljs-keyword">Given</span> local raw Cartola data exists for the requested season
+  <span class="hljs-keyword">When</span> the operator runs the backtest CLI with fixture_mode none
+  <span class="hljs-keyword">Then</span> the system evaluates target rounds sequentially using moving budgets
+  <span class="hljs-keyword">And</span> writes round, selected-player, metadata, summary, and chart artifacts
+</div></code></pre>
+<pre class="hljs"><code><div><span class="hljs-keyword">Scenario</span>: Generate a live recommendation for the open market round
+  <span class="hljs-keyword">Given</span> the Cartola market is open for the current season
+  <span class="hljs-keyword">When</span> the operator runs scripts/run_live_round.py with capture_policy fresh
+  <span class="hljs-keyword">Then</span> the system captures the open market, recommends a squad for that captured round, and archives the run with metadata linking the capture and recommendation
+</div></code></pre>
+<pre class="hljs"><code><div><span class="hljs-keyword">Scenario</span>: Reject strict live matchup recommendation without evidence
+  <span class="hljs-keyword">Given</span> strict fixture CSV or manifest evidence is missing for the live target round
+  <span class="hljs-keyword">When</span> the operator requests fixture_mode strict
+  <span class="hljs-keyword">Then</span> the command fails before recommendation
+  <span class="hljs-keyword">And</span> does not fall back to exploratory or no-fixture mode
+</div></code></pre>
+<pre class="hljs"><code><div><span class="hljs-keyword">Scenario</span>: Build a submission plan without real submit
+  <span class="hljs-keyword">Given</span> a reviewed live recommendation run exists
+  <span class="hljs-keyword">When</span> the operator runs scripts/submit_recommended_squad.py with the recommendation path
+  <span class="hljs-keyword">Then</span> the system validates the artifact and writes a sanitized submission plan
+  <span class="hljs-keyword">And</span> any confirm-submit attempt fails with CONTRACT_UNVERIFIED before auth handling
+</div></code></pre>
+<h3 id="63-data-and-state">6.3 Data And State</h3>
+<p>Core entities:</p>
+<ul>
+<li><strong>Raw Cartola market round:</strong> CSV rows under <code>data/01_raw/{season}/rodada-{round}.csv</code>; live captures have a paired <code>.capture.json</code> manifest.</li>
+<li><strong>Fixture evidence:</strong> exploratory fixture CSVs under <code>data/01_raw/fixtures/{season}/</code>; strict fixture CSVs and manifests under <code>data/01_raw/fixtures_strict/{season}/</code>.</li>
+<li><strong>Feature frame:</strong> leakage-safe per-round model input built from visible historical data and optional FootyStats or matchup context.</li>
+<li><strong>Candidate prediction:</strong> per-athlete target-round prediction with model, feature-pack, fixture, and candidate-pool metadata.</li>
+<li><strong>Optimized squad:</strong> selected 12-row squad with exactly one tecnico, 11 non-tecnico players, one non-tecnico captain, official formation, budget usage, and optimizer status.</li>
+<li><strong>Backtest run:</strong> multi-round historical replay with moving-budget path per strategy.</li>
+<li><strong>Experiment run:</strong> matrix of comparable child backtests with ranked summaries, prediction metrics, comparability report, and reports.</li>
+<li><strong>Live recommendation run:</strong> archived output directory containing recommended squad, candidate predictions, summary, run metadata, and live workflow metadata.</li>
+<li><strong>Submission attempt:</strong> sanitized audit directory beside a live recommendation run containing submission plan and result files.</li>
+</ul>
+<p>Important invariants:</p>
+<ul>
+<li>Historical multi-round workflows update budget only after selecting and scoring a squad.</li>
+<li>Live single-round workflows treat <code>--budget</code> as current available budget for that round only.</li>
+<li>Old fixed-budget artifacts are not comparable with moving-budget artifacts.</li>
+<li>Strict fixture mode never silently falls back to exploratory or no-fixture mode.</li>
+<li>Real authenticated submission cannot be enabled without a separate accepted Phase 2 spec.</li>
+</ul>
+<h3 id="64-interfaces-and-integrations">6.4 Interfaces And Integrations</h3>
+<p>Primary local commands:</p>
+<pre class="hljs"><code><div>uv run --frozen python -m cartola.backtesting.cli --season 2025 --start-round 5 --budget 100 --fixture-mode none
+uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --current-year 2026
+uv run --frozen python scripts/recommend_squad.py --season 2026 --target-round 10 --mode replay --budget 100 --current-year 2026
+uv run --frozen python scripts/capture_market_round.py --season 2026 --auto --current-year 2026
+uv run --frozen python scripts/capture_strict_round_fixture.py --season 2026 --auto --current-year 2026
+uv run --frozen python scripts/run_model_experiments.py --group production-parity --seasons 2021,2022,2023,2024,2025 --start-round 5 --budget 100 --current-year 2026
+uv run --frozen python scripts/submit_recommended_squad.py --recommendation-path data/08_reporting/recommendations/2026/round-16/live/runs/run_started_at=...
+</div></code></pre>
+<p>External integrations:</p>
+<ul>
+<li>Cartola public market APIs for live market status, athlete data, and fixture evidence.</li>
+<li>TheSportsDB for fixture imports and exploratory historical fixture reconstruction.</li>
+<li>FootyStats local CSV data for pre-match PPG and xG features.</li>
+<li>Optional MLflow local tracking through an explicit tracker adapter.</li>
+<li>XGBoost native runtime, including OpenMP availability on macOS.</li>
+<li>AgileForge CLI for project management using this spec file.</li>
+</ul>
+<p>Authentication:</p>
+<ul>
+<li>Phase 1 submission planning does not require authentication.</li>
+<li>Phase 2 real submission, if later specified, must use <code>CARTOLA_GLB_TOKEN</code> from environment or <code>.env</code> and must verify expected team identity before POST.</li>
+<li>No CLI command may accept tokens as command arguments.</li>
+</ul>
+<h3 id="65-error-handling-and-edge-cases">6.5 Error Handling And Edge Cases</h3>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Required Behavior</th>
+<th>User/System Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Missing historical raw season</td>
+<td>Audit classifies the season as incompatible or unavailable with explicit reason.</td>
+<td>Operator knows the season cannot support evidence.</td>
+</tr>
+<tr>
+<td>Partial current season</td>
+<td>Audit labels current-season evidence as partial and non-comparable to complete seasons.</td>
+<td>Prevents false promotion evidence.</td>
+</tr>
+<tr>
+<td>Missing strict fixture evidence</td>
+<td>Strict fixture workflow fails before recommendation or backtest use.</td>
+<td>Prevents accidental leakage claims.</td>
+</tr>
+<tr>
+<td>Exploratory fixture identity mismatch</td>
+<td>Policy simulation or matchup research marks evidence diagnostic-only or fails comparability.</td>
+<td>Research cannot promote defaults.</td>
+</tr>
+<tr>
+<td>Target live market already finalized</td>
+<td>Live recommendation fails unless explicit debug flag is provided; outputs still suppress actuals.</td>
+<td>Prevents live output leakage.</td>
+</tr>
+<tr>
+<td>No training history before target round</td>
+<td>Recommendation or backtest fails with a clear error.</td>
+<td>Avoids untrained model output.</td>
+</tr>
+<tr>
+<td>Infeasible optimized squad</td>
+<td>Round output records optimizer status, empty selection, unchanged budget path, and comparability impact.</td>
+<td>Failure is visible in reports.</td>
+</tr>
+<tr>
+<td>Missing selected-player <code>variacao</code> in historical replay</td>
+<td>Moving-budget run fails or is marked invalid; missing variation is not treated as zero.</td>
+<td>Protects budget-path correctness.</td>
+</tr>
+<tr>
+<td>Model candidate has point lift but budget risk</td>
+<td>Promotion decision keeps current default until budget guardrails pass.</td>
+<td>Prevents risky live default changes.</td>
+</tr>
+<tr>
+<td>Confirm submit requested in Phase 1</td>
+<td>Command exits with <code>CONTRACT_UNVERIFIED</code> before auth or POST construction.</td>
+<td>Prevents unverified account mutation.</td>
+</tr>
+<tr>
+<td>Secrets in local config</td>
+<td><code>conf/local</code> and <code>.env</code> content must not be committed or serialized into reports.</td>
+<td>Protects account credentials.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="7-quality-attributes">7. Quality Attributes</h2>
+<h3 id="security-and-privacy">Security And Privacy</h3>
+<ul>
+<li>The system must not commit secrets, tokens, local machine config, or authenticated API payloads.</li>
+<li>Phase 1 submission planning must not read <code>CARTOLA_GLB_TOKEN</code>.</li>
+<li>Future authenticated submission must verify account/team identity before POST and must not serialize tokens.</li>
+<li>Report artifacts may record source paths, hashes, model configuration, and nonsecret metadata only.</li>
+<li>Bandit checks run against <code>src/cartola</code> through the repo quality gate.</li>
+</ul>
+<h3 id="performance-and-scale">Performance And Scale</h3>
+<ul>
+<li>Historical moving-budget backtests prioritize correctness over target-round parallelism; target rounds execute sequentially.</li>
+<li>Experiment <code>--jobs</code> may control child-run or model-internal behavior but must not imply target-round parallelism for moving-budget child backtests.</li>
+<li>Large experiment and diagnostic outputs stay under <code>data/08_reporting/</code> and are referenced by manifests instead of duplicated into trackers.</li>
+<li>Long experiment runs should use environment thread caps from <code>.env.example</code> to avoid native thread oversubscription.</li>
+</ul>
+<h3 id="reliability-and-operations">Reliability And Operations</h3>
+<ul>
+<li>Every research, backtest, recommendation, or submission-planning command must write enough metadata to reproduce source identity, configuration, budget policy, and artifact paths.</li>
+<li>Recommendation run directories must be unique and should never overwrite previous live runs.</li>
+<li>Comparability checks must fail closed when source identity, fixture identity, candidate pools, optimizer status, budget policy, or scoring contract drift.</li>
+<li>Operational live workflows must expose capture age, capture hash, target round, model profile, budget used, formation, captain, and output path.</li>
+</ul>
+<h3 id="accessibility-and-localization">Accessibility And Localization</h3>
+<ul>
+<li>CLI output should remain readable in terminals and CI logs.</li>
+<li>CSV/JSON artifacts are the canonical machine-readable outputs; HTML reports are secondary reviewer artifacts.</li>
+<li>Cartola-facing status normalization must handle Portuguese status labels such as <code>Provavel</code> and accented variants when present.</li>
+<li>Times in persisted metadata must use UTC ISO-8601 when they identify run or capture timestamps.</li>
+</ul>
+<h2 id="8-alternatives-considered">8. Alternatives Considered</h2>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Pros</th>
+<th>Cons</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Keep fixed-budget backtests as normal evidence</td>
+<td>Easier parallelism and comparability with old reports</td>
+<td>Does not reflect Cartola patrimonio path and hides budget drawdown risk</td>
+<td>Rejected for new evidence</td>
+</tr>
+<tr>
+<td>Promote Ridge after 2020-2025 points lead</td>
+<td>Higher aggregate historical points in M008</td>
+<td>Failed balanced budget-risk gates</td>
+<td>Rejected until live budget/risk guardrails exist</td>
+</tr>
+<tr>
+<td>Use exploratory fixture reconstruction for strict evidence</td>
+<td>More historical coverage</td>
+<td>Not pre-lock evidence and can leak schedule knowledge</td>
+<td>Rejected for strict claims</td>
+</tr>
+<tr>
+<td>Enable real submit in the same phase as submission planning</td>
+<td>Reduces manual lineup entry</td>
+<td>Authenticated POST contract is unverified and account mutation risk is high</td>
+<td>Rejected; Phase 2 requires separate spec</td>
+</tr>
+<tr>
+<td>Treat oracle discovery as promotion evidence</td>
+<td>Identifies theoretical best squads</td>
+<td>Hindsight-only and uses completed-round outcomes</td>
+<td>Rejected for default changes</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-dependencies-and-constraints">9. Dependencies And Constraints</h2>
+<ul>
+<li><strong>Dependencies:</strong> Python 3.13.12, <code>uv</code>, Kedro, pandas, scikit-learn, XGBoost, PuLP, Plotly, Rich, Optuna, Cartola public APIs, TheSportsDB fixture data, local FootyStats CSVs, optional MLflow, GitHub Actions, AgileForge CLI.</li>
+<li><strong>Constraints:</strong> Moving-budget runs are path-dependent; old fixed-budget artifacts are non-comparable; strict fixture evaluation requires pre-lock fixture evidence; real Cartola submission is disabled; <code>conf/local</code> and secrets must remain uncommitted.</li>
+<li><strong>Assumptions:</strong> The current live default remains <code>xgboost_depth2_l2_heavy + ppg_xg</code> until a fresh promotion decision clears budget-risk guardrails. 2026 current-season artifacts are partial until the season completes. Future AgileForge updates will point to this spec or a superseding version.</li>
+</ul>
+<h2 id="10-rollout-migration-and-compatibility">10. Rollout, Migration, And Compatibility</h2>
+<p>This is a project-level management spec and does not migrate data by itself.</p>
+<p>Compatibility rules:</p>
+<ul>
+<li>New historical evidence must record <code>budget_policy=moving</code>.</li>
+<li>Old fixed-budget reports may remain in the repository but must not be mixed into moving-budget rankings.</li>
+<li>Existing feature-level specs under <code>docs/superpowers/specs/</code> remain valid references unless superseded by later accepted specs.</li>
+<li><code>specs/app.md</code> is the AgileForge-facing project spec. If this file changes materially, AgileForge project state should be refreshed through an installed spec update flow when available.</li>
+<li>Any future real submission capability requires a separate accepted spec before implementation.</li>
+</ul>
+<h2 id="11-success-metrics">11. Success Metrics</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Target</th>
+<th>Measurement Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Quality gate reproducibility</td>
+<td><code>uv run --frozen pyrepo-check --all</code> exits 0 in CI and local verification</td>
+<td>CLI output and GitHub Actions</td>
+</tr>
+<tr>
+<td>Historical backtest comparability</td>
+<td>100% of promotion-candidate runs include matching budget policy, scoring contract, fixture mode, candidate signature, and optimizer status signatures</td>
+<td><code>comparability_report.json</code></td>
+</tr>
+<tr>
+<td>Live recommendation traceability</td>
+<td>100% of one-command live runs contain live workflow metadata linking capture CSV hash to recommendation artifacts</td>
+<td><code>live_workflow_metadata.json</code></td>
+</tr>
+<tr>
+<td>Strict fixture safety</td>
+<td>0 strict-mode runs silently fall back to exploratory or no-fixture mode</td>
+<td>command failures and metadata audits</td>
+</tr>
+<tr>
+<td>Submission safety</td>
+<td>100% of Phase 1 <code>--confirm-submit</code> invocations fail before auth handling with <code>CONTRACT_UNVERIFIED</code></td>
+<td>submission tests and <code>submission_result.json</code></td>
+</tr>
+<tr>
+<td>Default promotion discipline</td>
+<td>100% of live default changes cite a frozen decision artifact with passed guardrails</td>
+<td>promotion decision JSON/Markdown</td>
+</tr>
+</tbody>
+</table>
+<h2 id="12-open-questions">12. Open Questions</h2>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Impact</th>
+<th>Owner</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>What exact live budget/risk guardrails must Ridge or tuned XGBoost clear before default promotion?</td>
+<td>Determines whether future point leaders can replace the current XGBoost default.</td>
+<td>caRtola maintainers</td>
+<td>Open</td>
+</tr>
+<tr>
+<td>What verified Cartola save/read-back contract will be accepted for real submission Phase 2?</td>
+<td>Blocks authenticated squad submission.</td>
+<td>caRtola maintainers</td>
+<td>Open</td>
+</tr>
+<tr>
+<td>How many strict pre-lock fixture snapshots are required before strict matchup context can be evaluated as promotion evidence?</td>
+<td>Determines when matchup context can move beyond research or opt-in live use.</td>
+<td>caRtola maintainers</td>
+<td>Open</td>
+</tr>
+<tr>
+<td>Should legacy notebooks and R scripts be documented as archival only or maintained as supported user workflows?</td>
+<td>Affects contributor expectations and documentation scope.</td>
+<td>caRtola maintainers</td>
+<td>Open</td>
+</tr>
+<tr>
+<td>What AgileForge command should be used for future spec updates after project creation?</td>
+<td>Determines how this living spec remains synchronized with project management state.</td>
+<td>caRtola maintainers</td>
+<td>Open</td>
+</tr>
+</tbody>
+</table>
+<h2 id="13-revision-history">13. Revision History</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Version</th>
+<th>Change</th>
+<th>Author</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-05-16</td>
+<td>0.1</td>
+<td>Initial AgileForge-facing project-level technical spec.</td>
+<td>Codex</td>
+</tr>
+</tbody>
+</table>
+
+</body>
+</html>
