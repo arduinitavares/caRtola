@@ -18,7 +18,20 @@ Steps:
 - This is a Python/Kedro project managed with `uv`; use Python `3.13.12` from `.python-version`.
 - Main Python package: `src/cartola`. Tests live in `src/tests`.
 - Operational scripts live in `scripts/`. Generated reports and model outputs are written under `data/08_reporting/`.
+- Product-level AgileForge spec: `specs/app.md`; treat `specs/app.html` and `specs/app.pdf` as exports, not source. TODO: document the exact export/regeneration command before relying on those exports.
 - Do not commit secrets or local machine config from `conf/local`.
+
+## AgileForge Spec Workflow
+
+- When using AgileForge for this product, use `specs/app.md` as the source spec:
+  `agileforge project create --name "<project-name>" --spec-file specs/app.md --idempotency-key <key>`
+  For non-mutating checks, use `--dry-run` and omit `--idempotency-key`.
+- A successful project compile can still leave setup pending manual authority review. Retrieve the packet with:
+  `agileforge authority review --project-id <id> --include-spec full --format json`
+- Accept or reject only after the review packet is assessed:
+  `agileforge authority accept --project-id <id> --review-token <review_token>`
+  `agileforge authority reject --project-id <id> --review-token <review_token> --reason "<reason>"`
+- Do not treat project creation or authority compilation as acceptance; authority acceptance is a separate review checkpoint.
 
 ## Setup And Quality
 
@@ -226,5 +239,6 @@ Steps:
 
 - `--fixture-mode strict` requires pre-lock snapshot/manifests under `data/01_raw/fixtures_strict/{season}/`; do not claim strict no-leakage fixture evaluation without those files.
 - Next milestone: rerun the best M009 tuned candidates through frozen production-parity validation and balanced promotion gates. Until then, `Provavel` is not confirmed-lineup evidence, so inspect capture age, selected low-sample players, and current budget exposure before trusting live squads.
+- Future real submission, subscription, or betting-adjacent product work requires a separate accepted spec before implementation; `specs/app.md` keeps those tracks staged, not approved.
 - CI updates raw data with `uv run --frozen --no-dev python src/cartola/download_data.py` and then `src/cartola/update_readme.py`.
 - TODO: Verify the Docker workflow before relying on `make docker`; `Dockerfile` still references Poetry and Python 3.10 while the current project setup uses `uv` and Python 3.13.12.
