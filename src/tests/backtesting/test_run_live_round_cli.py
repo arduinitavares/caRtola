@@ -18,10 +18,10 @@ parse_args = run_live_round_cli.parse_args
 
 
 def test_parse_args_builds_live_workflow_defaults() -> None:
-    args = parse_args(["--season", "2026", "--current-year", "2026"])
+    args = parse_args(["--season", "2026", "--budget", "92.5", "--current-year", "2026"])
 
     assert args.season == 2026
-    assert args.budget == 100.0
+    assert args.budget == 92.5
     assert args.footystats_mode == "ppg_xg"
     assert args.model_id == "xgboost_depth2_l2_heavy"
     assert args.fixture_mode == "none"
@@ -30,9 +30,50 @@ def test_parse_args_builds_live_workflow_defaults() -> None:
     assert args.output_root == Path("data/08_reporting/recommendations")
 
 
+def test_parse_args_requires_budget(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        parse_args(["--season", "2026", "--current-year", "2026"])
+
+    assert error.value.code == 2
+    assert "Cartola C$ / cartoletas" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("budget", ["abc", "0", "-1", "nan", "inf"])
+def test_parse_args_rejects_invalid_budget(
+    budget: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        parse_args(["--season", "2026", "--budget", budget, "--current-year", "2026"])
+
+    assert error.value.code == 2
+    assert "positive numeric Cartola C$ / cartoletas" in capsys.readouterr().err
+
+
 def test_parse_args_rejects_target_round() -> None:
     with pytest.raises(SystemExit):
-        parse_args(["--season", "2026", "--target-round", "14", "--current-year", "2026"])
+        parse_args(["--season", "2026", "--budget", "92.5", "--target-round", "14", "--current-year", "2026"])
+
+
+def test_main_missing_budget_exits_before_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: list[LiveWorkflowConfig] = []
+
+    def fake_run_live_round(config: LiveWorkflowConfig) -> LiveWorkflowResult:
+        observed.append(config)
+        raise AssertionError("workflow must not start without explicit budget")
+
+    monkeypatch.setattr(run_live_round_cli, "run_live_round", fake_run_live_round)
+
+    with pytest.raises(SystemExit) as error:
+        main(["--season", "2026", "--project-root", str(tmp_path), "--current-year", "2026"])
+
+    assert error.value.code == 2
+    assert observed == []
+    assert "Cartola C$ / cartoletas" in capsys.readouterr().err
 
 
 def test_main_builds_workflow_config_and_prints_summary(
@@ -77,6 +118,8 @@ def test_main_builds_workflow_config_and_prints_summary(
         [
             "--season",
             "2026",
+            "--budget",
+            "92.5",
             "--project-root",
             str(tmp_path),
             "--current-year",
@@ -94,14 +137,15 @@ def test_main_builds_workflow_config_and_prints_summary(
     assert observed == [
         LiveWorkflowConfig(
             season=2026,
+            budget=92.5,
             project_root=tmp_path,
             current_year=2026,
-                model_id="ridge",
-                fixture_mode="strict",
-                matchup_context_mode="cartola_matchup_v1",
-                footystats_mode="ppg_xg",
-            )
-        ]
+            model_id="ridge",
+            fixture_mode="strict",
+            matchup_context_mode="cartola_matchup_v1",
+            footystats_mode="ppg_xg",
+        )
+    ]
     output = capsys.readouterr().out
     assert "Live round complete" in output
     assert "Capture policy" in output
@@ -137,7 +181,9 @@ def test_main_prints_expected_error_without_traceback(
 
     monkeypatch.setattr(run_live_round_cli, "run_live_round", fake_run_live_round)
 
-    exit_code = main(["--season", "2025", "--project-root", str(tmp_path), "--current-year", "2026"])
+    exit_code = main(
+        ["--season", "2025", "--budget", "92.5", "--project-root", str(tmp_path), "--current-year", "2026"]
+    )
 
     assert exit_code == 1
     captured = capsys.readouterr()
@@ -160,6 +206,8 @@ def test_main_prints_missing_skip_capture_without_traceback(
         [
             "--season",
             "2026",
+            "--budget",
+            "92.5",
             "--project-root",
             str(tmp_path),
             "--current-year",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Sequence
 
@@ -20,10 +21,22 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _positive_budget(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("budget must be a positive numeric Cartola C$ / cartoletas amount") from error
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("budget must be a positive numeric Cartola C$ / cartoletas amount")
+    return parsed
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Capture the open Cartola market and generate a live squad recommendation.")
+    parser = argparse.ArgumentParser(
+        description="Capture the open Cartola market and generate a live squad recommendation."
+    )
     parser.add_argument("--season", type=_positive_int, required=True)
-    parser.add_argument("--budget", type=float, default=100.0)
+    parser.add_argument("--budget", type=_positive_budget, default=None, metavar="CARTOLA_C$")
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--output-root", type=Path, default=Path("data/08_reporting/recommendations"))
     parser.add_argument("--model-id", choices=tuple(MODEL_SPECS), default="xgboost_depth2_l2_heavy")
@@ -35,7 +48,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--current-year", type=_positive_int, default=None)
     parser.add_argument("--capture-policy", choices=("fresh", "missing", "skip"), default="fresh")
     parser.add_argument("--allow-finalized-live-data", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.budget is None:
+        parser.error("--budget is required; provide available budget in Cartola C$ / cartoletas")
+    return args
 
 
 def _format_float(value: object) -> str:
