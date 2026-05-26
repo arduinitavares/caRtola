@@ -2,11 +2,11 @@
   "schema_version": "agileforge.spec.v1",
   "artifact_id": "SPEC.cartola-champion-squad-selector",
   "title": "Cartola Champion Squad Selector And Sports Prediction Platform",
-  "status": "changed",
-  "version": "0.3",
+  "status": "accepted",
+  "version": "1.0",
   "created_at": "2026-05-16",
-  "updated_at": "2026-05-19",
-  "summary": "Define a private Cartola FC decision engine whose first mission is to recommend the operator's highest-value legal squad before market lock, evaluate live outcomes without leakage, and keep future betting and paid advice tracks gated by validation, compliance, and customer protection.",
+  "updated_at": "2026-05-21",
+  "summary": "Define an authority-ready private Cartola FC decision engine whose accepted scope is one legal pre-lock squad recommendation, reproducible recommendation artifacts, leakage-safe evaluation, evidence-gated live defaults, and explicit exclusions for real-money betting, public paid advice, and authenticated squad submission.",
   "problem_statement": "Cartola managers must choose a squad before market lock with incomplete information about availability, form, fixtures, prices, captain upside, and opponent context. Manual selection is slow and inconsistent, while naive models can win historical backtests but fail live by leaking future data, ignoring budget risk, overfitting one season, or selecting unavailable players. The repository already contains research and operational machinery, but project management needs a structured product-level specification that makes live Cartola squad selection the primary objective and treats betting predictions and subscription advice as future gated products.",
   "controlled_terms": [
     {
@@ -121,7 +121,7 @@
       "type": "NON_GOAL",
       "status": "accepted",
       "title": "Guaranteed wins excluded",
-      "statement": "The system must not claim that it will win every Cartola round, win a championship, or produce guaranteed betting profit.",
+      "statement": "Guaranteed Cartola round wins, championship wins, and betting profit claims are outside the accepted scope.",
       "tags": [
         "claims"
       ]
@@ -153,7 +153,7 @@
       "type": "NON_GOAL",
       "status": "accepted",
       "title": "Research output is not production advice",
-      "statement": "Research-only artifacts, oracle hindsight, exploratory fixture evidence, and one-off experiment wins must not be exposed as production recommendations.",
+      "statement": "Research-only artifacts, oracle hindsight, exploratory fixture evidence, and one-off experiment wins are not accepted production recommendation sources.",
       "tags": [
         "research",
         "production"
@@ -246,7 +246,8 @@
       "level": "MUST",
       "verification": "system-test",
       "acceptance": [
-        "For every live recommendation, the recommendation summary and selected-player artifacts show budget_used less than or equal to budget.",
+        "For every live recommendation, recommendation_summary.json records budget_used <= budget.",
+        "For every live recommendation, recommended_squad.csv contains selected players whose summed preco_pre_rodada equals the recorded budget_used.",
         "When the available budget is missing, the live recommendation workflow does not infer a private account balance and requires an explicit operator-provided budget."
       ],
       "tags": [
@@ -263,9 +264,11 @@
       "level": "MUST",
       "verification": "system-test",
       "acceptance": [
+        "recommendation_summary.json records predicted_points_base, captain_bonus_predicted, and predicted_points_with_captain.",
+        "recommendation_summary.json records captain_multiplier as 1.5 through the scoring contract fields.",
         "Round-level predicted totals use predicted_points_with_captain.",
         "Selected-player predicted_points remains the raw per-athlete prediction before captain multiplier.",
-        "The selected captain is a non-tecnico player."
+        "recommended_squad.csv contains exactly one is_captain=true row, and that row is not a tecnico."
       ],
       "tags": [
         "captain",
@@ -281,7 +284,7 @@
       "level": "MUST",
       "verification": "integration-test",
       "acceptance": [
-        "A live run records capture path, capture hash, capture timestamp, target round, market status, and capture policy.",
+        "A live run records capture path, capture hash, capture timestamp, target round, market status, and capture policy in run_metadata.json or the live workflow metadata.",
         "When the market is unavailable or closed, live mode fails before squad generation unless the operator explicitly runs replay mode."
       ],
       "tags": [
@@ -298,7 +301,8 @@
       "level": "MUST",
       "verification": "system-test",
       "acceptance": [
-        "Live output artifacts omit target-round actual points and target-round scout outcomes.",
+        "Live recommended_squad.csv omits target-round pontuacao and target-round scout outcome columns.",
+        "Live candidate_predictions.csv omits target-round pontuacao and target-round scout outcome columns.",
         "If finalized target-round data is present during live recommendation generation, the workflow fails unless an explicit debug-only mode is selected."
       ],
       "tags": [
@@ -352,7 +356,7 @@
       "verification": "inspection",
       "acceptance": [
         "Every live default change cites a frozen decision artifact.",
-        "The cited decision artifact records points, budget, DNP, calibration, and comparability results.",
+        "The cited decision artifact records candidate model_id, candidate feature pack or mode, control identity, points delta, budget-risk checks, DNP or availability checks when applicable, calibration checks when applicable, comparability status, and final decision.",
         "A one-off experiment win, oracle hindsight run, or exploratory fixture-only run cannot change the live default."
       ],
       "tags": [
@@ -370,7 +374,7 @@
       "verification": "acceptance-test",
       "acceptance": [
         "A post-round review links to the exact recommendation artifact it evaluates.",
-        "The review records actual captain-aware points, captain result, DNP count, budget delta, oracle gap when available, and baseline comparisons."
+        "The review records actual_points_with_captain, captain_bonus_actual, captain result, DNP count, budget delta, oracle_gap when available, and baseline comparisons."
       ],
       "tags": [
         "review",
@@ -382,13 +386,13 @@
       "type": "REQ",
       "status": "accepted",
       "title": "Compare against practical baselines",
-      "statement": "Recommendation reports must compare selected squads against strong practical baselines.",
+      "statement": "Recommendation artifacts must preserve baseline scores and replay oracle fields needed to compare selected squads against practical alternatives.",
       "level": "MUST",
       "verification": "inspection",
       "acceptance": [
-        "Reports include comparisons to the current default profile.",
-        "Reports include comparison to at least one price or budget baseline when candidate data supports it.",
-        "Reports include comparison to a prior promoted baseline when one is applicable."
+        "recommended_squad.csv includes baseline_score and price_score columns for selected players.",
+        "candidate_predictions.csv includes baseline_score and price_score columns for candidate players.",
+        "Replay recommendation_summary.json includes oracle_actual_points, oracle_gap, oracle_capture_rate, and oracle_optimizer_status when complete target-round actual points are available."
       ],
       "tags": [
         "metrics",
@@ -470,11 +474,11 @@
       "type": "REQ",
       "status": "accepted",
       "title": "Disable real authenticated submission",
-      "statement": "Real authenticated Cartola squad submission must remain disabled until a separate Phase 2 submission spec is accepted.",
-      "level": "MUST",
+      "statement": "The system must not perform real authenticated Cartola squad submission until a separate Phase 2 submission spec is accepted.",
+      "level": "MUST_NOT",
       "verification": "system-test",
       "acceptance": [
-        "Any confirm-submit invocation exits with CONTRACT_UNVERIFIED.",
+        "Any --confirm-submit invocation exits with CONTRACT_UNVERIFIED.",
         "The disabled real-submit path exits before reading account tokens.",
         "The disabled real-submit path exits before constructing an authenticated POST request."
       ],
@@ -544,7 +548,8 @@
       "level": "MUST",
       "verification": "inspection",
       "acceptance": [
-        "The capture artifact records season, round, capture timestamp, market status, source identity, CSV path, and CSV hash.",
+        "The capture manifest records season, current_year, target_round, captured_at_utc, status_endpoint, status_final_url, status_http_status, status_response_sha256, market_endpoint, market_final_url, market_http_status, market_response_sha256, status_mercado, csv_path, and csv_sha256.",
+        "The capture CSV path follows data/01_raw/{season}/rodada-{round}.csv for default live captures.",
         "The capture artifact is linked from the live recommendation metadata."
       ],
       "tags": [
@@ -561,11 +566,51 @@
       "level": "MUST",
       "verification": "inspection",
       "acceptance": [
-        "The artifact records selected players, club, position, price, predicted points, predicted points with captain where applicable, captain marker, formation, budget used, model ID, feature pack, fixture mode, matchup mode, optimizer status, and target round."
+        "recommended_squad.csv records selected player identity, club, position, price, raw predicted_points, is_captain, captain_policy_ev, captain_policy_safe, and captain_policy_upside.",
+        "recommendation_summary.json records season, target_round, mode, strategy, formation, budget, budget_used, optimizer_status, selected_count, predicted_points_base, captain_bonus_predicted, predicted_points_with_captain, captain_id, captain_name, and output_directory.",
+        "run_metadata.json records model_id, footystats_mode, fixture_mode, matchup_context_mode, feature_columns, training_rounds, candidate_round, generated_at_utc, finalized_live_data_detected, allow_finalized_live_data, optimizer_status, and warnings."
       ],
       "tags": [
         "data",
         "recommendation"
+      ]
+    },
+    {
+      "id": "DATA.recommendation-output-files",
+      "type": "DATA",
+      "status": "accepted",
+      "title": "Recommendation output files",
+      "statement": "Each recommendation run must write the canonical recommendation output file set.",
+      "level": "MUST",
+      "verification": "integration-test",
+      "acceptance": [
+        "Each recommendation run writes recommended_squad.csv.",
+        "Each recommendation run writes candidate_predictions.csv.",
+        "Each recommendation run writes recommendation_summary.json.",
+        "Each recommendation run writes run_metadata.json."
+      ],
+      "tags": [
+        "data",
+        "recommendation",
+        "artifacts"
+      ]
+    },
+    {
+      "id": "DATA.submission-plan",
+      "type": "DATA",
+      "status": "accepted",
+      "title": "Submission plan artifacts",
+      "statement": "A Phase 1 submission attempt must persist a reviewable plan and a non-submission result.",
+      "level": "MUST",
+      "verification": "integration-test",
+      "acceptance": [
+        "submission_plan.json records plan_status, phase, recommendation_path, payload, payload_sha256, source_artifact_hashes, target_round, season, formation, selected_count, captain_id, captain_name, model_id, footystats_mode, fixture_mode, matchup_context_mode, scoring_contract_version, and validation_report.",
+        "submission_result.json records submission_status as plan_only, would_submit as false, submitted_at_utc as null, http_status as null, auth_token_present as false, auth_token_source as not_required, and payload_sha256."
+      ],
+      "tags": [
+        "data",
+        "submission",
+        "safety"
       ]
     },
     {
@@ -610,8 +655,9 @@
       "level": "MUST",
       "verification": "integration-test",
       "acceptance": [
-        "The command accepts season, budget, and current-year inputs.",
-        "The command writes a live recommendation run directory with recommendation metadata and selected squad artifacts."
+        "scripts/run_live_round.py accepts --season, --budget, --current-year, --model-id, --footystats-mode, --fixture-mode, --matchup-context-mode, and --capture-policy inputs.",
+        "scripts/run_live_round.py rejects a user-supplied --target-round input because the target round comes from the open market capture.",
+        "A successful one-command live run writes outputs under data/08_reporting/recommendations/{season}/round-{target_round}/live/runs/run_started_at=..."
       ],
       "tags": [
         "cli",
@@ -627,12 +673,50 @@
       "level": "MUST",
       "verification": "integration-test",
       "acceptance": [
-        "Replay mode accepts season, target round, budget, and current-year inputs.",
+        "scripts/recommend_squad.py accepts --season, --target-round, --mode live|replay, --budget, --current-year, --model-id, --footystats-mode, --fixture-mode, and --matchup-context-mode inputs.",
         "Replay outputs include oracle comparison fields when complete target-round actual points are available."
       ],
       "tags": [
         "cli",
         "replay"
+      ]
+    },
+    {
+      "id": "INTERFACE.capture-market-command",
+      "type": "INTERFACE",
+      "status": "accepted",
+      "title": "Market capture command",
+      "statement": "The market capture command must provide an explicit interface for capturing the open Cartola market round.",
+      "level": "MUST",
+      "verification": "integration-test",
+      "acceptance": [
+        "scripts/capture_market_round.py accepts --season and either --target-round or --auto.",
+        "scripts/capture_market_round.py accepts --current-year, --project-root, and --force inputs.",
+        "A successful capture writes a round CSV and companion capture manifest for the captured target round."
+      ],
+      "tags": [
+        "cli",
+        "capture",
+        "live"
+      ]
+    },
+    {
+      "id": "INTERFACE.submit-plan-command",
+      "type": "INTERFACE",
+      "status": "accepted",
+      "title": "Submission plan command",
+      "statement": "The submission command must expose Phase 1 plan generation without allowing real authenticated submission.",
+      "level": "MUST",
+      "verification": "system-test",
+      "acceptance": [
+        "scripts/submit_recommended_squad.py accepts --recommendation-path for Phase 1 plan generation.",
+        "scripts/submit_recommended_squad.py accepts --submission-plan only for reserved future replay behavior and does not use it for Phase 1 real submission.",
+        "When --confirm-submit is present, the command exits with CONTRACT_UNVERIFIED before loading .env or reading CARTOLA_GLB_TOKEN."
+      ],
+      "tags": [
+        "cli",
+        "submission",
+        "safety"
       ]
     },
     {
@@ -694,9 +778,10 @@
       "level": "MUST",
       "verification": "inspection",
       "acceptance": [
-        "Secrets and local machine config are not committed.",
+        "Committed files exclude CARTOLA_GLB_TOKEN, bookmaker credentials, subscriber payment data, and authenticated API payloads.",
+        "Committed files exclude local machine configuration from conf/local except placeholder files intentionally kept for directory structure.",
         "Phase 1 submission planning does not read CARTOLA_GLB_TOKEN.",
-        "Future authenticated submission specs must require account and team identity verification before any account mutation."
+        "Generated submission_result.json records auth_token_present as false and auth_token_source as not_required."
       ],
       "tags": [
         "security",
@@ -810,11 +895,13 @@
       "type": "CONSTRAINT",
       "status": "accepted",
       "title": "Separate specs for public products",
-      "statement": "Any future real submission, subscription, or betting-adjacent public product must have a separate accepted spec before implementation or launch.",
-      "level": "MUST",
+      "statement": "The system must not enable future real submission, subscription billing or delivery, or betting-adjacent public advice without a separate accepted governing spec.",
+      "level": "MUST_NOT",
       "verification": "manual-review",
       "acceptance": [
-        "A future implementation proposal for real submit, subscription, or betting-adjacent public advice cites an accepted governing spec before work begins."
+        "Real Cartola account mutation remains disabled unless a separate accepted submission spec is cited.",
+        "Subscription billing and entitlement features remain absent or disabled unless a separate accepted subscription spec is cited.",
+        "Betting-adjacent public advice remains absent or disabled unless separate accepted product, compliance, privacy, support, and disclosure specs are cited."
       ],
       "tags": [
         "governance",
@@ -830,11 +917,51 @@
       "level": "MUST_NOT",
       "verification": "manual-review",
       "acceptance": [
-        "Paid betting-related features remain disabled until legal review, responsible-gambling controls, jurisdiction rules, advertising disclosures, privacy requirements, and customer-support requirements are documented in accepted specs."
+        "Paid betting-related publishing surfaces remain disabled until legal review, responsible-gambling controls, jurisdiction rules, advertising disclosures, privacy requirements, and customer-support requirements are documented in accepted specs.",
+        "No paid betting-related advice artifact is delivered to a subscriber or public user before those accepted specs exist."
       ],
       "tags": [
         "compliance",
         "betting"
+      ]
+    },
+    {
+      "id": "CONSTRAINT.no-guarantee-claims",
+      "type": "CONSTRAINT",
+      "status": "accepted",
+      "title": "No guarantee claims",
+      "statement": "The system must not publish or generate user-facing claims that guarantee Cartola wins, championships, or betting profit.",
+      "level": "MUST_NOT",
+      "verification": "inspection",
+      "acceptance": [
+        "User-facing recommendation, report, subscription, and advice surfaces do not contain claims that guarantee a Cartola round win.",
+        "User-facing recommendation, report, subscription, and advice surfaces do not contain claims that guarantee a Cartola championship or league win.",
+        "User-facing recommendation, report, subscription, and advice surfaces do not contain claims that guarantee betting profit."
+      ],
+      "tags": [
+        "claims",
+        "compliance",
+        "forbidden-capability"
+      ]
+    },
+    {
+      "id": "CONSTRAINT.no-real-money-betting",
+      "type": "CONSTRAINT",
+      "status": "accepted",
+      "title": "No real-money betting capability",
+      "statement": "The system must not provide real-money betting, bookmaker account integration, wager placement, or bankroll automation in this accepted scope.",
+      "level": "MUST_NOT",
+      "verification": "inspection",
+      "acceptance": [
+        "No accepted interface places a wager.",
+        "No accepted interface connects to a bookmaker account.",
+        "No accepted interface automates bankroll allocation or staking.",
+        "Future odds data, when proposed, is limited to paper-trading research until separate accepted specs exist."
+      ],
+      "tags": [
+        "betting",
+        "scope",
+        "forbidden-capability"
       ]
     },
     {
@@ -1031,9 +1158,49 @@
       "to": "DECISION.keep-real-submit-disabled"
     },
     {
+      "from": "DATA.submission-plan",
+      "type": "implements",
+      "to": "REQ.submission-plan-only"
+    },
+    {
+      "from": "DATA.recommendation-output-files",
+      "type": "implements",
+      "to": "REQ.live-squad-recommendation"
+    },
+    {
+      "from": "INTERFACE.live-round-command",
+      "type": "implements",
+      "to": "REQ.live-squad-recommendation"
+    },
+    {
+      "from": "INTERFACE.capture-market-command",
+      "type": "implements",
+      "to": "REQ.prelock-market-capture"
+    },
+    {
+      "from": "INTERFACE.submit-plan-command",
+      "type": "implements",
+      "to": "REQ.submission-plan-only"
+    },
+    {
       "from": "CONSTRAINT.before-market-lock",
       "type": "constrains",
       "to": "REQ.live-squad-recommendation"
+    },
+    {
+      "from": "CONSTRAINT.no-guarantee-claims",
+      "type": "clarifies",
+      "to": "NON_GOAL.guaranteed-wins"
+    },
+    {
+      "from": "CONSTRAINT.no-real-money-betting",
+      "type": "clarifies",
+      "to": "NON_GOAL.real-money-betting"
+    },
+    {
+      "from": "CONSTRAINT.future-public-product-specs",
+      "type": "constrains",
+      "to": "NON_GOAL.paid-betting-advice-now"
     },
     {
       "from": "QUALITY.recommendation-traceability",

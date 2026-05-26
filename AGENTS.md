@@ -18,25 +18,58 @@ Steps:
 - This is a Python/Kedro project managed with `uv`; use Python `3.13.12` from `.python-version`.
 - Main Python package: `src/cartola`. Tests live in `src/tests`.
 - Operational scripts live in `scripts/`. Generated reports and model outputs are written under `data/08_reporting/`.
-- Product-level AgileForge spec: `specs/app.md`; treat `specs/app.html` and `specs/app.pdf` as exports, not source. TODO: document the exact export/regeneration command before relying on those exports.
+- Product planning source: `specs/app.md`. AgileForge structured profile artifacts are `specs/spec.json` (canonical `agileforge.spec.v1` input) and `specs/spec.md` (rendered review view). Treat `specs/app.html` and `specs/app.pdf` as exports, not source. TODO: document the exact export/regeneration command before relying on those exports.
 - Do not commit secrets or local machine config from `conf/local`.
 
 ## AgileForge Spec Workflow
 
-- When using AgileForge for this product, use `specs/app.md` as the source spec:
-  `agileforge project create --name "<project-name>" --spec-file specs/app.md --idempotency-key <key>`
-  For non-mutating checks, use `--dry-run` and omit `--idempotency-key`.
-- A successful project compile can still leave setup pending manual authority review. Retrieve the packet with:
-  `agileforge authority review --project-id <id> --include-spec full --format json`
+- After changing `specs/spec.json`, validate and render the structured profile artifact before project creation or authority review:
+  `agileforge spec profile validate --spec-file specs/spec.json --render-md specs/spec.md`
+- When using AgileForge for this product, pass `specs/spec.json` to project creation; do not pass `specs/app.md` or `specs/spec.md` to `project create`.
+  `agileforge project create --name "caRtola" --spec-file specs/spec.json --dry-run --dry-run-id <dry-run-id>`
+  `agileforge project create --name "caRtola" --spec-file specs/spec.json --idempotency-key <key>`
+- `project create` compiles the pending authority automatically; a successful compile can still leave setup pending manual authority review. Retrieve the packet with:
+  `agileforge authority review --project-id <id> --include-spec full --open --format json`
 - Accept or reject only after the review packet is assessed:
-  `agileforge authority accept --project-id <id> --review-token <review_token>`
-  `agileforge authority reject --project-id <id> --review-token <review_token> --reason "<reason>"`
+  `agileforge authority accept --project-id <id>`
+  `agileforge authority reject --project-id <id> --review-token <review_token> --reason "<reason>" --idempotency-key <key>`
 - Do not treat project creation or authority compilation as acceptance; authority acceptance is a separate review checkpoint.
+- After acceptance, confirm the canonical state with:
+  `agileforge authority status --project-id <id>`
+  Latest Cartola smoke project `2` reports `status=current`, `reason=accepted_authority_current`, and `invariant_count=115`.
+- Compiled authority is stored in AgileForge state and review packets, not as a repo source file; do not commit exported `specs/compiled-authority-*.json` or local CLI response captures such as `review.json`, `accept.json`, `authority-status.json`, `roadmap-generate.json`, `story-*.json`, or `sprint-*.json`.
+- After each accepted, saved, repaired, or completed AgileForge phase, ask the CLI for the next valid commands instead of guessing:
+  `agileforge workflow next --project-id <id>`
+  Current Cartola smoke project `2` has Story coverage complete (`story pending` reports `saved_count=10`, `total_count=10`), active Story dependency review complete, and is in Sprint draft review; latest `workflow next` reports `status=next_phase_available` with `agileforge sprint history --project-id 2`, Story dependency inspect/propose/apply commands, guarded `agileforge sprint save ... --expected-state SPRINT_DRAFT`, and `agileforge sprint generate --project-id 2 --input <feedback>`.
+- To correct a saved Story before Sprint work exists, reopen the parent requirement, regenerate or refine, save with the returned attempt/fingerprint, then complete Story again:
+  `agileforge story reopen --project-id 2 --parent-requirement "<parent_requirement>" --expected-state SPRINT_SETUP --idempotency-key <key>`
+  `agileforge story complete --project-id 2 --expected-state STORY_PERSISTENCE --idempotency-key <key>`
+- Review Story dependencies before Sprint generation or after Story changes:
+  `agileforge story dependencies inspect --project-id 2`
+  `agileforge story dependencies propose --project-id 2 --expected-state <expected_state> --idempotency-key <key>`
+  `agileforge story dependencies apply --project-id 2 --attempt-id <attempt_id> --expected-artifact-fingerprint <fingerprint> --expected-state <expected_state> --idempotency-key <key>`
+  Use the `expected_state` returned by `workflow next` (`SPRINT_SETUP` before Sprint generation, `SPRINT_DRAFT` while reviewing an unsaved Sprint draft).
+  Current project `2` reports `active_edge_count=11`, `proposed_edge_count=0`, `cycle_count=0`, and `issue_count=0`; if Story/dependency data changes, rerun `workflow next` because AgileForge now invalidates stale Sprint drafts.
+- Before Sprint generation, inspect candidate readiness:
+  `agileforge sprint candidates --project-id 2`
+  Current project `2` reports `count=21`, readiness `status=ready`, and candidate dependency metadata (`dependency_status`, `prerequisite_story_ids`, `blocked_by_story_ids`) with 10 ready and 11 blocked candidates; if candidates are unsized, default-priority, cyclic, or invalid, repair Story planning metadata or dependencies before Sprint work starts:
+  `agileforge story repair-readiness --project-id 2 --expected-state SPRINT_SETUP --idempotency-key <key>`
+- Sprint generation now locks the dependency-safe story cohort before the model writes the Sprint plan; use `--max-story-points` and feedback for capacity shaping, and use `--selected-story-ids` only as a manual override after dependency review:
+  `agileforge sprint generate --project-id 2 --selected-story-ids 66,85,67,68,69 --max-story-points 12 --input "<selection feedback>"`
+  Review `sprint history` before saving; AgileForge blocks stale saves when the latest attempt failed, the selected draft is not the latest complete attempt, or the Story/dependency source fingerprint changed or cannot be verified.
+- Latest project `2` Sprint draft is `sprint-attempt-10`, artifact fingerprint `sha256:0423eaafcee57f3686b1f313743c961e4edb33ce40b066fabc2792fd9bf27fad`, selected stories `66,85,67,68,69`, and 11 story points with no clarifying questions. If accepted after review, save it with:
+  `agileforge sprint save --project-id 2 --team-name <team_name> --sprint-start-date <YYYY-MM-DD> --attempt-id sprint-attempt-10 --expected-artifact-fingerprint sha256:0423eaafcee57f3686b1f313743c961e4edb33ce40b066fabc2792fd9bf27fad --expected-state SPRINT_DRAFT --idempotency-key <key>`
+- AgileForge phase command groups now installed in the local CLI include `vision`, `roadmap`, `backlog`, `story`, and `sprint`. Model-backed `generate` commands can fail on provider data-policy or rate limits; inspect history before retrying:
+  `agileforge vision history --project-id <id>`
+  `agileforge roadmap history --project-id <id>`
+  `agileforge sprint history --project-id <id>`
+- TODO: Document the post-creation AgileForge spec update command once it exists; the current spec tracks this as `OPEN_QUESTION.agileforge-spec-update`.
 
 ## Setup And Quality
 
 - Install local dev dependencies with `uv sync --dev`.
-- Reproduce the GitHub Actions quality gate with `uv sync --locked --dev` and `uv run --frozen pyrepo-check --all`.
+- Run the intended local quality gate with `uv sync --locked --dev` and `uv run --frozen pyrepo-check --all`.
+- TODO: `.github/workflows/quality.yml` still invokes removed `scripts/pyrepo-check`; update it before treating GitHub Actions as an exact mirror of the local quality gate.
 - The installed `pyrepo-check` command supports targeted checks: `ruff`, `annotations`, `annotations-fix`, `ty`, `bandit`, and `pytest`.
 - Annotation presence is enforced by Ruff `ANN` rules; run only that gate with `uv run --frozen ruff check src/cartola src/tests scripts --select ANN`.
 - Run tests directly with `uv run --frozen pytest` when a narrower pytest workflow is useful.

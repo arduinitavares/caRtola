@@ -2,15 +2,15 @@
 
 - Schema: agileforge.spec.v1
 - Artifact id: SPEC.cartola-champion-squad-selector
-- Status: changed
-- Version: 0.3
+- Status: accepted
+- Version: 1.0
 - Created: 2026-05-16
-- Updated: 2026-05-19
+- Updated: 2026-05-21
 - Markdown profile: agileforge.spec_markdown.v1
 
 ## Summary
 
-Define a private Cartola FC decision engine whose first mission is to recommend the operator's highest-value legal squad before market lock, evaluate live outcomes without leakage, and keep future betting and paid advice tracks gated by validation, compliance, and customer protection.
+Define an authority-ready private Cartola FC decision engine whose accepted scope is one legal pre-lock squad recommendation, reproducible recommendation artifacts, leakage-safe evaluation, evidence-gated live defaults, and explicit exclusions for real-money betting, public paid advice, and authenticated squad submission.
 
 ## Problem Statement
 
@@ -124,7 +124,8 @@ The system must not publish paid betting-adjacent advice before compliance appro
 
 Acceptance:
 
-- Paid betting-related features remain disabled until legal review, responsible-gambling controls, jurisdiction rules, advertising disclosures, privacy requirements, and customer-support requirements are documented in accepted specs.
+- Paid betting-related publishing surfaces remain disabled until legal review, responsible-gambling controls, jurisdiction rules, advertising disclosures, privacy requirements, and customer-support requirements are documented in accepted specs.
+- No paid betting-related advice artifact is delivered to a subscriber or public user before those accepted specs exist.
 
 ### CONSTRAINT.fixed-budget-non-comparable - Fixed-budget reports are non-comparable
 
@@ -147,17 +148,56 @@ Acceptance:
 
 - Type: CONSTRAINT
 - Status: accepted
-- Level: MUST
+- Level: MUST_NOT
 - Verification: manual-review
 - Tags: future, governance
 
 Statement:
 
-Any future real submission, subscription, or betting-adjacent public product must have a separate accepted spec before implementation or launch.
+The system must not enable future real submission, subscription billing or delivery, or betting-adjacent public advice without a separate accepted governing spec.
 
 Acceptance:
 
-- A future implementation proposal for real submit, subscription, or betting-adjacent public advice cites an accepted governing spec before work begins.
+- Real Cartola account mutation remains disabled unless a separate accepted submission spec is cited.
+- Subscription billing and entitlement features remain absent or disabled unless a separate accepted subscription spec is cited.
+- Betting-adjacent public advice remains absent or disabled unless separate accepted product, compliance, privacy, support, and disclosure specs are cited.
+
+### CONSTRAINT.no-guarantee-claims - No guarantee claims
+
+- Type: CONSTRAINT
+- Status: accepted
+- Level: MUST_NOT
+- Verification: inspection
+- Tags: claims, compliance, forbidden-capability
+
+Statement:
+
+The system must not publish or generate user-facing claims that guarantee Cartola wins, championships, or betting profit.
+
+Acceptance:
+
+- User-facing recommendation, report, subscription, and advice surfaces do not contain claims that guarantee a Cartola round win.
+- User-facing recommendation, report, subscription, and advice surfaces do not contain claims that guarantee a Cartola championship or league win.
+- User-facing recommendation, report, subscription, and advice surfaces do not contain claims that guarantee betting profit.
+
+### CONSTRAINT.no-real-money-betting - No real-money betting capability
+
+- Type: CONSTRAINT
+- Status: accepted
+- Level: MUST_NOT
+- Verification: inspection
+- Tags: betting, forbidden-capability, scope
+
+Statement:
+
+The system must not provide real-money betting, bookmaker account integration, wager placement, or bankroll automation in this accepted scope.
+
+Acceptance:
+
+- No accepted interface places a wager.
+- No accepted interface connects to a bookmaker account.
+- No accepted interface automates bankroll allocation or staking.
+- Future odds data, when proposed, is limited to paper-trading research until separate accepted specs exist.
 
 ### DATA.future-advice-record - Future advice publication record
 
@@ -189,7 +229,8 @@ A live market capture must identify the source market data used for a live recom
 
 Acceptance:
 
-- The capture artifact records season, round, capture timestamp, market status, source identity, CSV path, and CSV hash.
+- The capture manifest records season, current_year, target_round, captured_at_utc, status_endpoint, status_final_url, status_http_status, status_response_sha256, market_endpoint, market_final_url, market_http_status, market_response_sha256, status_mercado, csv_path, and csv_sha256.
+- The capture CSV path follows data/01_raw/{season}/rodada-{round}.csv for default live captures.
 - The capture artifact is linked from the live recommendation metadata.
 
 ### DATA.promotion-decision - Promotion decision artifact
@@ -208,6 +249,25 @@ Acceptance:
 
 - The artifact records candidate identity, control identity, comparison seasons, budget policy, points delta, budget-risk checks, calibration checks when applicable, comparability status, and final decision.
 
+### DATA.recommendation-output-files - Recommendation output files
+
+- Type: DATA
+- Status: accepted
+- Level: MUST
+- Verification: integration-test
+- Tags: artifacts, data, recommendation
+
+Statement:
+
+Each recommendation run must write the canonical recommendation output file set.
+
+Acceptance:
+
+- Each recommendation run writes recommended_squad.csv.
+- Each recommendation run writes candidate_predictions.csv.
+- Each recommendation run writes recommendation_summary.json.
+- Each recommendation run writes run_metadata.json.
+
 ### DATA.recommended-squad - Recommended squad artifact
 
 - Type: DATA
@@ -222,7 +282,26 @@ A recommended squad artifact must preserve enough information to review, reprodu
 
 Acceptance:
 
-- The artifact records selected players, club, position, price, predicted points, predicted points with captain where applicable, captain marker, formation, budget used, model ID, feature pack, fixture mode, matchup mode, optimizer status, and target round.
+- recommended_squad.csv records selected player identity, club, position, price, raw predicted_points, is_captain, captain_policy_ev, captain_policy_safe, and captain_policy_upside.
+- recommendation_summary.json records season, target_round, mode, strategy, formation, budget, budget_used, optimizer_status, selected_count, predicted_points_base, captain_bonus_predicted, predicted_points_with_captain, captain_id, captain_name, and output_directory.
+- run_metadata.json records model_id, footystats_mode, fixture_mode, matchup_context_mode, feature_columns, training_rounds, candidate_round, generated_at_utc, finalized_live_data_detected, allow_finalized_live_data, optimizer_status, and warnings.
+
+### DATA.submission-plan - Submission plan artifacts
+
+- Type: DATA
+- Status: accepted
+- Level: MUST
+- Verification: integration-test
+- Tags: data, safety, submission
+
+Statement:
+
+A Phase 1 submission attempt must persist a reviewable plan and a non-submission result.
+
+Acceptance:
+
+- submission_plan.json records plan_status, phase, recommendation_path, payload, payload_sha256, source_artifact_hashes, target_round, season, formation, selected_count, captain_id, captain_name, model_id, footystats_mode, fixture_mode, matchup_context_mode, scoring_contract_version, and validation_report.
+- submission_result.json records submission_status as plan_only, would_submit as false, submitted_at_utc as null, http_status as null, auth_token_present as false, auth_token_source as not_required, and payload_sha256.
 
 ### DECISION.focus-private-cartola-first - Focus first on personal Cartola squad selection
 
@@ -377,6 +456,24 @@ Acceptance:
 - Backtest runs accept season, start round, budget, and fixture mode inputs.
 - Backtest metadata records moving-budget policy and evidence boundaries.
 
+### INTERFACE.capture-market-command - Market capture command
+
+- Type: INTERFACE
+- Status: accepted
+- Level: MUST
+- Verification: integration-test
+- Tags: capture, cli, live
+
+Statement:
+
+The market capture command must provide an explicit interface for capturing the open Cartola market round.
+
+Acceptance:
+
+- scripts/capture_market_round.py accepts --season and either --target-round or --auto.
+- scripts/capture_market_round.py accepts --current-year, --project-root, and --force inputs.
+- A successful capture writes a round CSV and companion capture manifest for the captured target round.
+
 ### INTERFACE.cartola-api - Cartola market API integration
 
 - Type: INTERFACE
@@ -424,8 +521,9 @@ The live round command must provide the preferred one-command interface for priv
 
 Acceptance:
 
-- The command accepts season, budget, and current-year inputs.
-- The command writes a live recommendation run directory with recommendation metadata and selected squad artifacts.
+- scripts/run_live_round.py accepts --season, --budget, --current-year, --model-id, --footystats-mode, --fixture-mode, --matchup-context-mode, and --capture-policy inputs.
+- scripts/run_live_round.py rejects a user-supplied --target-round input because the target round comes from the open market capture.
+- A successful one-command live run writes outputs under data/08_reporting/recommendations/{season}/round-{target_round}/live/runs/run_started_at=...
 
 ### INTERFACE.replay-recommendation-command - Replay recommendation command
 
@@ -441,8 +539,26 @@ The recommendation command must support completed-round replay for current-seaso
 
 Acceptance:
 
-- Replay mode accepts season, target round, budget, and current-year inputs.
+- scripts/recommend_squad.py accepts --season, --target-round, --mode live|replay, --budget, --current-year, --model-id, --footystats-mode, --fixture-mode, and --matchup-context-mode inputs.
 - Replay outputs include oracle comparison fields when complete target-round actual points are available.
+
+### INTERFACE.submit-plan-command - Submission plan command
+
+- Type: INTERFACE
+- Status: accepted
+- Level: MUST
+- Verification: system-test
+- Tags: cli, safety, submission
+
+Statement:
+
+The submission command must expose Phase 1 plan generation without allowing real authenticated submission.
+
+Acceptance:
+
+- scripts/submit_recommended_squad.py accepts --recommendation-path for Phase 1 plan generation.
+- scripts/submit_recommended_squad.py accepts --submission-plan only for reserved future replay behavior and does not use it for Phase 1 real submission.
+- When --confirm-submit is present, the command exits with CONTRACT_UNVERIFIED before loading .env or reading CARTOLA_GLB_TOKEN.
 
 ### NON_GOAL.downstream-project-tasks - Implementation tasks excluded
 
@@ -470,7 +586,7 @@ Acceptance:
 
 Statement:
 
-The system must not claim that it will win every Cartola round, win a championship, or produce guaranteed betting profit.
+Guaranteed Cartola round wins, championship wins, and betting profit claims are outside the accepted scope.
 
 Acceptance:
 
@@ -518,7 +634,7 @@ Acceptance:
 
 Statement:
 
-Research-only artifacts, oracle hindsight, exploratory fixture evidence, and one-off experiment wins must not be exposed as production recommendations.
+Research-only artifacts, oracle hindsight, exploratory fixture evidence, and one-off experiment wins are not accepted production recommendation sources.
 
 Acceptance:
 
@@ -747,9 +863,10 @@ The repository and runtime artifacts must not expose secrets, local machine conf
 
 Acceptance:
 
-- Secrets and local machine config are not committed.
+- Committed files exclude CARTOLA_GLB_TOKEN, bookmaker credentials, subscriber payment data, and authenticated API payloads.
+- Committed files exclude local machine configuration from conf/local except placeholder files intentionally kept for directory structure.
 - Phase 1 submission planning does not read CARTOLA_GLB_TOKEN.
-- Future authenticated submission specs must require account and team identity verification before any account mutation.
+- Generated submission_result.json records auth_token_present as false and auth_token_source as not_required.
 
 ### QUALITY.utc-timestamps - UTC timestamps
 
@@ -777,13 +894,13 @@ Acceptance:
 
 Statement:
 
-Recommendation reports must compare selected squads against strong practical baselines.
+Recommendation artifacts must preserve baseline scores and replay oracle fields needed to compare selected squads against practical alternatives.
 
 Acceptance:
 
-- Reports include comparisons to the current default profile.
-- Reports include comparison to at least one price or budget baseline when candidate data supports it.
-- Reports include comparison to a prior promoted baseline when one is applicable.
+- recommended_squad.csv includes baseline_score and price_score columns for selected players.
+- candidate_predictions.csv includes baseline_score and price_score columns for candidate players.
+- Replay recommendation_summary.json includes oracle_actual_points, oracle_gap, oracle_capture_rate, and oracle_optimizer_status when complete target-round actual points are available.
 
 ### REQ.betting-paper-trading - Track future betting forecasts as probabilities
 
@@ -816,7 +933,8 @@ The live squad must stay within the operator's current available Cartola budget.
 
 Acceptance:
 
-- For every live recommendation, the recommendation summary and selected-player artifacts show budget_used less than or equal to budget.
+- For every live recommendation, recommendation_summary.json records budget_used &lt;= budget.
+- For every live recommendation, recommended_squad.csv contains selected players whose summed preco_pre_rodada equals the recorded budget_used.
 - When the available budget is missing, the live recommendation workflow does not infer a private account balance and requires an explicit operator-provided budget.
 
 ### REQ.captain-aware-optimization - Optimize captain-aware points
@@ -833,9 +951,11 @@ The optimizer must select recommendations using captain-aware predicted Cartola 
 
 Acceptance:
 
+- recommendation_summary.json records predicted_points_base, captain_bonus_predicted, and predicted_points_with_captain.
+- recommendation_summary.json records captain_multiplier as 1.5 through the scoring contract fields.
 - Round-level predicted totals use predicted_points_with_captain.
 - Selected-player predicted_points remains the raw per-athlete prediction before captain multiplier.
-- The selected captain is a non-tecnico player.
+- recommended_squad.csv contains exactly one is_captain=true row, and that row is not a tecnico.
 
 ### REQ.default-promotion-gate - Gate live default changes
 
@@ -852,7 +972,7 @@ The current live default must change only when a frozen decision artifact passes
 Acceptance:
 
 - Every live default change cites a frozen decision artifact.
-- The cited decision artifact records points, budget, DNP, calibration, and comparability results.
+- The cited decision artifact records candidate model_id, candidate feature pack or mode, control identity, points delta, budget-risk checks, DNP or availability checks when applicable, calibration checks when applicable, comparability status, and final decision.
 - A one-off experiment win, oracle hindsight run, or exploratory fixture-only run cannot change the live default.
 
 ### REQ.exploratory-evidence-labeling - Label exploratory fixture evidence
@@ -940,7 +1060,8 @@ Live recommendations must not include finalized target-round actual points or sc
 
 Acceptance:
 
-- Live output artifacts omit target-round actual points and target-round scout outcomes.
+- Live recommended_squad.csv omits target-round pontuacao and target-round scout outcome columns.
+- Live candidate_predictions.csv omits target-round pontuacao and target-round scout outcome columns.
 - If finalized target-round data is present during live recommendation generation, the workflow fails unless an explicit debug-only mode is selected.
 
 ### REQ.post-round-review - Track completed-round outcome quality
@@ -958,7 +1079,7 @@ The system must support post-round review for each completed live recommendation
 Acceptance:
 
 - A post-round review links to the exact recommendation artifact it evaluates.
-- The review records actual captain-aware points, captain result, DNP count, budget delta, oracle gap when available, and baseline comparisons.
+- The review records actual_points_with_captain, captain_bonus_actual, captain result, DNP count, budget delta, oracle_gap when available, and baseline comparisons.
 
 ### REQ.prelock-market-capture - Capture or validate pre-lock market data
 
@@ -974,24 +1095,24 @@ The live recommendation workflow must capture or validate pre-lock market data b
 
 Acceptance:
 
-- A live run records capture path, capture hash, capture timestamp, target round, market status, and capture policy.
+- A live run records capture path, capture hash, capture timestamp, target round, market status, and capture policy in run_metadata.json or the live workflow metadata.
 - When the market is unavailable or closed, live mode fails before squad generation unless the operator explicitly runs replay mode.
 
 ### REQ.real-submit-disabled - Disable real authenticated submission
 
 - Type: REQ
 - Status: accepted
-- Level: MUST
+- Level: MUST_NOT
 - Verification: system-test
 - Tags: security, submission
 
 Statement:
 
-Real authenticated Cartola squad submission must remain disabled until a separate Phase 2 submission spec is accepted.
+The system must not perform real authenticated Cartola squad submission until a separate Phase 2 submission spec is accepted.
 
 Acceptance:
 
-- Any confirm-submit invocation exits with CONTRACT_UNVERIFIED.
+- Any --confirm-submit invocation exits with CONTRACT_UNVERIFIED.
 - The disabled real-submit path exits before reading account tokens.
 - The disabled real-submit path exits before constructing an authenticated POST request.
 
@@ -1151,6 +1272,14 @@ Acceptance:
 ## Relations
 
 - CONSTRAINT.before-market-lock constrains REQ.live-squad-recommendation
+- CONSTRAINT.future-public-product-specs constrains NON_GOAL.paid-betting-advice-now
+- CONSTRAINT.no-guarantee-claims clarifies NON_GOAL.guaranteed-wins
+- CONSTRAINT.no-real-money-betting clarifies NON_GOAL.real-money-betting
+- DATA.recommendation-output-files implements REQ.live-squad-recommendation
+- DATA.submission-plan implements REQ.submission-plan-only
+- INTERFACE.capture-market-command implements REQ.prelock-market-capture
+- INTERFACE.live-round-command implements REQ.live-squad-recommendation
+- INTERFACE.submit-plan-command implements REQ.submission-plan-only
 - QUALITY.recommendation-traceability tracks REQ.post-round-review
 - REQ.betting-paper-trading depends_on CONSTRAINT.compliance-approval
 - REQ.default-promotion-gate satisfies GOAL.evidence-gated-promotion
