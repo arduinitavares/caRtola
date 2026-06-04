@@ -38,7 +38,7 @@ def test_parse_args_requires_budget(capsys: pytest.CaptureFixture[str]) -> None:
     assert "Cartola C$ / cartoletas" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("budget", ["abc", "0", "-1", "nan", "inf"])
+@pytest.mark.parametrize("budget", ["", "abc", "0", "-1", "nan", "inf"])
 def test_parse_args_rejects_invalid_budget(
     budget: str,
     capsys: pytest.CaptureFixture[str],
@@ -48,6 +48,19 @@ def test_parse_args_rejects_invalid_budget(
 
     assert error.value.code == 2
     assert "positive numeric Cartola C$ / cartoletas" in capsys.readouterr().err
+
+
+def test_parse_args_does_not_use_environment_budget_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("CARTOLA_BUDGET", "92.5")
+
+    with pytest.raises(SystemExit) as error:
+        parse_args(["--season", "2026", "--current-year", "2026"])
+
+    assert error.value.code == 2
+    assert "Cartola C$ / cartoletas" in capsys.readouterr().err
 
 
 def test_parse_args_rejects_target_round() -> None:
@@ -169,6 +182,53 @@ def test_main_builds_workflow_config_and_prints_summary(
     assert "strict" in output
     assert "Matchup context" in output
     assert "cartola_matchup_v1" in output
+
+
+def test_main_prints_finalized_live_data_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_run_live_round(config: LiveWorkflowConfig) -> LiveWorkflowResult:
+        return LiveWorkflowResult(
+            recommendation=None,
+            output_path=tmp_path / "data/08_reporting/recommendations/2026/round-14/live/runs/run_started_at=x",
+            workflow_metadata={
+                "status": "ok",
+                "capture_policy": "fresh",
+                "season": 2026,
+                "target_round": 14,
+                "finalized_live_data_detected": True,
+                "finalized_live_data_evidence": {
+                    "pontuacao_non_zero_count": 1,
+                    "entrou_em_campo_true_count": 2,
+                    "non_zero_scout_count": 3,
+                },
+                "allow_finalized_live_data": True,
+            },
+        )
+
+    monkeypatch.setattr(run_live_round_cli, "run_live_round", fake_run_live_round)
+
+    exit_code = main(
+        [
+            "--season",
+            "2026",
+            "--budget",
+            "92.5",
+            "--project-root",
+            str(tmp_path),
+            "--current-year",
+            "2026",
+            "--allow-finalized-live-data",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Finalized live data warning" in output
+    assert "pontuacao_non_zero_count" in output
+    assert "allow_finalized_live_data=True" in output
 
 
 def test_main_prints_expected_error_without_traceback(

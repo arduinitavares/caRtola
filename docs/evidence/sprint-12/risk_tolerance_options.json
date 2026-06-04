@@ -1,0 +1,121 @@
+{
+  "_tracked_copy_metadata": {
+    "original_generated_path": "data/08_reporting/governance/risk_tolerance_options.json",
+    "original_generated_sha256": "452a712f895acef6771975f9fba0c665b777c07cffe693fabfdcc3ecd194ded6",
+    "approved_option_set_id": "risk_balanced_review_option",
+    "approval_scope": "review/configuration documentation only",
+    "runtime_enforcement_enabled": false,
+    "recommendation_rejection_enabled": false,
+    "notes": "Tracked Sprint 12 evidence copy. The ignored generated JSON under data/ remains byte-for-byte unchanged and is the artifact approved by the Product Owner."
+  },
+  "schema_version": "cartola.risk_tolerance_options.v1",
+  "artifact_type": "risk_tolerance_configuration",
+  "generated_at_utc": "2026-06-04T12:35:00Z",
+  "status": "proposed_options_only",
+  "approval": {
+    "approval_status": "draft",
+    "approved_option_set_id": null,
+    "approved_by": null,
+    "approved_at_utc": null,
+    "approval_notes": "Risk tolerances require Product Owner approval before any runtime enforcement.",
+    "authority_refs": [
+      "OPEN_QUESTION.risk-thresholds",
+      "REQ.default-promotion-gate",
+      "DATA.promotion-decision"
+    ]
+  },
+  "runtime_boundary": {
+    "enforcement_enabled": false,
+    "active_option_set_id": null,
+    "recommendation_rejection_enabled": false,
+    "notes": "This artifact may be cited by audit or discovery output, but it must not reject squads or fail live recommendations until approved enforcement authority exists."
+  },
+  "field_definitions": {
+    "max_dnp_allowed": {
+      "type": "integer_or_null",
+      "minimum": 0,
+      "maximum": 3,
+      "default_before_approval": null,
+      "meaning": "Maximum selected-player DNP count tolerated by a future gate."
+    },
+    "max_budget_drawdown_percent": {
+      "type": "number_or_null",
+      "minimum": 0.0,
+      "maximum": 100.0,
+      "default_before_approval": null,
+      "meaning": "Maximum budget drawdown tolerated relative to the operator-provided live budget."
+    },
+    "captain_floor_points": {
+      "type": "number_or_null",
+      "minimum": 0.0,
+      "maximum": 20.0,
+      "default_before_approval": null,
+      "meaning": "Minimum raw predicted captain points tolerated by a future captain-risk gate."
+    },
+    "captain_risk_preference": {
+      "type": "string",
+      "allowed_values": [
+        "safe",
+        "balanced",
+        "aggressive",
+        "custom"
+      ],
+      "default_before_approval": "custom",
+      "meaning": "Named Product Owner preference used to select or explain captain floor options."
+    }
+  },
+  "captain_risk_preference_mapping": {
+    "safe": {
+      "captain_floor_points": 8.0
+    },
+    "balanced": {
+      "captain_floor_points": 6.0
+    },
+    "aggressive": {
+      "captain_floor_points": 0.0
+    },
+    "custom": {
+      "captain_floor_points": null,
+      "requires_explicit_po_value": true
+    }
+  },
+  "proposed_option_sets": [
+    {
+      "option_set_id": "risk_safe_review_option",
+      "captain_risk_preference": "safe",
+      "captain_floor_points": 8.0,
+      "max_budget_drawdown_percent": 5.0,
+      "max_dnp_allowed": 0,
+      "rationale": "Minimize availability and budget volatility, even if projected upside drops."
+    },
+    {
+      "option_set_id": "risk_balanced_review_option",
+      "captain_risk_preference": "balanced",
+      "captain_floor_points": 6.0,
+      "max_budget_drawdown_percent": 10.0,
+      "max_dnp_allowed": 1,
+      "rationale": "Balance upside with moderate availability and budget protection."
+    },
+    {
+      "option_set_id": "risk_aggressive_review_option",
+      "captain_risk_preference": "aggressive",
+      "captain_floor_points": 0.0,
+      "max_budget_drawdown_percent": 20.0,
+      "max_dnp_allowed": 2,
+      "rationale": "Allow higher upside and volatility when the operator accepts the risk."
+    },
+    {
+      "option_set_id": "risk_custom_review_option",
+      "captain_risk_preference": "custom",
+      "captain_floor_points": null,
+      "max_budget_drawdown_percent": null,
+      "max_dnp_allowed": null,
+      "rationale": "Preserve Product Owner discretion when named bands are insufficient."
+    }
+  ],
+  "rationale": {
+    "why_this_exists": "The accepted authority records unresolved risk thresholds as an open question. This artifact makes review options concrete without silently adding enforcement scope.",
+    "why_no_default_enforcement": "No option set has Product Owner approval yet, and current sprint scope is verification/formalization rather than runtime rejection.",
+    "future_enforcement_requirement": "A future runtime gate must cite an approved option set, approval metadata, and accepted authority that explicitly allows enforcement."
+  }
+}

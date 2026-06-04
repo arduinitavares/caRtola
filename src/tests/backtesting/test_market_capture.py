@@ -216,6 +216,22 @@ def test_fetch_cartola_json_rejects_invalid_json(monkeypatch: pytest.MonkeyPatch
         fetch_cartola_json("https://api.cartola.globo.com/mercado/status", 12.0)
 
 
+def test_fetch_cartola_json_wraps_request_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import requests
+
+    from cartola.backtesting.market_capture import fetch_cartola_json
+
+    def fail_request(url: str, timeout: float) -> object:
+        raise requests.Timeout("timed out")
+
+    monkeypatch.setattr("requests.get", fail_request)
+
+    with pytest.raises(ValueError, match="Cartola request failed: url=.*mercado/status") as exc_info:
+        fetch_cartola_json("https://api.cartola.globo.com/mercado/status", 12.0)
+
+    assert isinstance(exc_info.value.__cause__, requests.Timeout)
+
+
 def test_capture_refuses_wrong_current_year(tmp_path: Path) -> None:
     config = MarketCaptureConfig(
         season=2025,
@@ -235,9 +251,15 @@ def test_capture_refuses_closed_market(tmp_path: Path) -> None:
         current_year=2026,
         project_root=tmp_path,
     )
+    final_csv = tmp_path / "data/01_raw/2026/rodada-14.csv"
+    final_metadata = tmp_path / "data/01_raw/2026/rodada-14.capture.json"
 
     with pytest.raises(ValueError, match="status_mercado 2"):
         capture_market_round(config, fetch=_fetch_pair(status_payload=_status_payload(status_mercado=2)))
+
+    assert not final_csv.exists()
+    assert not final_metadata.exists()
+    assert not list((tmp_path / "data/01_raw/2026").glob(".tmp-market-capture-*"))
 
 
 def test_capture_refuses_target_round_mismatch(tmp_path: Path) -> None:
@@ -313,6 +335,24 @@ def test_capture_does_not_publish_when_generated_csv_validation_fails(
     assert not list((tmp_path / "data/01_raw/2026").glob(".tmp-market-capture-*"))
 
 
+def test_capture_does_not_publish_when_market_fetch_fails(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    final_csv = tmp_path / "data/01_raw/2026/rodada-14.csv"
+    final_metadata = tmp_path / "data/01_raw/2026/rodada-14.capture.json"
+
+    def fetch(url: str, timeout: float) -> CapturedJsonResponse:
+        if url.endswith("/mercado/status"):
+            return _captured(_status_payload(), url)
+        raise ValueError("Cartola market API unreachable")
+
+    with pytest.raises(ValueError, match="market API unreachable"):
+        capture_market_round(config, fetch=fetch)
+
+    assert not final_csv.exists()
+    assert not final_metadata.exists()
+    assert not list((tmp_path / "data/01_raw/2026").glob(".tmp-market-capture-*"))
+
+
 def test_capture_refuses_existing_csv_without_force(tmp_path: Path) -> None:
     season_dir = tmp_path / "data/01_raw/2026"
     season_dir.mkdir(parents=True)
@@ -378,6 +418,20 @@ def test_load_valid_live_capture_rejects_csv_path_mismatch(tmp_path: Path) -> No
         load_valid_live_capture(project_root=tmp_path, season=2026, target_round=14)
 
 
+def test_load_valid_live_capture_rejects_season_round_mismatch_with_clear_error(tmp_path: Path) -> None:
+    config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
+    capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
+    metadata_path = tmp_path / "data/01_raw/2026/rodada-14.capture.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["target_round"] = 13
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    from cartola.backtesting.market_capture import load_valid_live_capture
+
+    with pytest.raises(ValueError, match="expected season=2026 target_round=14.*target_round=13"):
+        load_valid_live_capture(project_root=tmp_path, season=2026, target_round=14)
+
+
 def test_load_valid_live_capture_rejects_bad_captured_at(tmp_path: Path) -> None:
     config = MarketCaptureConfig(season=2026, target_round=14, current_year=2026, project_root=tmp_path)
     capture_market_round(config, fetch=_fetch_pair(), now=lambda: datetime(2026, 4, 29, 12, 0, tzinfo=UTC))
@@ -402,7 +456,7 @@ def test_load_valid_live_capture_rejects_closed_market_metadata(tmp_path: Path) 
 
     from cartola.backtesting.market_capture import load_valid_live_capture
 
-    with pytest.raises(ValueError, match="not a previous valid live capture"):
+    with pytest.raises(ValueError, match="not a previous valid live capture.*status_mercado=2"):
         load_valid_live_capture(project_root=tmp_path, season=2026, target_round=14)
 
 

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -135,6 +138,7 @@ def _workflow_metadata(
 ) -> dict[str, object]:
     metadata = dict(live_workflow)
     output_path = Path(str(live_workflow["recommendation_output_path"]))
+    recommendation_metadata = {} if recommendation is None else recommendation.metadata
     metadata.update(
         {
             "recommendation_summary_path": str(output_path / "recommendation_summary.json"),
@@ -161,6 +165,9 @@ def _workflow_metadata(
             "captain_multiplier": None if recommendation is None else recommendation.summary.get("captain_multiplier"),
             "formation_search": None if recommendation is None else recommendation.summary.get("formation_search"),
             "budget_used": None if recommendation is None else recommendation.summary.get("budget_used"),
+            "finalized_live_data_detected": recommendation_metadata.get("finalized_live_data_detected"),
+            "finalized_live_data_evidence": recommendation_metadata.get("finalized_live_data_evidence"),
+            "allow_finalized_live_data": recommendation_metadata.get("allow_finalized_live_data"),
             "status": status,
             "error_stage": error_stage,
             "error_type": None if error is None else type(error).__name__,
@@ -176,6 +183,68 @@ def _write_workflow_metadata(output_path: Path, metadata: dict[str, object]) -> 
         json.dumps(metadata, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _utc_timestamp_from_epoch(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).isoformat().replace("+00:00", "Z")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _manifest_artifact_paths(output_path: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in output_path.rglob("*")
+        if path.is_file() and path.name != "run_manifest.json" and not path.name.startswith(".run_manifest.")
+    )
+
+
+def _build_run_manifest(output_path: Path, *, generated_at_utc: str) -> dict[str, object]:
+    artifacts = []
+    for artifact_path in _manifest_artifact_paths(output_path):
+        stat = artifact_path.stat()
+        artifacts.append(
+            {
+                "relative_path": artifact_path.relative_to(output_path).as_posix(),
+                "sha256": _file_sha256(artifact_path),
+                "size_bytes": stat.st_size,
+                "created_at_utc": _utc_timestamp_from_epoch(stat.st_mtime),
+            }
+        )
+    return {
+        "schema_version": "cartola.run_manifest.v1",
+        "generated_at_utc": generated_at_utc,
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+    }
+
+
+def _write_run_manifest(output_path: Path, *, generated_at_utc: str) -> None:
+    manifest = _build_run_manifest(output_path, generated_at_utc=generated_at_utc)
+    payload = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=".run_manifest.",
+            suffix=".tmp",
+            dir=output_path,
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, output_path / "run_manifest.json")
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
 
 
 def _capture_fresh(config: LiveWorkflowConfig) -> tuple[int, LiveCaptureMetadata]:
@@ -266,9 +335,11 @@ def _resolve_capture(config: LiveWorkflowConfig) -> tuple[int, LiveCaptureMetada
     raise ValueError(f"Unsupported capture policy: {config.capture_policy}")
 
 
-def _assert_archive_available(output_path: Path) -> None:
-    if output_path.exists():
-        raise FileExistsError(f"recommendation archive already exists: {output_path}")
+def _create_recommendation_archive(output_path: Path) -> None:
+    try:
+        output_path.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise FileExistsError(f"recommendation archive already exists: {output_path}") from exc
 
 
 def run_live_round(config: LiveWorkflowConfig, *, now: Clock = lambda: datetime.now(UTC)) -> LiveWorkflowResult:
@@ -304,7 +375,7 @@ def run_live_round(config: LiveWorkflowConfig, *, now: Clock = lambda: datetime.
         live_workflow=live_workflow,
     )
     _validate_output_root(recommendation_config)
-    _assert_archive_available(recommendation_config.output_path)
+    _create_recommendation_archive(recommendation_config.output_path)
     try:
         recommendation = run_recommendation(recommendation_config)
     except Exception as exc:
@@ -319,6 +390,10 @@ def run_live_round(config: LiveWorkflowConfig, *, now: Clock = lambda: datetime.
         raise
     metadata = _workflow_metadata(live_workflow=live_workflow, recommendation=recommendation, status="ok")
     _write_workflow_metadata(recommendation_config.output_path, metadata)
+    _write_run_manifest(
+        recommendation_config.output_path,
+        generated_at_utc=now().astimezone(UTC).isoformat().replace("+00:00", "Z"),
+    )
     return LiveWorkflowResult(
         recommendation=recommendation,
         workflow_metadata=metadata,

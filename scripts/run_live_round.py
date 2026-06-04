@@ -89,6 +89,16 @@ def _print_success(console: Console, metadata: dict[str, object]) -> None:
     table.add_row("Recommendation output", str(metadata.get("recommendation_output_path")))
     table.add_row("Capture metadata", str(metadata.get("capture_metadata_path")))
     console.print(table)
+    if metadata.get("finalized_live_data_detected") is True:
+        console.print(
+            Panel(
+                "allow_finalized_live_data="
+                f"{metadata.get('allow_finalized_live_data')} "
+                f"evidence={metadata.get('finalized_live_data_evidence')}",
+                title="Finalized live data warning",
+                border_style="yellow",
+            )
+        )
 
 
 def _print_error(console: Console, error: ValueError) -> None:

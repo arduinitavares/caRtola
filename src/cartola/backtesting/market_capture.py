@@ -177,9 +177,7 @@ def _validate_open_market(status_payload: dict[str, Any]) -> int:
     status_mercado = _int_field(status_payload, "status_mercado")
     if status_mercado != 1:
         rodada_atual = status_payload.get("rodada_atual")
-        raise ValueError(
-            f"Cartola market is not open: rodada_atual={rodada_atual} status_mercado {status_mercado}"
-        )
+        raise ValueError(f"Cartola market is not open: rodada_atual={rodada_atual} status_mercado {status_mercado}")
     return status_mercado
 
 
@@ -268,7 +266,10 @@ def _sha256_file(path: Path) -> str:
 def fetch_cartola_json(url: str, timeout_seconds: float) -> CapturedJsonResponse:
     import requests  # type: ignore[import-untyped]
 
-    response = requests.get(url, timeout=timeout_seconds)
+    try:
+        response = requests.get(url, timeout=timeout_seconds)
+    except requests.RequestException as exc:
+        raise ValueError(f"Cartola request failed: url={url} error={exc}") from exc
     body = response.content
     if response.status_code != 200:
         raise ValueError(f"Cartola request failed: url={url} status={response.status_code}")
@@ -357,8 +358,11 @@ def _csv_path_for(project_root: Path, season: int, target_round: int) -> Path:
     return project_root / "data" / "01_raw" / str(season) / f"rodada-{target_round}.csv"
 
 
-def _raise_invalid_live_capture() -> None:
-    raise ValueError("destination is not a previous valid live capture")
+def _raise_invalid_live_capture(reason: str | None = None) -> None:
+    message = "destination is not a previous valid live capture"
+    if reason:
+        message = f"{message}: {reason}"
+    raise ValueError(message)
 
 
 def _parse_utc_z(value: object) -> str:
@@ -391,7 +395,11 @@ def load_valid_live_capture(*, project_root: Path, season: int, target_round: in
     if metadata.get("capture_version") != CAPTURE_VERSION:
         _raise_invalid_live_capture()
     if metadata.get("season") != season or metadata.get("target_round") != target_round:
-        _raise_invalid_live_capture()
+        _raise_invalid_live_capture(
+            "expected "
+            f"season={season} target_round={target_round}, "
+            f"got season={metadata.get('season')} target_round={metadata.get('target_round')}"
+        )
     if Path(str(metadata.get("csv_path"))) != final_csv:
         _raise_invalid_live_capture()
     csv_sha256 = _sha256_file(final_csv)
@@ -403,7 +411,7 @@ def load_valid_live_capture(*, project_root: Path, season: int, target_round: in
     except ValueError as exc:
         raise ValueError("destination is not a previous valid live capture") from exc
     if status_mercado != 1:
-        _raise_invalid_live_capture()
+        _raise_invalid_live_capture(f"status_mercado={status_mercado} is not open")
     deadline_parse_status = str(metadata.get("deadline_parse_status"))
     deadline_timestamp_value = metadata.get("deadline_timestamp")
     try:
@@ -473,9 +481,7 @@ def _publish_pair(
 
     backup_csv = final_csv.with_name(f"{final_csv.name}.bak-{uuid.uuid4().hex}") if final_csv.exists() else None
     backup_metadata = (
-        final_metadata.with_name(f"{final_metadata.name}.bak-{uuid.uuid4().hex}")
-        if final_metadata.exists()
-        else None
+        final_metadata.with_name(f"{final_metadata.name}.bak-{uuid.uuid4().hex}") if final_metadata.exists() else None
     )
     publication_completed = False
     rollback_completed = False

@@ -37,10 +37,10 @@ Steps:
 - After acceptance, confirm the canonical state with:
   `agileforge authority status --project-id <id>`
   Latest Cartola smoke project `2` reports `status=current`, `reason=accepted_authority_current`, and `invariant_count=115`.
-- Compiled authority is stored in AgileForge state and review packets, not as a repo source file; do not commit exported `specs/compiled-authority-*.json` or local CLI response captures such as `review.json`, `accept.json`, `authority-status.json`, `roadmap-generate.json`, `story-*.json`, or `sprint-*.json`.
+- Compiled authority is stored in AgileForge state and review packets, not as a repo source file; do not commit exported `specs/compiled-authority-*.json` or local CLI response captures such as `review.json`, `accept.json`, `authority-status.json`, `roadmap-generate.json`, `story-*.json`, `sprint-*.json`, `as-built-assess-*.json`, `as-built-assess-*.stderr.ndjson`, `backlog-generate-*.json`, `backlog-preview-*.json`, `backlog-*.stderr.log`, `evidence-collect*.json`, or local capture directories such as `agileforge-refine-*` and `agileforge-roadmap-after-reset-*`.
 - After each accepted, saved, repaired, or completed AgileForge phase, ask the CLI for the next valid commands instead of guessing:
   `agileforge workflow next --project-id <id>`
-  Current Cartola smoke project `2` has Story coverage complete (`story pending` reports `saved_count=10`, `total_count=10`), active Story dependency review complete, and is in Sprint draft review; latest `workflow next` reports `status=next_phase_available` with `agileforge sprint history --project-id 2`, Story dependency inspect/propose/apply commands, guarded `agileforge sprint save ... --expected-state SPRINT_DRAFT`, and `agileforge sprint generate --project-id 2 --input <feedback>`.
+  Do not record transient project state here; inspect the CLI/runtime state before choosing phase commands.
 - To correct a saved Story before Sprint work exists, reopen the parent requirement, regenerate or refine, save with the returned attempt/fingerprint, then complete Story again:
   `agileforge story reopen --project-id 2 --parent-requirement "<parent_requirement>" --expected-state SPRINT_SETUP --idempotency-key <key>`
   `agileforge story complete --project-id 2 --expected-state STORY_PERSISTENCE --idempotency-key <key>`
@@ -49,16 +49,13 @@ Steps:
   `agileforge story dependencies propose --project-id 2 --expected-state <expected_state> --idempotency-key <key>`
   `agileforge story dependencies apply --project-id 2 --attempt-id <attempt_id> --expected-artifact-fingerprint <fingerprint> --expected-state <expected_state> --idempotency-key <key>`
   Use the `expected_state` returned by `workflow next` (`SPRINT_SETUP` before Sprint generation, `SPRINT_DRAFT` while reviewing an unsaved Sprint draft).
-  Current project `2` reports `active_edge_count=11`, `proposed_edge_count=0`, `cycle_count=0`, and `issue_count=0`; if Story/dependency data changes, rerun `workflow next` because AgileForge now invalidates stale Sprint drafts.
 - Before Sprint generation, inspect candidate readiness:
   `agileforge sprint candidates --project-id 2`
-  Current project `2` reports `count=21`, readiness `status=ready`, and candidate dependency metadata (`dependency_status`, `prerequisite_story_ids`, `blocked_by_story_ids`) with 10 ready and 11 blocked candidates; if candidates are unsized, default-priority, cyclic, or invalid, repair Story planning metadata or dependencies before Sprint work starts:
+  If candidates are unsized, default-priority, cyclic, or invalid, repair Story planning metadata or dependencies before Sprint work starts:
   `agileforge story repair-readiness --project-id 2 --expected-state SPRINT_SETUP --idempotency-key <key>`
 - Sprint generation now locks the dependency-safe story cohort before the model writes the Sprint plan; use `--max-story-points` and feedback for capacity shaping, and use `--selected-story-ids` only as a manual override after dependency review:
-  `agileforge sprint generate --project-id 2 --selected-story-ids 66,85,67,68,69 --max-story-points 12 --input "<selection feedback>"`
+  `agileforge sprint generate --project-id <id> --max-story-points <points> --input "<selection feedback>"`
   Review `sprint history` before saving; AgileForge blocks stale saves when the latest attempt failed, the selected draft is not the latest complete attempt, or the Story/dependency source fingerprint changed or cannot be verified.
-- Latest project `2` Sprint draft is `sprint-attempt-10`, artifact fingerprint `sha256:0423eaafcee57f3686b1f313743c961e4edb33ce40b066fabc2792fd9bf27fad`, selected stories `66,85,67,68,69`, and 11 story points with no clarifying questions. If accepted after review, save it with:
-  `agileforge sprint save --project-id 2 --team-name <team_name> --sprint-start-date <YYYY-MM-DD> --attempt-id sprint-attempt-10 --expected-artifact-fingerprint sha256:0423eaafcee57f3686b1f313743c961e4edb33ce40b066fabc2792fd9bf27fad --expected-state SPRINT_DRAFT --idempotency-key <key>`
 - AgileForge phase command groups now installed in the local CLI include `vision`, `roadmap`, `backlog`, `story`, and `sprint`. Model-backed `generate` commands can fail on provider data-policy or rate limits; inspect history before retrying:
   `agileforge vision history --project-id <id>`
   `agileforge roadmap history --project-id <id>`
@@ -237,14 +234,16 @@ Steps:
 
 - Preferred one-command live workflow:
   `uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --current-year 2026`
+- `scripts/run_live_round.py` requires an explicit positive finite `--budget` in Cartola C$ / cartoletas; missing, non-numeric, zero, negative, NaN, or infinity values fail before market capture, model loading, optimizer execution, or artifact writes. Do not infer live budget from env/config/API/account state or prior runs.
 - Opt-in strict matchup live workflow, only after strict fixture capture exists for the open round:
   `uv run --frozen python scripts/run_live_round.py --season 2026 --budget 100 --model-id xgboost_depth2_slow --footystats-mode ppg_xg --fixture-mode strict --matchup-context-mode cartola_matchup_v1 --current-year 2026`
 - `scripts/run_live_round.py` defaults to `--capture-policy fresh`; use `missing` to reuse a valid live capture when present, or `skip` to require one without fetching `atletas/mercado`.
 - For live and single-round replay recommendations, `--budget` means current available budget for that one round; moving-budget updates apply only to historical multi-round workflows.
-- One-command live recommendation outputs are archived under `data/08_reporting/recommendations/{season}/round-{target_round}/live/runs/run_started_at=.../`.
+- One-command live recommendation outputs are archived under `data/08_reporting/recommendations/{season}/round-{target_round}/live/runs/run_started_at=.../` and include `recommended_squad.csv`, `candidate_predictions.csv`, `recommendation_summary.json`, `run_metadata.json`, `risk_audit.json`, `live_workflow_metadata.json`, and `run_manifest.json`.
 - `scripts/run_live_round.py` and `scripts/recommend_squad.py` support all controlled model IDs plus `--fixture-mode none|strict` and `--matchup-context-mode none|cartola_matchup_v1`; CLI defaults are `xgboost_depth2_l2_heavy`, `ppg_xg`, `fixture_mode=none`, and `matchup_context_mode=none`.
 - Capture the open market round before a live recommendation:
   `uv run --frozen python scripts/capture_market_round.py --season 2026 --auto --current-year 2026`
+  Capture artifacts are `data/01_raw/{season}/rodada-{target_round}.csv` plus `data/01_raw/{season}/rodada-{target_round}.capture.json`; metadata uses `capture_version=market_capture_v1`, records Cartola response and CSV hashes, and `--force` may replace only a previous valid live capture for the same season/round.
 - Generate a live squad recommendation:
   `uv run --frozen python scripts/recommend_squad.py --season 2026 --target-round 14 --mode live --budget 100 --current-year 2026`
 - Replay a completed current-season round:
@@ -252,6 +251,8 @@ Steps:
 - Recommendation outputs are written under `data/08_reporting/recommendations/{season}/round-{target_round}/{mode}/`.
 - `recommended_squad.csv` keeps per-player `predicted_points` raw; use `predicted_points_with_captain` and `actual_points_with_captain` for captain-adjusted totals when present.
 - Replay recommendation summaries include oracle comparison fields when candidate `pontuacao` is complete: `oracle_actual_points`, `oracle_gap`, `oracle_capture_rate`, and `oracle_optimizer_status`; live recommendations leave these fields null.
+- Live recommendations inspect target-round data for finalized evidence (`pontuacao`, `entrou_em_campo`, and scout columns) before writing artifacts. If evidence is present, live mode fails unless `--allow-finalized-live-data` is passed; override runs must record the evidence in metadata and surface the warning.
+- `run_metadata.json` records `finalized_live_data_detected`, `finalized_live_data_evidence`, and `allow_finalized_live_data`; one-command live workflow also mirrors those fields in `live_workflow_metadata.json`.
 
 ## Cartola Submission Plan Workflow
 

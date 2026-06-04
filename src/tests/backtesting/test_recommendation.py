@@ -9,11 +9,13 @@ import pytest
 
 from cartola.backtesting.config import DEFAULT_SCOUT_COLUMNS
 from cartola.backtesting.footystats_features import FootyStatsPPGLoadResult
+from cartola.backtesting.optimizer import SquadOptimizationResult
 from cartola.backtesting.recommendation import (
     RecommendationConfig,
     _backtest_config,
     _finalized_live_data_evidence,
     _validate_mode_scope,
+    _validate_selected_budget,
     _visible_season_frame,
     run_recommendation,
 )
@@ -45,8 +47,7 @@ def test_recommendation_config_output_path_includes_output_run_id() -> None:
     )
 
     assert config.output_path == Path(
-        "/tmp/cartola/data/08_reporting/recommendations/2026/round-14/live/runs/"
-        "run_started_at=20260429T123456000000Z"
+        "/tmp/cartola/data/08_reporting/recommendations/2026/round-14/live/runs/run_started_at=20260429T123456000000Z"
     )
 
 
@@ -69,6 +70,22 @@ def test_recommendation_config_has_no_public_fixed_formation_api() -> None:
     assert "formation_name" not in config_fields
     assert "formations" not in config_fields
     assert not isinstance(RecommendationConfig.__dict__.get("selected_formation"), property)
+
+
+def test_validate_selected_budget_rejects_infeasible_optimizer_status() -> None:
+    config = RecommendationConfig(season=2026, target_round=14, mode="live", budget=92.5, current_year=2026)
+    optimized = _optimization_result(status="Infeasible", budget_used=0.0)
+
+    with pytest.raises(ValueError, match="No valid squad was found within the operator-provided budget 92.50"):
+        _validate_selected_budget(config, optimized)
+
+
+def test_validate_selected_budget_rejects_post_selection_budget_violation() -> None:
+    config = RecommendationConfig(season=2026, target_round=14, mode="live", budget=92.5, current_year=2026)
+    optimized = _optimization_result(status="Optimal", budget_used=92.5001)
+
+    with pytest.raises(ValueError, match="Selected squad exceeds the operator-provided budget"):
+        _validate_selected_budget(config, optimized)
 
 
 def _round_frame(
@@ -104,6 +121,29 @@ def _round_frame(
             rows.append(row)
             player_id += 1
     return pd.DataFrame(rows)
+
+
+def _optimization_result(*, status: str, budget_used: float) -> SquadOptimizationResult:
+    return SquadOptimizationResult(
+        selected=pd.DataFrame(),
+        status=status,
+        budget_used=budget_used,
+        predicted_points=0.0,
+        predicted_points_base=0.0,
+        captain_bonus_predicted=0.0,
+        predicted_points_with_captain=0.0,
+        formation_name="4-3-3",
+        selected_count=0,
+        captain_id=None,
+        captain_name=None,
+        captain_position=None,
+        captain_club=None,
+        captain_predicted_points=None,
+        captain_multiplier=1.5,
+        scoring_contract_version=SCORING_CONTRACT_VERSION,
+        formation_scores=[],
+        captain_policy_diagnostics=[],
+    )
 
 
 def _season_frame(rounds: range, *, target_round: int | None = None, live_target: bool = False) -> pd.DataFrame:
@@ -428,11 +468,7 @@ def test_run_recommendation_replay_nulls_oracle_when_any_candidate_actual_is_mis
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     season_df = _season_frame(range(1, 4))
-    target_low_value = (
-        season_df["rodada"].eq(3)
-        & season_df["posicao"].eq("lat")
-        & season_df["apelido"].eq("lat-0")
-    )
+    target_low_value = season_df["rodada"].eq(3) & season_df["posicao"].eq("lat") & season_df["apelido"].eq("lat-0")
     season_df.loc[target_low_value, "pontuacao"] = pd.NA
     season_df.loc[target_low_value, "preco_pre_rodada"] = 999.0
 
@@ -466,8 +502,9 @@ def test_run_recommendation_replay_nulls_oracle_when_any_candidate_actual_is_mis
     assert result.summary["oracle_gap"] is None
     assert result.summary["oracle_capture_rate"] is None
     assert result.summary["oracle_optimizer_status"] is None
-    assert "Oracle actual_points is null because 1 candidate rows have missing or non-finite pontuacao." in (
-        result.metadata["warnings"]
+    assert (
+        "Oracle actual_points is null because 1 candidate rows have missing or non-finite pontuacao."
+        in (result.metadata["warnings"])
     )
 
 
@@ -510,9 +547,7 @@ def test_run_recommendation_replay_nulls_capture_rate_when_oracle_is_not_positiv
     assert result.summary["oracle_actual_points"] == 0.0
     assert result.summary["oracle_gap"] == 0.0
     assert result.summary["oracle_capture_rate"] is None
-    assert "Oracle capture_rate is null because oracle_actual_points is not positive." in (
-        result.metadata["warnings"]
-    )
+    assert "Oracle capture_rate is null because oracle_actual_points is not positive." in (result.metadata["warnings"])
 
 
 def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowed(
@@ -567,6 +602,13 @@ def test_run_recommendation_live_suppresses_actual_columns_when_finalized_allowe
     assert "is_captain" not in result.candidate_predictions.columns
     assert "captain_policy_ev" not in result.candidate_predictions.columns
     assert result.metadata["finalized_live_data_detected"] is True
+    assert result.metadata["finalized_live_data_evidence"]["pontuacao_non_zero_count"] > 0
+    assert result.metadata["finalized_live_data_evidence"]["entrou_em_campo_true_count"] > 0
+    assert result.metadata["finalized_live_data_evidence"]["non_zero_scout_count"] > 0
+    run_metadata = json.loads((config.output_path / "run_metadata.json").read_text(encoding="utf-8"))
+    assert run_metadata["finalized_live_data_detected"] is True
+    assert run_metadata["finalized_live_data_evidence"]["pontuacao_non_zero_count"] > 0
+    assert run_metadata["allow_finalized_live_data"] is True
 
 
 def test_run_recommendation_outputs_captain_contract_fields(
@@ -590,12 +632,35 @@ def test_run_recommendation_outputs_captain_contract_fields(
     assert result.summary["scoring_contract_version"] == SCORING_CONTRACT_VERSION
     assert result.summary["captain_scoring_enabled"] is True
     assert result.summary["formation_search"] == "all_official_formations"
+    assert result.summary["selected_count"] == 12
     assert result.summary["captain_id"] in set(result.recommended_squad["id_atleta"])
+    assert len(result.recommended_squad) == 12
     assert int(result.recommended_squad["is_captain"].sum()) == 1
+    assert {
+        "rodada",
+        "id_atleta",
+        "apelido",
+        "id_clube",
+        "nome_clube",
+        "posicao",
+        "status",
+        "preco_pre_rodada",
+        "baseline_score",
+        "price_score",
+        "random_forest_score",
+        "predicted_points",
+        "is_captain",
+        "captain_policy_ev",
+        "captain_policy_safe",
+        "captain_policy_upside",
+    }.issubset(result.recommended_squad.columns)
     assert "predicted_points_base" in result.summary
     assert "captain_bonus_predicted" in result.summary
     assert "predicted_points_with_captain" in result.summary
     assert result.summary["predicted_points"] == result.summary["predicted_points_with_captain"]
+    assert result.summary["budget_used"] <= result.summary["budget"]
+    assert result.summary["predicted_points_base"] > 0
+    assert result.summary["captain_bonus_predicted"] > 0
     assert "predicted_points" in result.recommended_squad.columns
     assert "is_captain" in result.recommended_squad.columns
     assert "captain_policy_ev" in result.recommended_squad.columns
@@ -668,9 +733,10 @@ def test_run_recommendation_strict_matchup_loads_fixture_metadata(
         "data/01_raw/fixtures_strict/2026/partidas-2.manifest.json",
         "data/01_raw/fixtures_strict/2026/partidas-3.manifest.json",
     ]
-    assert result.metadata["fixture_manifest_sha256"][
-        "data/01_raw/fixtures_strict/2026/partidas-3.manifest.json"
-    ] == "c" * 64
+    assert (
+        result.metadata["fixture_manifest_sha256"]["data/01_raw/fixtures_strict/2026/partidas-3.manifest.json"]
+        == "c" * 64
+    )
     assert result.metadata["fixture_generator_versions"] == ["fixture_snapshot_v1"]
     assert "matchup_is_home" in result.metadata["feature_columns"]
 
@@ -737,8 +803,14 @@ def test_live_mode_rejects_finalized_target_round_without_escape_hatch(
         current_year=2026,
     )
 
-    with pytest.raises(ValueError, match="appears finalized"):
+    with pytest.raises(ValueError, match="appears finalized") as exc_info:
         run_recommendation(config)
+
+    error_message = str(exc_info.value)
+    assert "pontuacao_non_zero_count" in error_message
+    assert "entrou_em_campo_true_count" in error_message
+    assert "non_zero_scout_count" in error_message
+    assert not config.output_path.exists()
 
 
 def test_run_recommendation_writes_expected_output_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -774,11 +846,72 @@ def test_run_recommendation_writes_expected_output_files(tmp_path: Path, monkeyp
     assert (output_path / "candidate_predictions.csv").exists()
     assert (output_path / "recommendation_summary.json").exists()
     assert (output_path / "run_metadata.json").exists()
+    assert (output_path / "risk_audit.json").exists()
     summary = json.loads((output_path / "recommendation_summary.json").read_text(encoding="utf-8"))
     metadata = json.loads((output_path / "run_metadata.json").read_text(encoding="utf-8"))
+    risk_audit = json.loads((output_path / "risk_audit.json").read_text(encoding="utf-8"))
+    assert {
+        "season",
+        "target_round",
+        "mode",
+        "strategy",
+        "formation",
+        "budget",
+        "budget_used",
+        "optimizer_status",
+        "selected_count",
+        "predicted_points",
+        "predicted_points_base",
+        "captain_bonus_predicted",
+        "predicted_points_with_captain",
+        "captain_id",
+        "captain_name",
+        "captain_position",
+        "captain_club",
+        "captain_policy_diagnostics",
+        "output_directory",
+        *contract_fields().keys(),
+    }.issubset(summary)
+    assert {
+        "season",
+        "target_round",
+        "mode",
+        "current_year",
+        "training_rounds",
+        "candidate_round",
+        "visible_max_round",
+        "fixture_mode",
+        "matchup_context_mode",
+        "model_id",
+        "footystats_mode",
+        "feature_columns",
+        "playable_statuses",
+        "formation",
+        "allowed_formations",
+        "captain_policy_definitions",
+        "captain_policy_diagnostics",
+        "budget",
+        "random_seed",
+        "finalized_live_data_detected",
+        "finalized_live_data_evidence",
+        "allow_finalized_live_data",
+        "live_workflow",
+        "optimizer_status",
+        "warnings",
+        "generated_at_utc",
+        *contract_fields().keys(),
+    }.issubset(metadata)
     assert summary["actual_points"] is None
     assert metadata["training_rounds"] == [1, 2]
     assert metadata["footystats_matches_source_sha256"] == "sha"
+    assert risk_audit["schema_version"] == "cartola.risk_audit.v1"
+    assert risk_audit["advisory_only"] is True
+    assert risk_audit["budget_utilization_pct"] == pytest.approx(
+        summary["budget_used"] / summary["budget"] * 100.0
+    )
+    assert risk_audit["captain_risk_policy"] in {"ev", "safe", "upside"}
+    assert risk_audit["overall_risk_level"] in {"low", "medium", "high"}
+    assert len(risk_audit["dnp_risk"]) == summary["selected_count"]
 
 
 def test_run_recommendation_writes_live_workflow_metadata_link(
@@ -794,8 +927,7 @@ def test_run_recommendation_writes_live_workflow_metadata_link(
         "capture_metadata_path": str(tmp_path / "data/01_raw/2026/rodada-3.capture.json"),
         "capture_csv_sha256": "a" * 64,
         "recommendation_output_path": str(
-            tmp_path
-            / "data/08_reporting/recommendations/2026/round-3/live/runs/run_started_at=20260429T123456000000Z"
+            tmp_path / "data/08_reporting/recommendations/2026/round-3/live/runs/run_started_at=20260429T123456000000Z"
         ),
     }
     config = RecommendationConfig(

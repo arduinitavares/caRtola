@@ -34,7 +34,8 @@ from cartola.backtesting.footystats_features import (
 )
 from cartola.backtesting.model_registry import ModelId, create_point_predictor
 from cartola.backtesting.models import BaselinePredictor
-from cartola.backtesting.optimizer import optimize_squad
+from cartola.backtesting.optimizer import SquadOptimizationResult, optimize_squad
+from cartola.backtesting.risk_audit import build_risk_audit
 from cartola.backtesting.scoring_contract import (
     actual_scores_with_captain,
     apply_captain_policy_flags,
@@ -44,6 +45,7 @@ from cartola.backtesting.scoring_contract import (
 from cartola.backtesting.strict_fixtures import load_strict_fixtures
 
 RecommendationMode = Literal["live", "replay"]
+BUDGET_VIOLATION_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)
@@ -172,11 +174,12 @@ def _validate_output_root(config: RecommendationConfig) -> None:
     protected_backtest_root = (project_root / "data" / "08_reporting" / "backtests").resolve()
     output_root = _resolve_output_root(config)
     if project_root != output_root and project_root not in output_root.parents:
-        raise ValueError(f"Recommendation output_root must resolve inside project_root: output_root={config.output_root}")
+        raise ValueError(
+            f"Recommendation output_root must resolve inside project_root: output_root={config.output_root}"
+        )
     if output_root == protected_backtest_root or protected_backtest_root in output_root.parents:
         raise ValueError(
-            "Recommendation output_root cannot be inside backtest reports: "
-            f"output_root={config.output_root}"
+            f"Recommendation output_root cannot be inside backtest reports: output_root={config.output_root}"
         )
 
 
@@ -184,6 +187,21 @@ def _resolve_output_root(config: RecommendationConfig) -> Path:
     if config.output_root.is_absolute():
         return config.output_root.resolve()
     return (config.project_root / config.output_root).resolve()
+
+
+def _validate_selected_budget(config: RecommendationConfig, optimized: SquadOptimizationResult) -> None:
+    budget = float(config.budget)
+    budget_used = float(optimized.budget_used)
+    if optimized.status != "Optimal":
+        raise ValueError(
+            "No valid squad was found within the operator-provided budget "
+            f"{budget:.2f} Cartola C$ / cartoletas: optimizer_status={optimized.status}"
+        )
+    if budget_used > budget + BUDGET_VIOLATION_TOLERANCE:
+        raise ValueError(
+            "Selected squad exceeds the operator-provided budget: "
+            f"budget_used={budget_used:.2f} budget={budget:.2f} Cartola C$ / cartoletas"
+        )
 
 
 def _visible_season_frame(season_df: pd.DataFrame, *, target_round: int) -> pd.DataFrame:
@@ -364,9 +382,7 @@ def _null_actual_score_fields() -> dict[str, float | None]:
 
 def _replay_actual_scores(selected: pd.DataFrame) -> tuple[dict[str, float | None], list[str]]:
     if "pontuacao" not in selected.columns:
-        return _null_actual_score_fields(), [
-            "Replay actual_points is null because selected pontuacao is unavailable."
-        ]
+        return _null_actual_score_fields(), ["Replay actual_points is null because selected pontuacao is unavailable."]
 
     invalid_count = _non_finite_count(selected, "pontuacao")
     if invalid_count:
@@ -412,8 +428,7 @@ def _oracle_replay_metrics(
     invalid_count = int(actual_values.isna().sum())
     if invalid_count:
         return metrics, [
-            "Oracle actual_points is null because "
-            f"{invalid_count} candidate rows have missing or non-finite pontuacao."
+            f"Oracle actual_points is null because {invalid_count} candidate rows have missing or non-finite pontuacao."
         ]
 
     oracle_candidates = candidates.copy()
@@ -529,8 +544,7 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
     scored["price_score"] = scored[MARKET_OPEN_PRICE_COLUMN].astype(float)
 
     optimized = optimize_squad(scored, score_column=primary_score_column, config=backtest_config)
-    if optimized.status != "Optimal":
-        raise ValueError(f"Recommendation optimizer failed: status={optimized.status}")
+    _validate_selected_budget(config, optimized)
 
     selected = _ensure_nome_clube(optimized.selected)
     selected["predicted_points"] = selected[primary_score_column]
@@ -598,6 +612,15 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         **oracle_metrics,
         "output_directory": str(config.output_path),
     }
+    risk_audit = (
+        build_risk_audit(
+            selected=selected,
+            summary=summary,
+            generated_timestamp=_utc_now_z(),
+        )
+        if config.mode == "live"
+        else None
+    )
     metadata = _build_metadata(
         config=config,
         visible=visible,
@@ -612,7 +635,7 @@ def run_recommendation(config: RecommendationConfig) -> RecommendationResult:
         captain_policy_diagnostics=policy_diagnostics,
     )
 
-    _write_recommendation_outputs(config, recommended_squad, candidate_predictions, summary, metadata)
+    _write_recommendation_outputs(config, recommended_squad, candidate_predictions, summary, metadata, risk_audit)
     return RecommendationResult(
         recommended_squad=recommended_squad,
         candidate_predictions=candidate_predictions,
@@ -688,6 +711,7 @@ def _write_recommendation_outputs(
     candidate_predictions: pd.DataFrame,
     summary: dict[str, object],
     metadata: dict[str, object],
+    risk_audit: dict[str, object] | None,
 ) -> None:
     output_path = config.output_path
     output_path.mkdir(parents=True, exist_ok=True)
@@ -701,3 +725,8 @@ def _write_recommendation_outputs(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if risk_audit is not None:
+        (output_path / "risk_audit.json").write_text(
+            json.dumps(risk_audit, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )

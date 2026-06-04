@@ -47,6 +47,29 @@ These failures must occur before any of these side effects:
 - recommendation directory creation;
 - recommendation CSV or JSON artifact writing.
 
+## CLI Entry Point Design
+
+Budget validation belongs at the `scripts/run_live_round.py` argument parsing
+boundary.
+
+The parser must use a dedicated `--budget` type validator that accepts only
+positive finite numeric values. It must reject non-numeric, empty, zero,
+negative, NaN, and infinite values before constructing `LiveWorkflowConfig`.
+
+The parser must then perform a required-value check for `--budget`. A missing
+budget must call the parser error path with this operator-facing guidance:
+
+`--budget is required; provide available budget in Cartola C$ / cartoletas`
+
+Invalid provided values must use this operator-facing guidance:
+
+`budget must be a positive numeric Cartola C$ / cartoletas amount`
+
+The entry point must not attempt to repair, infer, or replace missing budget
+input. There is no fallback from config, environment, private account balance,
+Cartola API account responses, or previous run metadata. The only value that may
+enter `LiveWorkflowConfig.budget` is the explicit parsed `--budget` argument.
+
 ## Forbidden Budget Sources
 
 The live recommendation workflow must not use any implicit budget source.
