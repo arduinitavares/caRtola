@@ -208,3 +208,17 @@ logs/
 
 # MLflow local tracking store
 mlruns/
+
+# Local agent / AgileForge smoke captures
+/.codegraph/daemon.pid
+/agileforge-*/
+/agileforge-*.json
+/as-built-assess-*.json
+/as-built-assess-*.stderr.ndjson
+/backlog-*.json
+/command-schema-*.json
+/evidence-collect*.json
+/roadmap-*.json
+/sprint-*.json
+/story-*.json
+/vision-*.json
